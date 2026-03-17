@@ -1,0 +1,98 @@
+import { authClient } from "../auth-client.js";
+import { showToast } from "../components/toast.js";
+
+const allProviders = [
+  { id: "google", name: "Google", icon: "google" },
+  { id: "github", name: "GitHub", icon: "github" },
+  { id: "microsoft", name: "Microsoft", icon: "microsoft" },
+  { id: "discord", name: "Discord", icon: "discord" },
+];
+
+function renderButtons(container, providers) {
+  const wrapper = container.querySelector("#provider-buttons");
+  if (!providers.length) {
+    wrapper.innerHTML = "";
+    return;
+  }
+
+  wrapper.innerHTML = providers.map((p) => `
+    <wa-button variant="neutral" appearance="outlined" size="large" style="width:100%;" data-provider="${p.id}">
+      <wa-icon slot="prefix" name="${p.icon}" family="brands" label="${p.name}"></wa-icon>
+      Continue with ${p.name}
+    </wa-button>
+  `).join("");
+
+  wrapper.querySelectorAll("[data-provider]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const provider = btn.dataset.provider;
+      try {
+        await authClient.signIn.social({
+          provider,
+          callbackURL: "/dashboard",
+        });
+      } catch {
+        showToast(`Sign in with ${provider} failed`, "danger");
+      }
+    });
+  });
+}
+
+function renderPasskeyButton(container, enabled) {
+  const section = container.querySelector("#passkey-section");
+  if (!enabled) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+  const btn = section.querySelector("#passkey-signin");
+  btn.addEventListener("click", async () => {
+    btn.setAttribute("loading", "");
+    try {
+      const result = await authClient.signIn.passkey();
+      if (result?.error) {
+        showToast(result.error.message || "Passkey sign-in failed", "danger");
+      } else {
+        window.location.href = "/dashboard";
+      }
+    } catch {
+      showToast("Passkey sign-in failed", "danger");
+    } finally {
+      btn.removeAttribute("loading");
+    }
+  });
+}
+
+export function renderLogin(container) {
+  container.innerHTML = `
+    <div class="login-view wa-stack wa-gap-l" style="max-width:400px;margin:3rem auto;text-align:center;">
+      <h1>Sign in to Veer</h1>
+      <p id="login-help">Choose a provider to continue</p>
+      <div class="wa-stack wa-gap-s" id="provider-buttons">
+        <wa-skeleton effect="sheen" style="height:44px;width:100%;"></wa-skeleton>
+        <wa-skeleton effect="sheen" style="height:44px;width:100%;"></wa-skeleton>
+      </div>
+      <div id="passkey-section" style="display:none;">
+        <wa-divider></wa-divider>
+        <wa-button id="passkey-signin" variant="brand" size="large" style="width:100%;">
+          <wa-icon slot="prefix" name="key" label="Passkey"></wa-icon>
+          Sign in with passkey
+        </wa-button>
+      </div>
+    </div>
+  `;
+
+  fetch("/api/auth/providers")
+    .then((r) => r.json())
+    .then(({ providers: ids, passkey }) => {
+      const providers = allProviders.filter((p) => ids.includes(p.id));
+      renderButtons(container, providers);
+      renderPasskeyButton(container, passkey);
+      if (!providers.length && !passkey) {
+        container.querySelector("#login-help").textContent =
+          "Have your administrator configure at least one login provider";
+      }
+    })
+    .catch(() => {
+      renderButtons(container, allProviders);
+    });
+}

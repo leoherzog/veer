@@ -1,0 +1,20 @@
+# Web Awesome registry token (for npm install)
+WEBAWESOME_NPM_TOKEN=
+
+# Better Auth
+BETTER_AUTH_SECRET=your-secret-min-32-chars-here!!!
+BETTER_AUTH_URL=http://localhost:8787
+
+# Cloudflare (for Analytics Engine SQL API reads)
+CF_ACCOUNT_ID=
+CF_API_TOKEN=
+
+# OAuth providers (configure at least one pair)
+GOOGLE_CLIENT_ID=
+GOOGLE_CLIENT_SECRET=
+GITHUB_CLIENT_ID=
+GITHUB_CLIENT_SECRET=
+MICROSOFT_CLIENT_ID=
+MICROSOFT_CLIENT_SECRET=
+DISCORD_CLIENT_ID=
+DISCORD_CLIENT_SECRET=
