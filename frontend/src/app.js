@@ -14,6 +14,9 @@ import "@web.awesome.me/webawesome-pro/dist/components/radio-group/radio-group.j
 import "@web.awesome.me/webawesome-pro/dist/components/radio/radio.js";
 import "@web.awesome.me/webawesome-pro/dist/components/skeleton/skeleton.js";
 import "@web.awesome.me/webawesome-pro/dist/components/divider/divider.js";
+import "@web.awesome.me/webawesome-pro/dist/components/line-chart/line-chart.js";
+import "@web.awesome.me/webawesome-pro/dist/components/bar-chart/bar-chart.js";
+import "@web.awesome.me/webawesome-pro/dist/components/doughnut-chart/doughnut-chart.js";
 
 import "./styles/app.css";
 

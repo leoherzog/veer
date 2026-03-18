@@ -2,6 +2,7 @@ import { renderLinkForm } from "../components/link-form.js";
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { renderStatsCharts } from "../components/stats-charts.js";
 
 export async function renderLinkDetail(container, { id }) {
   container.innerHTML = `<div style="text-align:center;padding:3rem;"><wa-spinner></wa-spinner></div>`;
@@ -24,7 +25,7 @@ export async function renderLinkDetail(container, { id }) {
   const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
 
   container.innerHTML = `
-    <div class="link-detail-view wa-stack wa-gap-l" style="max-width:700px;margin:2rem auto;">
+    <div class="link-detail-view wa-stack wa-gap-l" style="max-width:900px;margin:2rem auto;">
       <div style="display:flex;justify-content:space-between;align-items:center;">
         <h1>${escapeHtml(link.title || link.slug)}</h1>
         <wa-button variant="danger" appearance="outlined" id="delete-btn">
@@ -50,6 +51,8 @@ export async function renderLinkDetail(container, { id }) {
       <wa-details summary="Edit Link">
         <div id="edit-form"></div>
       </wa-details>
+
+      <div id="stats-container"></div>
     </div>
   `;
 
@@ -72,4 +75,7 @@ export async function renderLinkDetail(container, { id }) {
       showToast("Network error — could not delete link", "danger");
     }
   });
+
+  // Render analytics charts
+  renderStatsCharts(container.querySelector("#stats-container"), link.id);
 }

@@ -11,6 +11,15 @@ interface ClickEvent {
 
 export function writeClickEvent(analytics: AnalyticsEngineDataset, event: ClickEvent): void {
   const cf = (event.request as Request & { cf?: IncomingRequestCfProperties }).cf;
+  // AE blob index schema (must stay in sync with reads in src/routes/api/stats.ts):
+  //   index1 = linkId
+  //   blob1  = slug           (not queried)
+  //   blob2  = country        (geo endpoint)
+  //   blob3  = user-agent     (devices endpoint)
+  //   blob4  = referer        (referrers endpoint)
+  //   blob5  = city           (geo endpoint)
+  //   blob6  = destinationUrl (not queried)
+  //   blob7  = region         (not queried)
   analytics.writeDataPoint({
     indexes: [event.linkId],
     blobs: [
@@ -39,6 +48,9 @@ export async function queryAnalyticsEngine(
     headers: { Authorization: `Bearer ${apiToken}` },
     body: query,
   });
+  if (!resp.ok) {
+    throw new Error(`AE API returned ${resp.status}: ${resp.statusText}`);
+  }
   const result = await resp.json<{ success: boolean; errors?: { message: string }[]; data?: any[]; meta?: any }>();
   if (!result.success) {
     const msg = result.errors?.[0]?.message ?? "Analytics Engine query failed";

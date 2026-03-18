@@ -5,6 +5,7 @@ import { corsMiddleware } from "./middleware/cors";
 import { requireAuth } from "./middleware/auth";
 import authRoutes from "./routes/api/auth";
 import linkRoutes from "./routes/api/links";
+import statsRoutes from "./routes/api/stats";
 import { handleRedirect } from "./routes/redirect";
 
 const app = new Hono<AppEnv>();
@@ -42,6 +43,7 @@ app.route("/api/auth", authRoutes);
 app.use("/api/me", requireAuth);
 app.use("/api/links", requireAuth);
 app.use("/api/links/*", requireAuth);
+app.use("/api/stats/*", requireAuth);
 
 // Current user profile
 app.get("/api/me", async (c) => {
@@ -50,6 +52,7 @@ app.get("/api/me", async (c) => {
 
 // Protected API routes
 app.route("/api/links", linkRoutes);
+app.route("/api/stats", statsRoutes);
 
 // Redirect engine (must come after /api/*), falls through to SPA on miss
 app.get("/:slug", handleRedirect);

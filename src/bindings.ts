@@ -3,9 +3,9 @@
 // Vars are widened from literal types to string since they differ per environment.
 export interface Env extends Omit<Cloudflare.Env, "BETTER_AUTH_URL" | "CF_ACCOUNT_ID"> {
   BETTER_AUTH_URL: string;
-  CF_ACCOUNT_ID: string;
+  CF_ACCOUNT_ID?: string;
   BETTER_AUTH_SECRET: string;
-  CF_API_TOKEN: string;
+  CF_API_TOKEN?: string;
   GOOGLE_CLIENT_ID?: string;
   GOOGLE_CLIENT_SECRET?: string;
   GITHUB_CLIENT_ID?: string;
