@@ -80,6 +80,13 @@ export const links = sqliteTable("links", {
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
   isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
+  expiresAt: integer("expiresAt", { mode: "timestamp" }),
+  maxClicks: integer("maxClicks"),
+  password: text("password"),
+  isInternal: integer("isInternal", { mode: "boolean" }).notNull().default(false),
+  ogTitle: text("ogTitle"),
+  ogDescription: text("ogDescription"),
+  ogImage: text("ogImage"),
 }, (table) => [
   uniqueIndex("idx_links_slug").on(table.slug),
   index("idx_links_userId").on(table.userId),

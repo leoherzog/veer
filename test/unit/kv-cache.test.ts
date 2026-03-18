@@ -14,6 +14,10 @@ describe("KV cache service", () => {
     redirectType: 301,
     linkId: "link-abc",
     isActive: true,
+    expiresAt: null,
+    maxClicks: null,
+    hasPassword: false,
+    isInternal: false,
   };
 
   it("getCachedRedirect returns null for missing key", async () => {
@@ -40,6 +44,10 @@ describe("KV cache service", () => {
       redirectType: 302,
       linkId: "link-xyz",
       isActive: false,
+      expiresAt: null,
+      maxClicks: null,
+      hasPassword: false,
+      isInternal: false,
     };
     await setCachedRedirect(kv, "full-fields", data);
     const result = await getCachedRedirect(kv, "full-fields");

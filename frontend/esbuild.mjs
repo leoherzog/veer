@@ -1,6 +1,6 @@
-import { build } from "esbuild";
+import { build, context } from "esbuild";
 
-await build({
+const options = {
   entryPoints: ["frontend/src/app.js"],
   bundle: true,
   outdir: "public/dist",
@@ -12,4 +12,12 @@ await build({
   loader: {
     ".css": "css",
   },
-});
+};
+
+if (process.argv.includes("--watch")) {
+  const ctx = await context(options);
+  await ctx.watch();
+  console.log("esbuild watching for changes...");
+} else {
+  await build(options);
+}

@@ -72,6 +72,10 @@ describe("Redirect engine – GET /:slug", () => {
         redirectType: 302,
         linkId: "kv-link-1",
         isActive: true,
+        expiresAt: null,
+        maxClicks: null,
+        hasPassword: false,
+        isInternal: false,
       });
 
       const res = await app.request("/kv-hit", {}, env, mockExecutionCtx());
@@ -86,6 +90,10 @@ describe("Redirect engine – GET /:slug", () => {
         redirectType: 302,
         linkId: "kv-link-2",
         isActive: false,
+        expiresAt: null,
+        maxClicks: null,
+        hasPassword: false,
+        isInternal: false,
       });
 
       const res = await app.request("/kv-inactive", {}, env, mockExecutionCtx());

@@ -6,10 +6,10 @@ import { navigate } from "../router.js";
 export function renderDashboard(container) {
   container.innerHTML = `
     <div class="dashboard-view wa-stack wa-gap-l" style="max-width:960px;margin:2rem auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
+      <div class="wa-split">
         <h1>Your Links</h1>
         <wa-button variant="brand" id="new-link-btn">
-          <wa-icon slot="prefix" name="plus"></wa-icon>
+          <wa-icon slot="start" name="plus"></wa-icon>
           New Link
         </wa-button>
       </div>
@@ -18,8 +18,8 @@ export function renderDashboard(container) {
           <div id="create-form"></div>
         </wa-card>
       </div>
-      <wa-input id="search-input" placeholder="Search links..." clearable>
-        <wa-icon slot="prefix" name="magnifying-glass"></wa-icon>
+      <wa-input id="search-input" placeholder="Search links..." with-clear>
+        <wa-icon slot="start" name="magnifying-glass"></wa-icon>
       </wa-input>
       <div id="links-table"></div>
     </div>
@@ -46,7 +46,7 @@ export function renderDashboard(container) {
   });
 
   let debounceTimer;
-  searchInput.addEventListener("wa-input", (e) => {
+  searchInput.addEventListener("input", (e) => {
     clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       searchQuery = e.target.value;

@@ -4,32 +4,66 @@ import { escapeAttr } from "../lib/escape.js";
 
 export function renderNavBar(container, user) {
   container.innerHTML = `
-    <nav class="nav-bar">
-      <div class="nav-left">
-        <a href="/" class="nav-logo" data-link>Veer</a>
-        ${user ? `<a href="/dashboard" class="nav-link" data-link>Dashboard</a>` : ""}
+    <nav class="nav-bar wa-split">
+      <div class="nav-left wa-cluster wa-gap-m">
+        <a href="${user ? "/dashboard" : "/"}" class="nav-logo" data-link>Veer</a>
       </div>
-      <div class="nav-right">
-        <wa-button id="theme-toggle" size="small" variant="neutral" appearance="plain" circle><wa-icon name="circle-half-stroke" label="Toggle theme"></wa-icon></wa-button>
+      <div class="nav-right wa-cluster wa-gap-m">
         ${user
           ? `
-            <wa-avatar id="user-avatar" image="${escapeAttr(user.image || "")}" label="${escapeAttr(user.name)}" style="--size: 2rem;"></wa-avatar>
-            <wa-button size="small" variant="neutral" appearance="outlined" id="logout-btn">Logout</wa-button>
+            <wa-dropdown placement="bottom-end">
+              <wa-button slot="trigger" variant="neutral" appearance="plain" circle>
+                <wa-avatar id="user-avatar" image="${escapeAttr(user.image || "")}" label="${escapeAttr(user.name)}" style="--size: 2rem;"></wa-avatar>
+              </wa-button>
+              <wa-dropdown-item id="theme-toggle">
+                <wa-icon slot="icon" name="circle-half-stroke"></wa-icon>
+                Toggle Theme
+              </wa-dropdown-item>
+              <wa-divider></wa-divider>
+              <wa-dropdown-item id="logout-btn">
+                <wa-icon slot="icon" name="right-from-bracket"></wa-icon>
+                Logout
+              </wa-dropdown-item>
+            </wa-dropdown>
           `
-          : `<wa-button size="small" variant="brand" id="login-btn">Login</wa-button>`
+          : `
+            <wa-button id="theme-toggle" size="small" variant="neutral" appearance="plain" circle><wa-icon name="circle-half-stroke" label="Toggle theme"></wa-icon></wa-button>
+            <wa-button size="small" variant="brand" id="login-btn">Login</wa-button>
+          `
         }
       </div>
     </nav>
   `;
 
-  // Theme toggle
-  container.querySelector("#theme-toggle")?.addEventListener("click", () => {
-    const root = document.documentElement;
-    const isDark = root.classList.contains("wa-dark");
-    root.classList.remove(isDark ? "wa-dark" : "wa-light");
-    root.classList.add(isDark ? "wa-light" : "wa-dark");
-    localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
-  });
+  // Avatar dropdown menu
+  const dropdown = container.querySelector("wa-dropdown");
+  if (dropdown) {
+    dropdown.addEventListener("wa-select", async (e) => {
+      const item = e.detail.item;
+      if (item.id === "theme-toggle") {
+        const root = document.documentElement;
+        const isDark = root.classList.contains("wa-dark");
+        root.classList.remove(isDark ? "wa-dark" : "wa-light");
+        root.classList.add(isDark ? "wa-light" : "wa-dark");
+        localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
+      } else if (item.id === "logout-btn") {
+        await authClient.signOut();
+        history.replaceState(null, "", "/");
+        location.reload();
+      }
+    });
+  }
+
+  // Theme toggle (logged-out state)
+  if (!user) {
+    container.querySelector("#theme-toggle")?.addEventListener("click", () => {
+      const root = document.documentElement;
+      const isDark = root.classList.contains("wa-dark");
+      root.classList.remove(isDark ? "wa-dark" : "wa-light");
+      root.classList.add(isDark ? "wa-light" : "wa-dark");
+      localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
+    });
+  }
 
   // Navigation
   container.querySelectorAll("[data-link]").forEach((el) => {
@@ -40,10 +74,4 @@ export function renderNavBar(container, user) {
   });
 
   container.querySelector("#login-btn")?.addEventListener("click", () => navigate("/login"));
-
-  container.querySelector("#logout-btn")?.addEventListener("click", async () => {
-    await authClient.signOut();
-    history.replaceState(null, "", "/");
-    location.reload();
-  });
 }

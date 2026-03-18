@@ -1,5 +1,6 @@
 // Web Awesome theme and components (bundled by esbuild)
 import "@web.awesome.me/webawesome-pro/dist/styles/themes/matter.css";
+import "@web.awesome.me/webawesome-pro/dist/styles/utilities.css";
 import "@web.awesome.me/webawesome-pro/dist/components/button/button.js";
 import "@web.awesome.me/webawesome-pro/dist/components/icon/icon.js";
 import "@web.awesome.me/webawesome-pro/dist/components/button-group/button-group.js";
@@ -17,6 +18,12 @@ import "@web.awesome.me/webawesome-pro/dist/components/divider/divider.js";
 import "@web.awesome.me/webawesome-pro/dist/components/line-chart/line-chart.js";
 import "@web.awesome.me/webawesome-pro/dist/components/bar-chart/bar-chart.js";
 import "@web.awesome.me/webawesome-pro/dist/components/doughnut-chart/doughnut-chart.js";
+import "@web.awesome.me/webawesome-pro/dist/components/switch/switch.js";
+import "@web.awesome.me/webawesome-pro/dist/components/textarea/textarea.js";
+import "@web.awesome.me/webawesome-pro/dist/components/qr-code/qr-code.js";
+import "@web.awesome.me/webawesome-pro/dist/components/badge/badge.js";
+import "@web.awesome.me/webawesome-pro/dist/components/dropdown/dropdown.js";
+import "@web.awesome.me/webawesome-pro/dist/components/dropdown-item/dropdown-item.js";
 
 import "./styles/app.css";
 

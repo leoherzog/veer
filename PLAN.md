@@ -173,9 +173,10 @@ The theme CSS is imported via esbuild from npm. The `<html>` element receives bo
 <html class="wa-theme-matter wa-palette-mild wa-light" lang="en">
 ```
 
-**Theme import** (in `frontend/src/app.js`, bundled by esbuild):
+**Theme + utilities import** (in `frontend/src/app.js`, bundled by esbuild):
 ```js
 import '@web.awesome.me/webawesome-pro/dist/styles/themes/matter.css';
+import '@web.awesome.me/webawesome-pro/dist/styles/utilities.css'; // layout (wa-stack, wa-split, wa-cluster, wa-grid, wa-flank, wa-frame), gap, align-items, border-radius, text
 ```
 
 The `matter.css` file automatically imports the Mild palette and loads fonts from `fonts.bunny.net`:
@@ -246,7 +247,7 @@ A toggle button in the nav bar swaps the class and saves the preference. This is
 | GET | `/api/links` | Yes | List user's links (`?page=&limit=&q=`) |
 | POST | `/api/links` | Yes | Create link `{destinationUrl, slug, redirectType?, title?}` (slug required) |
 | GET | `/api/links/:id` | Yes | Get link details + total clicks |
-| PUT | `/api/links/:id` | Yes | Update link (destination, slug, redirectType, title) |
+| PUT | `/api/links/:id` | Yes | Update link (destination, redirectType, title — slug is immutable) |
 | PATCH | `/api/links/:id/active` | Yes | Toggle `isActive` (invalidates/repopulates KV) |
 | DELETE | `/api/links/:id` | Yes | Delete link + purge KV |
 | GET | `/api/me` | Yes | Current user profile |
@@ -519,7 +520,7 @@ Top countries as a vertical bar chart, with optional drill-down to cities.
 ### Key Changes
 - `redirect.ts` - Check expiration, click limits, password, internal flags before redirecting
 - `frontend/src/components/link-form.js` - Add expiration, password, internal toggle fields
-- New `frontend/src/components/qr-code.js` using `wa-qr-code` with PNG/SVG download
+- New `frontend/src/components/qr-code.js` using `wa-qr-code` with PNG download
 - Password gate page served inline when password-protected link is visited
 
 ### Verification
@@ -527,7 +528,55 @@ Top countries as a vertical bar chart, with optional drill-down to cities.
 - maxClicks link stops redirecting after threshold
 - Password-protected link shows form, correct password redirects
 - Internal link requires auth
-- QR code renders and downloads as PNG/SVG
+- QR code renders and downloads as PNG
+
+### Implementation Notes
+
+**Implemented 2026-03-18. All M3 files complete.**
+
+#### Files created
+- `drizzle/migrations/0001_link_features.sql` — 7 ALTER TABLE statements for new columns
+- `src/services/password.ts` — PBKDF2-SHA256 (100k iterations, 16-byte salt) hash/verify using Web Crypto API
+- `frontend/src/components/qr-code.js` — `<wa-qr-code>` wrapper with PNG download button (Canvas-based, no SVG export)
+
+#### Files modified
+- `src/db/schema.ts` — Added 7 columns to `links`: expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage
+- `src/services/kv-cache.ts` — Exported `CachedRedirect` interface, added expiresAt, maxClicks, hasPassword, isInternal, ogTitle, ogDescription, ogImage fields
+- `src/lib/errors.ts` — Added trailing newline (no new helpers; forbidden/gone responses are inline HTML in `redirect.ts`)
+- `src/routes/redirect.ts` — Refactored into resolveSlug/checkConstraints/trackClick helpers. Added: expiration check (410 HTML), password gate (inline HTML form with dark mode), internal link auth check (403), max clicks check (D1 query). New `handleRedirectPost` for password form submission.
+- `src/routes/api/links.ts` — All CRUD endpoints handle new fields. Password hashed on create/update, stripped to `hasPassword: boolean` in responses. New `checkPassword` export (public JSON endpoint). Slug is immutable after creation (PUT handler ignores slug field).
+- `src/index.ts` — Mounted `POST /api/links/:id/check-password` before auth middleware (public). Added `POST /:slug` for password gate form.
+- `frontend/src/app.js` — Registered WA components: switch, textarea, qr-code, badge, dropdown, dropdown-item. Also imported `utilities.css`.
+- `frontend/src/components/link-form.js` — Advanced Options collapsible with: expiration datetime, max clicks, password (with touch tracking for edit), internal toggle, OG title/description/image
+- `frontend/src/views/link-detail.js` — Badges (Expired/Expires, Password Protected, Internal), click limit display, OG social preview card, QR code section, Edit button toggle
+- `frontend/src/views/login.js` — Single-provider auto-redirect, fixed `slot="prefix"` → `slot="start"` on icons
+- `frontend/src/views/dashboard.js` — Fixed `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input` → `input` event, inline flex → `wa-split`
+- `frontend/src/views/home.js` — Authenticated users redirect straight to `/dashboard` instead of showing create form on home
+- `frontend/src/components/nav-bar.js` — Replaced inline nav with `wa-split`/`wa-cluster`, added avatar dropdown menu (wa-dropdown) for logged-in users
+- `frontend/src/components/toast.js` — Rewritten to use persistent `<wa-toast>` container with `.create()` API instead of per-notification elements
+- `frontend/src/components/stats-charts.js` — Fixed `--wa-color-neutral-500` → `--wa-color-text-subdued`, `wa-change` → `change` event, inline flex → `wa-split`
+- `frontend/src/components/link-table.js` — Used `wa-align-items-center` instead of inline `text-align:center`
+- `frontend/src/styles/app.css` — Removed custom flex rules replaced by WA utility classes (`wa-split`, `wa-cluster`, `wa-stack`)
+- `frontend/esbuild.mjs` — Added `--watch` flag support for dev mode
+- `package.json` — `dev` script runs esbuild watch + auto-applies D1 migrations; `db:migrate:local` uses `wrangler d1 migrations apply`
+- `wrangler.jsonc` — Added `migrations_dir` to D1 binding
+- `test/integration/redirect.test.ts` — Updated KV test data to include new M3 `CachedRedirect` fields
+- `test/unit/kv-cache.test.ts` — Updated test data to include new M3 `CachedRedirect` fields
+
+#### Design decisions
+- **Single-provider auto-redirect**: When exactly one OAuth provider is configured and passkey is disabled, the login view skips rendering buttons and immediately calls `authClient.signIn.social()` to redirect to that provider. Shows "Redirecting to {name}…" while the redirect initiates. Multiple providers or passkey enabled still show the full login page.
+- **Password gate**: Self-contained HTML page (no SPA/WA deps) with inline CSS, `prefers-color-scheme` dark mode, standard form POST to `/:slug`
+- **KV cache stores `hasPassword: boolean`** not the actual hash — password verification always hits D1
+- **maxClicks always queries D1** for accurate count (can't rely on cached click counts)
+- **Internal link check** uses `getAuth(env).api.getSession()` directly in redirect handler
+- **Password field in form** tracks "touched" state to avoid sending empty password on edit (which would clear it)
+- **Slug is immutable** — PUT endpoint does not accept slug changes; frontend disables slug field when editing
+- **WA convention fixes across M1/M2 files** — `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input`/`wa-change` → `input`/`change` events, `--wa-color-neutral-*` → `--wa-color-text-subdued`, inline flex → WA utility classes (`wa-split`, `wa-cluster`), `<wa-toast>` rewritten to persistent container pattern
+- **Home view simplified** — Authenticated users redirect to `/dashboard`; home is landing page only
+- **Nav bar avatar dropdown** — Logged-in users get a `wa-dropdown` menu under their avatar (theme toggle + logout) instead of separate buttons
+
+#### WA components registered in `app.js` (cumulative)
+button, icon, button-group, input, card, details, avatar, spinner, toast, copy-button, radio-group, radio, skeleton, divider, line-chart, bar-chart, doughnut-chart, switch, textarea, qr-code, badge, dropdown, dropdown-item
 
 ---
 
@@ -701,6 +750,101 @@ The component also includes a "Copy Link" button using `wa-copy-button` for the 
 | `0004_api_keys.sql` | M6 | api_keys, public_reports |
 | `0005_teams.sql` | M7 | teams, team_members, team_invites, ALTER links/user |
 | `0006_ab_testing.sql` | M8 | ab_tests, ab_variants |
+
+## Frontend Conventions (Web Awesome Pro)
+
+**IMPORTANT: All frontend code MUST be verified against the `webawesome` skill before considering a milestone complete.**
+
+### Component API
+
+- **Slots**: Use `start` / `end`, NOT `prefix` / `suffix`. The old Shoelace names do not exist in WA.
+  ```html
+  <!-- CORRECT -->
+  <wa-button><wa-icon slot="start" name="plus"></wa-icon> Create</wa-button>
+  <!-- WRONG -->
+  <wa-button><wa-icon slot="prefix" name="plus"></wa-icon> Create</wa-button>
+  ```
+
+- **Attributes**: WA renamed several attributes from their Shoelace origins:
+  | Wrong (Shoelace) | Correct (WA) |
+  |------------------|--------------|
+  | `help-text` | `hint` |
+  | `clearable` | `with-clear` |
+
+- **`<wa-toast>`**: Is a **container**, not an individual notification. Create ONE persistent `<wa-toast>` element in the DOM and call `.create(message, { variant, duration })` on it. Never create/destroy toast elements per notification.
+
+- **`<wa-qr-code>`**: Renders via the **Canvas API**, not SVG. To export, query `shadowRoot.querySelector("canvas")` and use `canvas.toDataURL()`. There is no SVG to extract.
+
+### Event Names
+
+WA components emit **standard DOM event names** (`input`, `change`, `focus`, `blur`) — NOT `wa-`-prefixed versions of those. The `wa-` prefix is only used for component-specific events that have no DOM equivalent.
+
+| Component | Standard events | WA-specific events |
+|-----------|----------------|-------------------|
+| `wa-input` | `input`, `change`, `focus`, `blur` | `wa-clear`, `wa-invalid` |
+| `wa-select` | `input`, `change`, `focus`, `blur` | `wa-clear`, `wa-invalid` |
+| `wa-switch` | `input`, `change`, `focus`, `blur` | `wa-invalid` |
+| `wa-radio-group` | `change` | — |
+| `wa-dialog` | — | `wa-show`, `wa-hide`, `wa-after-show`, `wa-after-hide` |
+| `wa-details` | — | `wa-show`, `wa-hide`, `wa-after-show`, `wa-after-hide` |
+
+### Design Tokens
+
+Use **semantic** tokens, not numeric palette tokens. Numeric tokens (e.g. `--wa-color-neutral-300`) may not exist in all themes/palettes or may not adapt to dark mode.
+
+| Wrong | Correct |
+|-------|---------|
+| `--wa-color-neutral-300` | `--wa-color-border-default` |
+| `--wa-color-neutral-500` | `--wa-color-text-subdued` |
+| `--wa-color-neutral-600` | `--wa-color-text-subdued` |
+
+### Layout Utility Classes
+
+Use WA's built-in layout utilities instead of inline flex/grid styles or custom CSS rules:
+
+| Inline style | WA utility class |
+|-------------|-----------------|
+| `display:flex; justify-content:space-between; align-items:center;` | `wa-split` |
+| `display:flex; align-items:center; gap:*;` | `wa-cluster wa-gap-{size}` |
+| `display:flex; flex-direction:column; gap:*;` | `wa-stack wa-gap-{size}` |
+| `display:grid; grid-template-columns:*; gap:*;` | `wa-grid wa-gap-{size}` |
+
+Gap sizes: `wa-gap-3xs`, `wa-gap-2xs`, `wa-gap-xs`, `wa-gap-s`, `wa-gap-m`, `wa-gap-l`, `wa-gap-xl`, `wa-gap-2xl`, `wa-gap-3xl`.
+
+Only use custom CSS when a layout genuinely has no WA utility equivalent.
+
+---
+
+## Backend Conventions (Cloudflare Workers)
+
+**IMPORTANT: All backend code MUST be verified against the `wrangler` and `workers-best-practices` skills before considering a milestone complete.**
+
+### Security
+
+- **Rate-limit all public endpoints** that accept user input (password checks, login attempts, etc.). Use KV-based rate limiting with key format `ratelimit:{type}:{ip}` and `expirationTtl` for auto-cleanup.
+- **Never leak protected data in API responses.** If a resource is gated (e.g. password-protected links), API responses must not include the gated payload (e.g. `destinationUrl`). Return only validation results; let the client follow the normal access path.
+- **HTML-escape all interpolated values** in server-generated HTML pages (password gate, error pages, OG meta pages).
+- **Bot/crawler detection**: When links carry OG metadata, serve an HTML page with `<meta property="og:*">` tags to known bot user-agents (facebookexternalhit, Twitterbot, LinkedInBot, Discordbot, etc.) and a `<meta http-equiv="refresh">` fallback redirect.
+
+### D1 / Drizzle
+
+- **Use Drizzle's types for update objects**: `Partial<typeof table.$inferInsert>`, not `Record<string, ...>`.
+- **Extract shared validation helpers** when the same parsing/validation logic appears in both create and update handlers.
+- **Atomic operations**: Where check-then-act patterns span multiple tables (e.g. maxClicks check vs stats increment), document whether the cap is soft or hard. Prefer atomic D1 queries (single UPDATE with WHERE) where possible.
+
+### KV Cache
+
+- **Write-through on create/update**, delete on deactivate/delete.
+- API handler KV writes use `await` (consistency before response). Redirect handler KV writes use `waitUntil` (non-blocking).
+- Cache only what the redirect path needs. Never cache secrets (password hashes). Use boolean flags (e.g. `hasPassword`) instead.
+
+### Workers Patterns
+
+- `AnalyticsEngineDataset.writeDataPoint()` is synchronous — do NOT wrap in `waitUntil`.
+- D1 writes in the redirect hot path MUST use `c.executionCtx.waitUntil()` to avoid blocking the redirect response.
+- Avoid constructing expensive objects (like Better Auth instances) in hot paths when a lighter check would suffice.
+
+---
 
 ## Workers Configuration Requirements
 

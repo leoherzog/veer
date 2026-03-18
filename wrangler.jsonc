@@ -13,7 +13,8 @@
     {
       "binding": "DB",
       "database_name": "veer-db",
-      "database_id": "placeholder-replace-after-create"
+      "database_id": "placeholder-replace-after-create",
+      "migrations_dir": "drizzle/migrations"
     }
   ],
   "kv_namespaces": [

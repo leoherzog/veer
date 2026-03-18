@@ -5,7 +5,7 @@ import { renderStatsGeo } from "./stats-geo.js";
 import { renderStatsReferrers } from "./stats-referrers.js";
 
 function summaryCard(label, value) {
-  return `<wa-card><div style="text-align:center;"><div class="wa-caption-s" style="color:var(--wa-color-neutral-500);">${label}</div><div class="wa-heading-xl">${value}</div></div></wa-card>`;
+  return `<wa-card><div style="text-align:center;"><div class="wa-caption-s" style="color:var(--wa-color-text-subdued);">${label}</div><div class="wa-heading-xl">${value}</div></div></wa-card>`;
 }
 
 async function loadSummary(container, linkId, days) {
@@ -14,12 +14,12 @@ async function loadSummary(container, linkId, days) {
   try {
     const { data } = await fetchJSON(`/api/stats/${linkId}/summary?days=${days}`);
     el.innerHTML =
-      summaryCard("Total Clicks", data.totalClicks ?? 0) +
+      summaryCard("Clicks", data.totalClicks ?? 0) +
       summaryCard("Unique UAs", data.uniqueUserAgents ?? 0) +
       summaryCard("Top Country", data.topCountry ? escapeHtml(data.topCountry) : "—") +
       summaryCard("Top Referrer", data.topReferrer ? escapeHtml(data.topReferrer) : "—");
   } catch {
-    el.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--wa-color-neutral-500);">Failed to load summary</div>`;
+    el.innerHTML = `<div style="grid-column:1/-1;text-align:center;color:var(--wa-color-text-subdued);">Failed to load summary</div>`;
   }
 }
 
@@ -53,7 +53,7 @@ async function loadTimeline(container, linkId, days) {
       },
     };
   } catch {
-    wrap.innerHTML = `<div style="text-align:center;padding:2rem;color:var(--wa-color-neutral-500);">Failed to load timeline</div>`;
+    wrap.innerHTML = `<div style="text-align:center;padding:2rem;color:var(--wa-color-text-subdued);">Failed to load timeline</div>`;
   }
 }
 
@@ -70,15 +70,12 @@ async function loadAll(container, linkId, days) {
 export async function renderStatsCharts(container, linkId) {
   container.innerHTML = `
     <div class="stats-section wa-stack wa-gap-l">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <h2>Analytics</h2>
-        <wa-radio-group id="period-selector" value="30" label="Time period">
-          <wa-radio value="1">24h</wa-radio>
-          <wa-radio value="7">7d</wa-radio>
-          <wa-radio value="30">30d</wa-radio>
-          <wa-radio value="90">90d</wa-radio>
-        </wa-radio-group>
-      </div>
+      <wa-radio-group id="period-selector" value="30" label="Time period" orientation="horizontal">
+        <wa-radio value="1">24h</wa-radio>
+        <wa-radio value="7">7d</wa-radio>
+        <wa-radio value="30">30d</wa-radio>
+        <wa-radio value="90">90d</wa-radio>
+      </wa-radio-group>
 
       <div id="stats-summary" class="wa-grid" style="--min-column-size:150px;"></div>
 
@@ -99,7 +96,7 @@ export async function renderStatsCharts(container, linkId) {
 
   await loadAll(container, linkId, 30);
 
-  periodGroup.addEventListener("wa-change", async () => {
+  periodGroup.addEventListener("change", async () => {
     const days = parseInt(periodGroup.value, 10);
     await loadAll(container, linkId, days);
   });

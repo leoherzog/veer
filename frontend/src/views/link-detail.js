@@ -1,8 +1,51 @@
 import { renderLinkForm } from "../components/link-form.js";
+import { renderQrCode } from "../components/qr-code.js";
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
+
+function buildBadges(link) {
+  const badges = [];
+
+  if (link.expiresAt) {
+    const expired = new Date(link.expiresAt) < new Date();
+    if (expired) {
+      badges.push(`<wa-badge variant="danger" pill>Expired</wa-badge>`);
+    } else {
+      badges.push(`<wa-badge variant="warning" pill>Expires ${new Date(link.expiresAt).toLocaleString()}</wa-badge>`);
+    }
+  }
+
+  if (link.hasPassword) {
+    badges.push(`<wa-badge variant="brand" pill>Password Protected</wa-badge>`);
+  }
+
+  if (link.isInternal) {
+    badges.push(`<wa-badge variant="neutral" pill>Internal</wa-badge>`);
+  }
+
+  return badges.join(" ");
+}
+
+function buildOgPreview(link) {
+  if (!link.ogTitle && !link.ogDescription && !link.ogImage) return "";
+  const safeOgImage = link.ogImage && /^https?:\/\//.test(link.ogImage) ? link.ogImage : null;
+  return `
+    <wa-card>
+      <div class="wa-stack wa-gap-s">
+        <h3>Social Preview</h3>
+        <div style="border:1px solid var(--wa-color-border-default);border-radius:var(--wa-border-radius-medium);overflow:hidden;">
+          ${safeOgImage ? `<img src="${escapeAttr(safeOgImage)}" alt="OG preview" style="width:100%;max-height:200px;object-fit:cover;">` : ""}
+          <div style="padding:0.75rem;">
+            ${link.ogTitle ? `<div style="font-weight:600;">${escapeHtml(link.ogTitle)}</div>` : ""}
+            ${link.ogDescription ? `<div style="color:var(--wa-color-text-subdued);font-size:0.875rem;margin-top:0.25rem;">${escapeHtml(link.ogDescription)}</div>` : ""}
+          </div>
+        </div>
+      </div>
+    </wa-card>
+  `;
+}
 
 export async function renderLinkDetail(container, { id }) {
   container.innerHTML = `<div style="text-align:center;padding:3rem;"><wa-spinner></wa-spinner></div>`;
@@ -23,42 +66,70 @@ export async function renderLinkDetail(container, { id }) {
   }
   const shortUrl = `${location.origin}/${link.slug}`;
   const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
+  const badges = buildBadges(link);
+  const maxClicksInfo = link.maxClicks != null
+    ? `<div><strong>Click Limit:</strong> ${link.totalClicks} / ${link.maxClicks}</div>`
+    : "";
 
   container.innerHTML = `
     <div class="link-detail-view wa-stack wa-gap-l" style="max-width:900px;margin:2rem auto;">
-      <div style="display:flex;justify-content:space-between;align-items:center;">
-        <h1>${escapeHtml(link.title || link.slug)}</h1>
-        <wa-button variant="danger" appearance="outlined" id="delete-btn">
-          <wa-icon slot="prefix" name="trash"></wa-icon>
-          Delete
-        </wa-button>
+      <div class="wa-split">
+        <h1>/${escapeHtml(link.slug)}</h1>
+        <div class="wa-cluster wa-gap-xs">
+          <wa-button variant="brand" id="edit-link-btn">
+            <wa-icon slot="start" name="pen-to-square"></wa-icon>
+            Edit
+          </wa-button>
+          <wa-button variant="danger" appearance="outlined" id="delete-btn">
+            <wa-icon slot="start" name="trash"></wa-icon>
+            Delete
+          </wa-button>
+        </div>
       </div>
 
       <wa-card>
-        <div class="wa-stack wa-gap-s">
-          <div style="display:flex;align-items:center;gap:0.5rem;">
-            <strong>Short URL:</strong>
-            <a href="${escapeAttr(shortUrl)}" target="_blank" rel="noopener">${escapeHtml(shortUrl)}</a>
-            <wa-copy-button value="${escapeAttr(shortUrl)}"></wa-copy-button>
+        <div class="wa-flank:end wa-gap-l wa-align-items-start">
+          <div class="wa-stack wa-gap-s">
+            <div class="wa-cluster wa-gap-2xs">
+              <strong>Short URL:</strong>
+              <a href="${escapeAttr(shortUrl)}" target="_blank" rel="noopener">${escapeHtml(shortUrl)}</a>
+              <wa-copy-button value="${escapeAttr(shortUrl)}"></wa-copy-button>
+            </div>
+            <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
+            <div><strong>Lifetime Clicks:</strong> ${link.totalClicks}</div>
+            ${maxClicksInfo}
+            <div><strong>Created:</strong> ${new Date(link.createdAt).toLocaleString()}</div>
+            ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:0.25rem;">${badges}</div>` : ""}
           </div>
-          <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
-          <div><strong>Redirect:</strong> ${link.redirectType}</div>
-          <div><strong>Total Clicks:</strong> ${link.totalClicks}</div>
-          <div><strong>Created:</strong> ${new Date(link.createdAt).toLocaleString()}</div>
+          <div id="qr-container"></div>
         </div>
       </wa-card>
 
-      <wa-details summary="Edit Link">
-        <div id="edit-form"></div>
-      </wa-details>
+      ${buildOgPreview(link)}
 
-      <div id="stats-container"></div>
+      <div id="edit-section" style="display:none;">
+        <wa-card>
+          <div id="edit-form"></div>
+        </wa-card>
+      </div>
+
+      ${link.totalClicks > 0 ? '<div id="stats-container"></div>' : ''}
     </div>
   `;
 
-  renderLinkForm(container.querySelector("#edit-form"), {
-    link,
-    onSuccess: () => renderLinkDetail(container, { id }),
+  renderQrCode(container.querySelector("#qr-container"), shortUrl);
+
+  const editSection = container.querySelector("#edit-section");
+  const editBtn = container.querySelector("#edit-link-btn");
+  editBtn.addEventListener("click", () => {
+    const visible = editSection.style.display !== "none";
+    editSection.style.display = visible ? "none" : "block";
+    if (!visible) {
+      renderLinkForm(container.querySelector("#edit-form"), {
+        link,
+        onSuccess: () => renderLinkDetail(container, { id }),
+      });
+    }
   });
 
   container.querySelector("#delete-btn").addEventListener("click", async () => {
@@ -76,6 +147,7 @@ export async function renderLinkDetail(container, { id }) {
     }
   });
 
-  // Render analytics charts
-  renderStatsCharts(container.querySelector("#stats-container"), link.id);
+  // Render analytics charts (only if link has clicks)
+  const statsEl = container.querySelector("#stats-container");
+  if (statsEl) renderStatsCharts(statsEl, link.id);
 }

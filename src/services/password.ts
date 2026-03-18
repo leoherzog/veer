@@ -1,0 +1,49 @@
+const ITERATIONS = 100_000;
+const KEY_LENGTH = 32;
+
+function toHex(buffer: ArrayBuffer): string {
+  return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+function fromHex(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < hex.length; i += 2) {
+    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  }
+  return bytes;
+}
+
+async function deriveKey(plain: string, salt: Uint8Array): Promise<ArrayBuffer> {
+  const encoder = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(plain),
+    "PBKDF2",
+    false,
+    ["deriveBits"],
+  );
+  return crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt, iterations: ITERATIONS, hash: "SHA-256" },
+    keyMaterial,
+    KEY_LENGTH * 8,
+  );
+}
+
+export async function hashPassword(plain: string): Promise<string> {
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const hash = await deriveKey(plain, salt);
+  return `${toHex(salt.buffer)}:${toHex(hash)}`;
+}
+
+export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
+  const [saltHex, hashHex] = stored.split(":");
+  const salt = fromHex(saltHex);
+  const expected = fromHex(hashHex);
+  const derived = new Uint8Array(await deriveKey(plain, salt));
+  if (derived.length !== expected.length) return false;
+  let match = 0;
+  for (let i = 0; i < derived.length; i++) {
+    match |= derived[i] ^ expected[i];
+  }
+  return match === 0;
+}

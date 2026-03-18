@@ -3,7 +3,7 @@ import { escapeAttr, escapeHtml } from "../lib/escape.js";
 
 export function renderLinkTable(container, { links, pagination, onPageChange }) {
   if (!links.length) {
-    container.innerHTML = `<div class="wa-stack wa-gap-m" style="text-align:center; padding: 3rem;">
+    container.innerHTML = `<div class="wa-stack wa-gap-m wa-align-items-center" style="padding: 3rem;">
       <wa-icon name="link-slash" style="font-size: 2rem; opacity: 0.5;"></wa-icon>
       <p>No links yet. Create your first short link above.</p>
     </div>`;

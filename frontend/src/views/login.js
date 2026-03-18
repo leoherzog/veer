@@ -17,7 +17,7 @@ function renderButtons(container, providers) {
 
   wrapper.innerHTML = providers.map((p) => `
     <wa-button variant="neutral" appearance="outlined" size="large" style="width:100%;" data-provider="${p.id}">
-      <wa-icon slot="prefix" name="${p.icon}" family="brands" label="${p.name}"></wa-icon>
+      <wa-icon slot="start" name="${p.icon}" family="brands" label="${p.name}"></wa-icon>
       Continue with ${p.name}
     </wa-button>
   `).join("");
@@ -74,7 +74,7 @@ export function renderLogin(container) {
       <div id="passkey-section" style="display:none;">
         <wa-divider></wa-divider>
         <wa-button id="passkey-signin" variant="brand" size="large" style="width:100%;">
-          <wa-icon slot="prefix" name="key" label="Passkey"></wa-icon>
+          <wa-icon slot="start" name="key" label="Passkey"></wa-icon>
           Sign in with passkey
         </wa-button>
       </div>
@@ -85,6 +85,19 @@ export function renderLogin(container) {
     .then((r) => r.json())
     .then(({ providers: ids, passkey }) => {
       const providers = allProviders.filter((p) => ids.includes(p.id));
+
+      // Single provider, no passkey — skip login page and redirect immediately
+      if (providers.length === 1 && !passkey) {
+        authClient.signIn.social({
+          provider: providers[0].id,
+          callbackURL: "/dashboard",
+        });
+        container.querySelector("#login-help").textContent =
+          `Redirecting to ${providers[0].name}…`;
+        container.querySelector("#provider-buttons").innerHTML = "";
+        return;
+      }
+
       renderButtons(container, providers);
       renderPasskeyButton(container, passkey);
       if (!providers.length && !passkey) {

@@ -1,8 +1,15 @@
-interface CachedRedirect {
+export interface CachedRedirect {
   url: string;
   redirectType: number;
   linkId: string;
   isActive: boolean;
+  expiresAt: number | null;
+  maxClicks: number | null;
+  hasPassword: boolean;
+  isInternal: boolean;
+  ogTitle: string | null;
+  ogDescription: string | null;
+  ogImage: string | null;
 }
 
 export async function getCachedRedirect(kv: KVNamespace, slug: string): Promise<CachedRedirect | null> {

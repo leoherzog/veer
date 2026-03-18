@@ -3,12 +3,12 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "dev": "npm run build:frontend && wrangler dev",
+    "dev": "npm run build:frontend && wrangler d1 migrations apply veer-db --local && node frontend/esbuild.mjs --watch & wrangler dev",
     "build:frontend": "node frontend/esbuild.mjs",
     "build": "npm run build:frontend",
     "deploy": "npm run build && wrangler deploy",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 execute veer-db --local --file drizzle/migrations/0000_initial.sql",
+    "db:migrate:local": "wrangler d1 migrations apply veer-db --local",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

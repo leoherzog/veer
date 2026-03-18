@@ -4,9 +4,9 @@ import type { AppEnv } from "./types";
 import { corsMiddleware } from "./middleware/cors";
 import { requireAuth } from "./middleware/auth";
 import authRoutes from "./routes/api/auth";
-import linkRoutes from "./routes/api/links";
+import linkRoutes, { checkPassword } from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
-import { handleRedirect } from "./routes/redirect";
+import { handleRedirect, handleRedirectPost } from "./routes/redirect";
 
 const app = new Hono<AppEnv>();
 
@@ -39,6 +39,9 @@ app.use("/api/*", corsMiddleware);
 // Auth routes (no auth middleware - handles its own)
 app.route("/api/auth", authRoutes);
 
+// Public API endpoint: password check (no auth required)
+app.post("/api/links/:id/check-password", checkPassword);
+
 // Auth middleware for protected API routes (excludes /api/auth/*)
 app.use("/api/me", requireAuth);
 app.use("/api/links", requireAuth);
@@ -56,6 +59,7 @@ app.route("/api/stats", statsRoutes);
 
 // Redirect engine (must come after /api/*), falls through to SPA on miss
 app.get("/:slug", handleRedirect);
+app.post("/:slug", handleRedirectPost);
 
 // SPA fallback - serve static asset if it exists, otherwise index.html
 app.all("*", async (c) => {

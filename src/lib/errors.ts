@@ -11,3 +11,4 @@ export function notFound(message = "Not found"): HTTPException {
 export function conflict(message: string): HTTPException {
   return new HTTPException(409, { message });
 }
+
