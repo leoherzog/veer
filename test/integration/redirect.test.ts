@@ -76,6 +76,11 @@ describe("Redirect engine – GET /:slug", () => {
         maxClicks: null,
         hasPassword: false,
         isInternal: false,
+        ogTitle: null,
+        ogDescription: null,
+        ogImage: null,
+        paramForwarding: false,
+        targets: null,
       });
 
       const res = await app.request("/kv-hit", {}, env, mockExecutionCtx());
@@ -94,6 +99,11 @@ describe("Redirect engine – GET /:slug", () => {
         maxClicks: null,
         hasPassword: false,
         isInternal: false,
+        ogTitle: null,
+        ogDescription: null,
+        ogImage: null,
+        paramForwarding: false,
+        targets: null,
       });
 
       const res = await app.request("/kv-inactive", {}, env, mockExecutionCtx());

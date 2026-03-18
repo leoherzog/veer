@@ -1,14 +1,7 @@
 import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
+import { createChart, destroyChart } from "../lib/chart-helper.js";
 
-function setDoughnutConfig(chart, items) {
-  if (!chart) return;
-  chart.config = {
-    data: {
-      labels: items.map((i) => i.name),
-      datasets: [{ label: "Clicks", data: items.map((i) => i.clicks) }],
-    },
-  };
-}
+let charts = [];
 
 export async function renderStatsDevices(container, linkId, days = 30) {
   container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Devices &amp; Browsers</h3>${SKELETON}</div></wa-card>`;
@@ -21,22 +14,36 @@ export async function renderStatsDevices(container, linkId, days = 30) {
     const devices = data.devices ?? [];
 
     const nd = noData();
+    charts.forEach(destroyChart);
+    charts = [];
+
     container.innerHTML = `
       <wa-card>
         <div class="wa-stack wa-gap-m">
           <h3>Devices &amp; Browsers</h3>
           <div class="wa-grid" style="--min-column-size:200px;">
-            <div>${browsers.length ? `<wa-doughnut-chart id="browsers-chart" legend-position="bottom" label="Browser Breakdown" description="Click distribution across browsers"></wa-doughnut-chart>` : nd}</div>
-            <div>${os.length ? `<wa-doughnut-chart id="os-chart" legend-position="bottom" label="OS Breakdown" description="Click distribution across operating systems"></wa-doughnut-chart>` : nd}</div>
-            <div>${devices.length ? `<wa-doughnut-chart id="device-chart" legend-position="bottom" label="Device Type" description="Click distribution across device types"></wa-doughnut-chart>` : nd}</div>
+            <div>${browsers.length ? `<canvas id="browsers-chart" style="height:200px;"></canvas>` : nd}</div>
+            <div>${os.length ? `<canvas id="os-chart" style="height:200px;"></canvas>` : nd}</div>
+            <div>${devices.length ? `<canvas id="device-chart" style="height:200px;"></canvas>` : nd}</div>
           </div>
         </div>
       </wa-card>
     `;
 
-    setDoughnutConfig(container.querySelector("#browsers-chart"), browsers);
-    setDoughnutConfig(container.querySelector("#os-chart"), os);
-    setDoughnutConfig(container.querySelector("#device-chart"), devices);
+    function makeDoughnut(id, items) {
+      const canvas = container.querySelector(`#${id}`);
+      if (!canvas || !items.length) return;
+      charts.push(createChart(canvas, "doughnut", {
+        data: {
+          labels: items.map((i) => i.name),
+          datasets: [{ label: "Clicks", data: items.map((i) => i.clicks) }],
+        },
+      }));
+    }
+
+    makeDoughnut("browsers-chart", browsers);
+    makeDoughnut("os-chart", os);
+    makeDoughnut("device-chart", devices);
   } catch {
     container.innerHTML = `<wa-card>${noData("Failed to load device data")}</wa-card>`;
   }

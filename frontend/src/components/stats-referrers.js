@@ -1,4 +1,7 @@
 import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
+import { createChart, destroyChart } from "../lib/chart-helper.js";
+
+let chart;
 
 export async function renderStatsReferrers(container, linkId, days = 30) {
   container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Top Referrers</h3>${SKELETON}</div></wa-card>`;
@@ -12,25 +15,25 @@ export async function renderStatsReferrers(container, linkId, days = 30) {
       return;
     }
 
+    destroyChart(chart);
     container.innerHTML = `
       <wa-card>
         <div class="wa-stack wa-gap-m">
           <h3>Top Referrers</h3>
-          <wa-bar-chart id="referrers-chart" orientation="horizontal" without-legend
-            label="Top Referrers" description="Horizontal bar chart showing top traffic sources">
-          </wa-bar-chart>
+          <canvas id="referrers-chart" style="height:200px;"></canvas>
         </div>
       </wa-card>
     `;
 
-    const chart = container.querySelector("#referrers-chart");
-    if (chart) {
-      chart.config = {
+    const canvas = container.querySelector("#referrers-chart");
+    if (canvas) {
+      chart = createChart(canvas, "bar", {
         data: {
           labels: referrers.map((r) => r.source),
           datasets: [{ label: "Clicks", data: referrers.map((r) => r.clicks) }],
         },
-      };
+        options: { indexAxis: "y" },
+      });
     }
   } catch {
     container.innerHTML = `<wa-card>${noData("Failed to load referrer data")}</wa-card>`;

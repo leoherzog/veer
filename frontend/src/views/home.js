@@ -2,7 +2,7 @@ import { navigate } from "../router.js";
 
 export function renderHome(container, user) {
   if (user) {
-    navigate("/dashboard");
+    navigate("/links");
     return;
   }
 

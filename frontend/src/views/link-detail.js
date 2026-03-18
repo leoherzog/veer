@@ -25,6 +25,14 @@ function buildBadges(link) {
     badges.push(`<wa-badge variant="neutral" pill>Internal</wa-badge>`);
   }
 
+  if (link.paramForwarding) {
+    badges.push(`<wa-badge variant="neutral" pill>Param Forwarding</wa-badge>`);
+  }
+
+  if (link.campaignName) {
+    badges.push(`<wa-badge variant="brand" pill>${escapeHtml(link.campaignName)}</wa-badge>`);
+  }
+
   return badges.join(" ");
 }
 
@@ -47,23 +55,65 @@ function buildOgPreview(link) {
   `;
 }
 
+function buildTargetingRules(targets) {
+  if (!targets || !targets.length) return "";
+  return `
+    <wa-card>
+      <div class="wa-stack wa-gap-s">
+        <h3>Targeting Rules</h3>
+        <table class="link-table" aria-label="Targeting rules">
+          <thead>
+            <tr>
+              <th>Type</th>
+              <th>Match</th>
+              <th>Destination</th>
+              <th>Priority</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${targets.map(t => `
+              <tr>
+                <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
+                <td>${escapeHtml(t.matchValue)}</td>
+                <td class="truncate">${escapeHtml(t.destinationUrl)}</td>
+                <td>${t.priority}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </div>
+    </wa-card>
+  `;
+}
+
 export async function renderLinkDetail(container, { id }) {
   container.innerHTML = `<div style="text-align:center;padding:3rem;"><wa-spinner></wa-spinner></div>`;
 
   let link;
+  let targets = [];
   try {
-    const res = await fetch(`/api/links/${id}`);
-    if (res.status === 401) { window.location.href = "/login"; return; }
-    if (!res.ok) {
+    const [linkRes, targetsRes] = await Promise.all([
+      fetch(`/api/links/${id}`),
+      fetch(`/api/links/${id}/targets`).catch(() => null),
+    ]);
+    if (linkRes.status === 401) { window.location.href = "/login"; return; }
+    if (!linkRes.ok) {
       container.innerHTML = `<div style="text-align:center;padding:3rem;"><p>Link not found.</p></div>`;
       return;
     }
-    ({ data: link } = await res.json());
+    ({ data: link } = await linkRes.json());
+    if (targetsRes && targetsRes.ok) {
+      ({ data: targets } = await targetsRes.json());
+    }
   } catch {
     showToast("Failed to load link details", "danger");
     container.innerHTML = `<div style="text-align:center;padding:3rem;"><p>Failed to load link. Please try again.</p></div>`;
     return;
   }
+
+  // Attach targets to link for edit form
+  link.targets = targets;
+
   const shortUrl = `${location.origin}/${link.slug}`;
   const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
   const badges = buildBadges(link);
@@ -99,12 +149,14 @@ export async function renderLinkDetail(container, { id }) {
             <div><strong>Lifetime Clicks:</strong> ${link.totalClicks}</div>
             ${maxClicksInfo}
             <div><strong>Created:</strong> ${new Date(link.createdAt).toLocaleString()}</div>
+            ${link.paramForwarding ? `<div><strong>Query Params:</strong> Forwarded to destination</div>` : ""}
             ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:0.25rem;">${badges}</div>` : ""}
           </div>
           <div id="qr-container"></div>
         </div>
       </wa-card>
 
+      ${buildTargetingRules(targets)}
       ${buildOgPreview(link)}
 
       <div id="edit-section" style="display:none;">
@@ -141,7 +193,7 @@ export async function renderLinkDetail(container, { id }) {
         return;
       }
       showToast("Link deleted", "success");
-      navigate("/dashboard");
+      navigate("/links");
     } catch {
       showToast("Network error — could not delete link", "danger");
     }

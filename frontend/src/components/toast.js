@@ -1,12 +1,21 @@
-let toastEl;
-function getToast() {
-  if (!toastEl) {
-    toastEl = document.createElement("wa-toast");
-    document.body.appendChild(toastEl);
+let container;
+function getContainer() {
+  if (!container) {
+    container = document.createElement("div");
+    container.id = "toast-container";
+    document.body.appendChild(container);
   }
-  return toastEl;
+  return container;
 }
 
 export function showToast(message, variant = "neutral", duration = 3000) {
-  getToast().create(message, { variant, duration });
+  const callout = document.createElement("wa-callout");
+  callout.variant = variant;
+  callout.closable = true;
+  callout.textContent = message;
+  callout.addEventListener("wa-hide", () => callout.remove());
+  getContainer().appendChild(callout);
+  setTimeout(() => {
+    if (callout.parentNode) callout.remove();
+  }, duration);
 }

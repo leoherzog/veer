@@ -1,13 +1,57 @@
 import { Hono, type Context } from "hono";
-import { eq, desc, sql, and, or, like } from "drizzle-orm";
+import { eq, desc, asc, sql, and, or, like } from "drizzle-orm";
 import { getDb } from "../../db";
-import { links, linkStats } from "../../db/schema";
+import { links, linkStats, linkTargets, linkCampaigns, campaigns } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect, deleteCachedRedirect } from "../../services/kv-cache";
 import { HTTPException } from "hono/http-exception";
 import { badRequest, notFound, conflict } from "../../lib/errors";
 import { hashPassword, verifyPassword } from "../../services/password";
 import type { AppEnv } from "../../types";
+import type { CachedRedirect, CachedTarget } from "../../services/kv-cache";
+import type { Database } from "../../db";
+
+/** Build a CachedRedirect object from link data + optional targets. */
+async function buildCachedRedirect(
+  db: Database,
+  link: { id: string; destinationUrl: string; redirectType: number; isActive: boolean | number;
+    expiresAt: Date | string | number | null; maxClicks: number | null; password: string | null;
+    isInternal: boolean | number; ogTitle: string | null; ogDescription: string | null;
+    ogImage: string | null; paramForwarding: boolean | number },
+  preloadedTargets?: CachedTarget[] | null,
+): Promise<CachedRedirect> {
+  let kvExpiresAt: number | null = null;
+  if (link.expiresAt != null) {
+    const d = link.expiresAt instanceof Date ? link.expiresAt : new Date(link.expiresAt as string | number);
+    kvExpiresAt = Math.floor(d.getTime() / 1000);
+  }
+
+  let targets: CachedTarget[] | null;
+  if (preloadedTargets !== undefined) {
+    targets = preloadedTargets;
+  } else {
+    const rows = await db.select().from(linkTargets).where(eq(linkTargets.linkId, link.id));
+    targets = rows.length > 0
+      ? rows.map(t => ({ type: t.type as "geo" | "device", matchValue: t.matchValue, destinationUrl: t.destinationUrl, priority: t.priority }))
+      : null;
+  }
+
+  return {
+    url: link.destinationUrl,
+    redirectType: link.redirectType as number,
+    linkId: link.id,
+    isActive: !!link.isActive,
+    expiresAt: kvExpiresAt,
+    maxClicks: link.maxClicks ?? null,
+    hasPassword: !!link.password,
+    isInternal: !!link.isInternal,
+    ogTitle: link.ogTitle ?? null,
+    ogDescription: link.ogDescription ?? null,
+    ogImage: link.ogImage ?? null,
+    paramForwarding: !!link.paramForwarding,
+    targets,
+  };
+}
 
 /** Validate a destination URL: must be parseable and use http(s) scheme. */
 function validateDestinationUrl(url: string): void {
@@ -76,6 +120,12 @@ linkRoutes.get("/", async (c) => {
   const q = c.req.query("q")?.trim();
   const offset = (page - 1) * limit;
 
+  const sortParam = c.req.query("sort");
+  const dirParam = c.req.query("dir");
+  const SORTABLE_COLUMNS = { slug: links.slug, createdAt: links.createdAt, title: links.title, destinationUrl: links.destinationUrl } as const;
+  const sortCol = SORTABLE_COLUMNS[sortParam as keyof typeof SORTABLE_COLUMNS] ?? links.createdAt;
+  const sortDir = dirParam === "asc" ? asc : desc;
+
   const escaped = q ? q.replace(/%/g, "\\%").replace(/_/g, "\\_") : "";
   const where = q
     ? and(
@@ -89,7 +139,7 @@ linkRoutes.get("/", async (c) => {
     : eq(links.userId, user.id);
 
   const [items, countResult] = await Promise.all([
-    db.select().from(links).where(where).orderBy(desc(links.createdAt)).limit(limit).offset(offset),
+    db.select().from(links).where(where).orderBy(sortDir(sortCol)).limit(limit).offset(offset),
     db.select({ count: sql<number>`count(*)` }).from(links).where(where),
   ]);
 
@@ -125,6 +175,8 @@ linkRoutes.post("/", async (c) => {
     ogTitle?: string;
     ogDescription?: string;
     ogImage?: string;
+    paramForwarding?: boolean;
+    campaignId?: string | null;
   };
   try {
     body = await c.req.json();
@@ -157,6 +209,7 @@ linkRoutes.post("/", async (c) => {
   }
 
   const isInternal = body.isInternal === true;
+  const paramForwarding = body.paramForwarding === true;
 
   const ogTitle = body.ogTitle || null;
   const ogDescription = body.ogDescription || null;
@@ -180,6 +233,7 @@ linkRoutes.post("/", async (c) => {
       maxClicks,
       password: passwordHash,
       isInternal,
+      paramForwarding,
       ogTitle,
       ogDescription,
       ogImage,
@@ -194,19 +248,21 @@ linkRoutes.post("/", async (c) => {
   }
 
   // Write-through to KV
-  await setCachedRedirect(c.env.KV, body.slug, {
-    url: body.destinationUrl,
-    redirectType,
-    linkId: id,
-    isActive: true,
-    expiresAt: expiresAt ? Math.floor(expiresAt.getTime() / 1000) : null,
-    maxClicks: maxClicks,
-    hasPassword: !!passwordHash,
-    isInternal,
-    ogTitle,
-    ogDescription,
-    ogImage,
-  });
+  const kvData = await buildCachedRedirect(db, {
+    id, destinationUrl: body.destinationUrl, redirectType, isActive: true,
+    expiresAt, maxClicks, password: passwordHash, isInternal, ogTitle, ogDescription, ogImage, paramForwarding,
+  }, null);
+  await setCachedRedirect(c.env.KV, body.slug, kvData);
+
+  // Handle campaign association on create
+  if (body.campaignId) {
+    const campaign = await db.select({ id: campaigns.id }).from(campaigns)
+      .where(and(eq(campaigns.id, body.campaignId), eq(campaigns.userId, user.id))).get();
+    if (campaign) {
+      await db.insert(linkCampaigns).values({ linkId: id, campaignId: body.campaignId })
+        .onConflictDoNothing();
+    }
+  }
 
   return c.json({
     data: {
@@ -220,6 +276,7 @@ linkRoutes.post("/", async (c) => {
       maxClicks,
       hasPassword: !!passwordHash,
       isInternal,
+      paramForwarding,
       ogTitle,
       ogDescription,
       ogImage,
@@ -239,15 +296,26 @@ linkRoutes.get("/:id", async (c) => {
   const link = await db.select().from(links).where(eq(links.id, id)).get();
   if (!link || link.userId !== user.id) throw notFound("Link not found");
 
-  const statsResult = await db
-    .select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
-    .from(linkStats)
-    .where(eq(linkStats.linkId, id));
+  const [statsResult, targets, linkedCampaigns] = await Promise.all([
+    db.select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
+      .from(linkStats)
+      .where(eq(linkStats.linkId, id)),
+    db.select().from(linkTargets).where(eq(linkTargets.linkId, id)),
+    db.select({
+        id: campaigns.id,
+        name: campaigns.name,
+      })
+      .from(linkCampaigns)
+      .innerJoin(campaigns, eq(linkCampaigns.campaignId, campaigns.id))
+      .where(eq(linkCampaigns.linkId, id)),
+  ]);
 
   return c.json({
     data: {
       ...stripPassword(link),
       totalClicks: statsResult[0]?.totalClicks ?? 0,
+      targets,
+      campaigns: linkedCampaigns,
     },
   });
 });
@@ -277,6 +345,8 @@ linkRoutes.put("/:id", async (c) => {
     ogTitle?: string | null;
     ogDescription?: string | null;
     ogImage?: string | null;
+    paramForwarding?: boolean;
+    campaignId?: string | null;
   };
   try {
     body = await c.req.json();
@@ -331,39 +401,35 @@ linkRoutes.put("/:id", async (c) => {
     updates.ogImage = (body.ogImage === null || body.ogImage === "") ? null : validateOgImageUrl(body.ogImage);
   }
 
+  if (body.paramForwarding !== undefined) {
+    updates.paramForwarding = body.paramForwarding === true;
+  }
+
   await db.update(links).set(updates).where(eq(links.id, id));
+
+  // Handle campaign association update
+  if (body.campaignId !== undefined) {
+    // Validate new campaignId ownership BEFORE deleting existing associations
+    if (body.campaignId) {
+      const campaign = await db.select({ id: campaigns.id }).from(campaigns)
+        .where(and(eq(campaigns.id, body.campaignId), eq(campaigns.userId, user.id))).get();
+      if (!campaign) throw badRequest("Campaign not found or does not belong to you");
+    }
+    // Remove existing campaign associations
+    await db.delete(linkCampaigns).where(eq(linkCampaigns.linkId, id));
+    // Add new association if specified
+    if (body.campaignId) {
+      await db.insert(linkCampaigns).values({ linkId: id, campaignId: body.campaignId });
+    }
+  }
 
   // Build merged record for KV and response
   const merged = { ...existing, ...updates };
-  const newSlug = existing.slug;
-  const newUrl = (merged.destinationUrl as string);
-  const newRedirectType = (merged.redirectType as number);
+  // Determine password for KV (updates may have changed it)
+  const mergedPassword = updates.password !== undefined ? (updates.password as string | null) : existing.password;
 
-  // Determine password state for KV
-  const hasPassword = updates.password !== undefined
-    ? !!updates.password
-    : !!existing.password;
-
-  // Determine expiresAt for KV (as unix timestamp)
-  let kvExpiresAt: number | null = null;
-  if (merged.expiresAt != null) {
-    const d = merged.expiresAt instanceof Date ? merged.expiresAt : new Date(merged.expiresAt as string | number);
-    kvExpiresAt = Math.floor(d.getTime() / 1000);
-  }
-
-  await setCachedRedirect(c.env.KV, newSlug, {
-    url: newUrl,
-    redirectType: newRedirectType,
-    linkId: id,
-    isActive: existing.isActive,
-    expiresAt: kvExpiresAt,
-    maxClicks: (merged.maxClicks as number | null) ?? null,
-    hasPassword,
-    isInternal: (merged.isInternal as boolean) ?? false,
-    ogTitle: (merged.ogTitle as string | null) ?? null,
-    ogDescription: (merged.ogDescription as string | null) ?? null,
-    ogImage: (merged.ogImage as string | null) ?? null,
-  });
+  const kvData = await buildCachedRedirect(db, { ...merged, id, password: mergedPassword } as any);
+  await setCachedRedirect(c.env.KV, existing.slug, kvData);
 
   // Build response — strip password hash
   const response = stripPassword(merged as typeof existing);
@@ -384,30 +450,12 @@ linkRoutes.patch("/:id/active", async (c) => {
 
   await db.update(links).set({ isActive, updatedAt: new Date() }).where(eq(links.id, id));
 
-  // Invalidate KV cache when deactivating
+  // Invalidate KV cache when deactivating, re-populate when activating
   if (!isActive) {
     await deleteCachedRedirect(c.env.KV, link.slug);
   } else {
-    // Re-populate KV cache when activating
-    let kvExpiresAt: number | null = null;
-    if (link.expiresAt) {
-      const d = link.expiresAt instanceof Date ? link.expiresAt : new Date(link.expiresAt as unknown as string);
-      kvExpiresAt = Math.floor(d.getTime() / 1000);
-    }
-
-    await setCachedRedirect(c.env.KV, link.slug, {
-      url: link.destinationUrl,
-      redirectType: link.redirectType,
-      linkId: link.id,
-      isActive: true,
-      expiresAt: kvExpiresAt,
-      maxClicks: link.maxClicks ?? null,
-      hasPassword: !!link.password,
-      isInternal: link.isInternal ?? false,
-      ogTitle: link.ogTitle ?? null,
-      ogDescription: link.ogDescription ?? null,
-      ogImage: link.ogImage ?? null,
-    });
+    const kvData = await buildCachedRedirect(db, { ...link, isActive: true } as any);
+    await setCachedRedirect(c.env.KV, link.slug, kvData);
   }
 
   return c.json({ success: true, isActive });
@@ -426,6 +474,106 @@ linkRoutes.delete("/:id", async (c) => {
   await deleteCachedRedirect(c.env.KV, link.slug);
 
   return c.json({ success: true });
+});
+
+// GET /api/links/:id/targets - list targeting rules
+linkRoutes.get("/:id/targets", async (c) => {
+  const user = c.var.user;
+  const db = getDb(c.env.DB);
+  const id = c.req.param("id");
+
+  const link = await db.select({ id: links.id, userId: links.userId }).from(links).where(eq(links.id, id)).get();
+  if (!link || link.userId !== user.id) throw notFound("Link not found");
+
+  const targets = await db.select().from(linkTargets).where(eq(linkTargets.linkId, id));
+  return c.json({ data: targets });
+});
+
+// PUT /api/links/:id/targets - replace all targeting rules
+linkRoutes.put("/:id/targets", async (c) => {
+  const user = c.var.user;
+  const db = getDb(c.env.DB);
+  const id = c.req.param("id");
+
+  const link = await db.select().from(links).where(eq(links.id, id)).get();
+  if (!link || link.userId !== user.id) throw notFound("Link not found");
+
+  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
+  if (contentLength > 10_000) {
+    throw new HTTPException(413, { message: "Request body too large" });
+  }
+
+  let body: { targets: { type: string; matchValue: string; destinationUrl: string; priority?: number }[] };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("Invalid JSON body");
+  }
+
+  if (!Array.isArray(body.targets)) {
+    throw badRequest("targets must be an array");
+  }
+
+  // Validate each target
+  const VALID_DEVICE_TYPES = new Set(["mobile", "tablet", "desktop"]);
+  for (const t of body.targets) {
+    if (t.type !== "geo" && t.type !== "device") {
+      throw badRequest('Invalid target type. Must be "geo" or "device"');
+    }
+    if (!t.matchValue || typeof t.matchValue !== "string") {
+      throw badRequest("matchValue is required");
+    }
+    if (t.type === "geo") {
+      const code = t.matchValue.trim().toUpperCase();
+      if (!/^[A-Z]{2}$/.test(code)) {
+        throw badRequest("Geo matchValue must be a 2-letter ISO country code (e.g. US, GB)");
+      }
+      t.matchValue = code;
+    }
+    if (t.type === "device") {
+      const device = t.matchValue.trim().toLowerCase();
+      if (!VALID_DEVICE_TYPES.has(device)) {
+        throw badRequest('Device matchValue must be "mobile", "tablet", or "desktop"');
+      }
+      t.matchValue = device;
+    }
+    validateDestinationUrl(t.destinationUrl);
+  }
+
+  // Replace all targets atomically via db.batch()
+  const newTargets: CachedTarget[] = [];
+  const batchOps: any[] = [
+    db.delete(linkTargets).where(eq(linkTargets.linkId, id)),
+  ];
+  for (const t of body.targets) {
+    const targetId = crypto.randomUUID();
+    const priority = typeof t.priority === "number" ? Math.floor(t.priority) : 0;
+    batchOps.push(
+      db.insert(linkTargets).values({
+        id: targetId,
+        linkId: id,
+        type: t.type,
+        matchValue: t.matchValue,
+        destinationUrl: t.destinationUrl,
+        priority,
+      })
+    );
+    newTargets.push({
+      type: t.type as "geo" | "device",
+      matchValue: t.matchValue,
+      destinationUrl: t.destinationUrl,
+      priority,
+    });
+  }
+  await db.batch(batchOps as [any, ...any[]]);
+
+  // Update KV cache with new targets
+  const kvData = await buildCachedRedirect(db, link as any, newTargets.length > 0 ? newTargets : null);
+  await setCachedRedirect(c.env.KV, link.slug, kvData);
+
+  // Fetch the inserted targets to return with IDs
+  const insertedTargets = await db.select().from(linkTargets).where(eq(linkTargets.linkId, id));
+  return c.json({ data: insertedTargets });
 });
 
 /** Public endpoint: verify a link's password via JSON API (no auth required). */

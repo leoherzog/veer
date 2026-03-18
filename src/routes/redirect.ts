@@ -1,7 +1,7 @@
 import type { Context, Next } from "hono";
 import type { AppEnv } from "../types";
 import { getDb } from "../db";
-import { links, linkStats } from "../db/schema";
+import { links, linkStats, linkTargets } from "../db/schema";
 import { eq, sql } from "drizzle-orm";
 import { getCachedRedirect, setCachedRedirect } from "../services/kv-cache";
 import { writeClickEvent, incrementClickStats } from "../services/analytics";
@@ -66,6 +66,12 @@ function gonePage(message: string): Response {
   });
 }
 
+function detectDeviceType(ua: string): "mobile" | "tablet" | "desktop" {
+  if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua)) return "tablet";
+  if (/Mobile|iPhone|iPod|Android.*Mobile|webOS|BlackBerry|Opera Mini|IEMobile/i.test(ua)) return "mobile";
+  return "desktop";
+}
+
 const BOT_UA_PATTERN = /facebookexternalhit|Twitterbot|LinkedInBot|Discordbot|Slackbot|WhatsApp|Telegram|Googlebot|bingbot|Applebot/i;
 
 function isBotRequest(c: Context<AppEnv, "/:slug">): boolean {
@@ -124,6 +130,10 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string) {
 
     if (!link || !link.isActive) return null;
 
+    // Fetch targeting rules for this link
+    const targets = await db.select().from(linkTargets)
+      .where(eq(linkTargets.linkId, link.id));
+
     cached = {
       url: link.destinationUrl,
       redirectType: link.redirectType,
@@ -136,6 +146,13 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string) {
       ogTitle: link.ogTitle ?? null,
       ogDescription: link.ogDescription ?? null,
       ogImage: link.ogImage ?? null,
+      paramForwarding: link.paramForwarding ?? false,
+      targets: targets.length > 0 ? targets.map(t => ({
+        type: t.type as "geo" | "device",
+        matchValue: t.matchValue,
+        destinationUrl: t.destinationUrl,
+        priority: t.priority,
+      })) : null,
     };
 
     c.executionCtx.waitUntil(
@@ -181,16 +198,58 @@ async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: NonNulla
   return null;
 }
 
+/** Evaluate targeting rules and param forwarding, returning the final destination URL. */
+function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<Awaited<ReturnType<typeof resolveSlug>>>): string {
+  let destinationUrl = resolved.url;
+
+  // Evaluate targeting rules (higher priority first, first match wins)
+  if (resolved.targets?.length) {
+    const cf = (c.req.raw as any).cf;
+    const country = (cf?.country as string) || "";
+    const ua = c.req.header("user-agent") || "";
+    const device = detectDeviceType(ua);
+
+    const sorted = [...resolved.targets].sort((a, b) => b.priority - a.priority);
+    for (const target of sorted) {
+      if (target.type === "geo" && target.matchValue.toUpperCase() === country.toUpperCase()) {
+        destinationUrl = target.destinationUrl;
+        break;
+      }
+      if (target.type === "device" && target.matchValue.toLowerCase() === device) {
+        destinationUrl = target.destinationUrl;
+        break;
+      }
+    }
+  }
+
+  // Param forwarding: append incoming params not already in the destination
+  if (resolved.paramForwarding) {
+    const incomingUrl = new URL(c.req.url);
+    if (incomingUrl.search) {
+      const dest = new URL(destinationUrl);
+      const destKeys = new Set(dest.searchParams.keys());
+      for (const [key, value] of incomingUrl.searchParams) {
+        if (!destKeys.has(key)) {
+          dest.searchParams.append(key, value);
+        }
+      }
+      destinationUrl = dest.toString();
+    }
+  }
+
+  return destinationUrl;
+}
+
 /** Fire analytics and increment stats in the background. */
-function trackClick(c: Context<AppEnv, "/:slug">, slug: string, resolved: { linkId: string; url: string }) {
+function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, destinationUrl: string) {
   writeClickEvent(c.env.ANALYTICS, {
-    linkId: resolved.linkId,
+    linkId,
     slug,
-    destinationUrl: resolved.url,
+    destinationUrl,
     request: c.req.raw,
   });
   c.executionCtx.waitUntil(
-    incrementClickStats(getDb(c.env.DB), resolved.linkId)
+    incrementClickStats(getDb(c.env.DB), linkId)
   );
 }
 
@@ -208,14 +267,16 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
     return passwordGatePage(slug);
   }
 
+  const destinationUrl = resolveDestination(c, resolved);
+
   const hasOg = resolved.ogTitle || resolved.ogDescription || resolved.ogImage;
   if (hasOg && isBotRequest(c)) {
     const shortUrl = new URL(`/${slug}`, c.req.url).href;
-    return ogMetaPage(slug, resolved.url, resolved, shortUrl);
+    return ogMetaPage(slug, destinationUrl, resolved, shortUrl);
   }
 
-  trackClick(c, slug, resolved);
-  return c.redirect(resolved.url, resolved.redirectType as 301 | 302);
+  trackClick(c, slug, resolved.linkId, destinationUrl);
+  return c.redirect(destinationUrl, resolved.redirectType as 301 | 302);
 }
 
 export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Next) {
@@ -250,7 +311,7 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
 
   // Look up link in D1 to get stored password hash
   const db = getDb(c.env.DB);
-  const link = await db.select({ password: links.password, destinationUrl: links.destinationUrl })
+  const link = await db.select({ password: links.password })
     .from(links)
     .where(eq(links.slug, slug))
     .get();
@@ -264,7 +325,8 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
     return passwordGatePage(slug, "Incorrect password. Please try again.");
   }
 
-  // Password correct — track and redirect
-  trackClick(c, slug, resolved);
-  return c.redirect(resolved.url, resolved.redirectType as 301 | 302);
+  // Password correct — resolve targeting + param forwarding, then track and redirect
+  const destinationUrl = resolveDestination(c, resolved);
+  trackClick(c, slug, resolved.linkId, destinationUrl);
+  return c.redirect(destinationUrl, resolved.redirectType as 301 | 302);
 }

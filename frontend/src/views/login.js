@@ -28,7 +28,7 @@ function renderButtons(container, providers) {
       try {
         await authClient.signIn.social({
           provider,
-          callbackURL: "/dashboard",
+          callbackURL: "/links",
         });
       } catch {
         showToast(`Sign in with ${provider} failed`, "danger");
@@ -52,7 +52,7 @@ function renderPasskeyButton(container, enabled) {
       if (result?.error) {
         showToast(result.error.message || "Passkey sign-in failed", "danger");
       } else {
-        window.location.href = "/dashboard";
+        window.location.href = "/links";
       }
     } catch {
       showToast("Passkey sign-in failed", "danger");
@@ -90,7 +90,7 @@ export function renderLogin(container) {
       if (providers.length === 1 && !passkey) {
         authClient.signIn.social({
           provider: providers[0].id,
-          callbackURL: "/dashboard",
+          callbackURL: "/links",
         });
         container.querySelector("#login-help").textContent =
           `Redirecting to ${providers[0].name}…`;

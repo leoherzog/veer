@@ -10,6 +10,40 @@ function toLocalDatetime(isoStr) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+function createTargetRow(target = {}) {
+  const row = document.createElement("div");
+  row.className = "target-rule wa-cluster wa-gap-s wa-align-items-end";
+  row.innerHTML = `
+    <wa-select name="targetType" label="Type" value="${escapeAttr(target.type || "geo")}" style="min-width:120px;">
+      <wa-option value="geo">Country</wa-option>
+      <wa-option value="device">Device</wa-option>
+    </wa-select>
+    <wa-input name="targetMatch" label="Match" placeholder="US" hint="Country code or device type" value="${escapeAttr(target.matchValue || target.match || "")}" style="min-width:120px;"></wa-input>
+    <wa-input name="targetUrl" label="Destination" type="url" placeholder="https://..." value="${escapeAttr(target.destinationUrl || target.url || "")}" style="flex:1;"></wa-input>
+    <wa-input name="targetPriority" label="Priority" type="number" value="${escapeAttr(target.priority != null ? String(target.priority) : "0")}" style="max-width:80px;"></wa-input>
+    <wa-button variant="danger" appearance="plain" circle class="remove-target-btn" aria-label="Remove rule">
+      <wa-icon name="xmark"></wa-icon>
+    </wa-button>
+  `;
+  row.querySelector(".remove-target-btn").addEventListener("click", () => row.remove());
+  return row;
+}
+
+function collectTargets(container) {
+  const rows = container.querySelectorAll(".target-rule");
+  const targets = [];
+  for (const row of rows) {
+    const type = row.querySelector('[name="targetType"]').value;
+    const match = row.querySelector('[name="targetMatch"]').value.trim();
+    const url = row.querySelector('[name="targetUrl"]').value.trim();
+    const priority = Number(row.querySelector('[name="targetPriority"]').value) || 0;
+    if (match && url) {
+      targets.push({ type, matchValue: match, destinationUrl: url, priority });
+    }
+  }
+  return targets;
+}
+
 export function renderLinkForm(container, { link = null, onSuccess } = {}) {
   const isEdit = !!link;
   const hasPassword = isEdit && link.hasPassword;
@@ -69,6 +103,24 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
           ></wa-input>
           <wa-switch name="isInternal" ${link?.isInternal ? "checked" : ""}>Internal link (hidden from public listings)</wa-switch>
           <wa-divider></wa-divider>
+          <wa-switch name="paramForwarding" ${link?.paramForwarding ? "checked" : ""}>Forward query parameters to destination</wa-switch>
+          <wa-divider></wa-divider>
+          <wa-select name="campaignId" label="Campaign (optional)" with-clear value="${escapeAttr(link?.campaigns?.[0]?.id || "")}">
+            <wa-option value="">None</wa-option>
+          </wa-select>
+          <wa-divider></wa-divider>
+          <div class="wa-stack wa-gap-s">
+            <div class="wa-split">
+              <strong>Targeting Rules</strong>
+              <wa-button size="small" variant="neutral" id="add-target-btn">
+                <wa-icon slot="start" name="plus"></wa-icon>
+                Add Rule
+              </wa-button>
+            </div>
+            <p style="font-size:0.875rem;color:var(--wa-color-text-subdued);margin:0;">Redirect visitors to different URLs based on country or device type.</p>
+            <div id="targets-list" class="wa-stack wa-gap-s"></div>
+          </div>
+          <wa-divider></wa-divider>
           <wa-input
             name="ogTitle"
             label="OG Title"
@@ -96,6 +148,37 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
     </form>
   `;
 
+  // Populate campaigns dropdown
+  const campaignSelect = container.querySelector('[name="campaignId"]');
+  fetch("/api/campaigns")
+    .then(res => res.ok ? res.json() : { data: [] })
+    .then(({ data }) => {
+      for (const c of data) {
+        const opt = document.createElement("wa-option");
+        opt.value = c.id;
+        opt.textContent = c.name;
+        campaignSelect.appendChild(opt);
+      }
+      // Re-set value after options are added
+      if (link?.campaigns?.[0]?.id) {
+        campaignSelect.value = link.campaigns[0].id;
+      }
+    })
+    .catch(() => {}); // silently ignore
+
+  // Populate existing targeting rules
+  const targetsList = container.querySelector("#targets-list");
+  if (link?.targets && link.targets.length) {
+    for (const t of link.targets) {
+      targetsList.appendChild(createTargetRow(t));
+    }
+  }
+
+  // Add target button
+  container.querySelector("#add-target-btn").addEventListener("click", () => {
+    targetsList.appendChild(createTargetRow());
+  });
+
   // Track whether password field was touched
   let passwordTouched = false;
   const passwordInput = container.querySelector('[name="password"]');
@@ -113,12 +196,25 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
       return;
     }
 
+    // Validate targeting rules
+    const targets = collectTargets(container);
+    const targetRows = container.querySelectorAll(".target-rule");
+    for (const row of targetRows) {
+      const match = row.querySelector('[name="targetMatch"]').value.trim();
+      const url = row.querySelector('[name="targetUrl"]').value.trim();
+      if ((match && !url) || (!match && url)) {
+        showToast("Each targeting rule must have both a match value and destination URL", "danger");
+        return;
+      }
+    }
+
     const submitBtn = form.querySelector('wa-button[type="submit"]');
     submitBtn.loading = true;
     submitBtn.disabled = true;
 
     const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
     const passwordVal = passwordInput.value;
+    const campaignIdVal = form.querySelector('[name="campaignId"]').value;
 
     const data = {
       ...(!isEdit && { slug: form.querySelector('[name="slug"]').value.trim() }),
@@ -128,6 +224,8 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
       expiresAt: expiresAtVal ? new Date(expiresAtVal).toISOString() : null,
       maxClicks: maxClicksVal ? Number(maxClicksVal) : null,
       isInternal: form.querySelector('[name="isInternal"]').checked,
+      paramForwarding: form.querySelector('[name="paramForwarding"]').checked,
+      campaignId: campaignIdVal || null,
       ogTitle: form.querySelector('[name="ogTitle"]').value.trim() || null,
       ogDescription: form.querySelector('[name="ogDescription"]').value.trim() || null,
       ogImage: form.querySelector('[name="ogImage"]').value.trim() || null,
@@ -157,6 +255,24 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
         showToast(result.message || result.error || "Error", "danger");
         return;
       }
+
+      // Save targeting rules
+      const linkId = result.data.id;
+      if (targets.length > 0 || (isEdit && link?.targets?.length)) {
+        try {
+          const targetRes = await fetch(`/api/links/${linkId}/targets`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ targets }),
+          });
+          if (!targetRes.ok) {
+            showToast("Link saved, but targeting rules failed to save", "warning");
+          }
+        } catch {
+          showToast("Link saved, but targeting rules failed to save", "warning");
+        }
+      }
+
       showToast(isEdit ? "Link updated" : "Link created", "success");
       if (onSuccess) onSuccess(result.data);
       else navigate(`/links/${result.data.id}`);

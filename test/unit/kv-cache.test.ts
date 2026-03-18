@@ -18,6 +18,11 @@ describe("KV cache service", () => {
     maxClicks: null,
     hasPassword: false,
     isInternal: false,
+    ogTitle: null,
+    ogDescription: null,
+    ogImage: null,
+    paramForwarding: false,
+    targets: null,
   };
 
   it("getCachedRedirect returns null for missing key", async () => {
@@ -48,6 +53,11 @@ describe("KV cache service", () => {
       maxClicks: null,
       hasPassword: false,
       isInternal: false,
+      ogTitle: null,
+      ogDescription: null,
+      ogImage: null,
+      paramForwarding: false,
+      targets: null,
     };
     await setCachedRedirect(kv, "full-fields", data);
     const result = await getCachedRedirect(kv, "full-fields");

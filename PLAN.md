@@ -2,7 +2,7 @@
 
 ## Context
 
-Veer is a self-hostable URL shortener built on Cloudflare Workers. The goal is a clean, modular product that anyone can `git clone`, configure OAuth secrets via `.dev.vars` / `wrangler secret set`, and deploy with `wrangler deploy`. The architecture uses one Worker, one D1 database, one KV namespace, and one Analytics Engine dataset. The UI is an esbuild-bundled JS SPA using Web Awesome Pro components, with Better Auth handling OAuth.
+Veer is a self-hostable URL shortener built on Cloudflare Workers. The goal is a clean, modular product that anyone can `git clone`, configure OAuth secrets via `.dev.vars` / `wrangler secret set`, and deploy with `wrangler deploy`. The architecture uses one Worker, one D1 database, one KV namespace, and one Analytics Engine dataset. The UI is an esbuild-bundled JS SPA using Web Awesome components, with Better Auth handling OAuth.
 
 The canonical domain is `veer.ing` (redirects to the GitHub repo). Self-hosters configure their own domain(s)/routes.
 
@@ -20,8 +20,9 @@ This plan covers the full FEATURES.md scope across 8 milestones, starting with a
 | Analytics | **Analytics Engine** | Per-click events (90-day write via binding, read via REST SQL API) |
 | Stats (permanent) | **D1 `link_stats`** | Daily aggregate clicks, survives beyond AE 90-day retention |
 | Auth | **Better Auth v1.5.5** | Drizzle adapter, conditional OAuth + passkey from env vars |
-| UI | **Web Awesome Pro v3.3.1** | npm package, bundled via esbuild, `wa-` prefix, 60+ components |
-| Theme | **Matter** (Pro) | Mild palette, Purple brand color, light/dark mode via `wa-light`/`wa-dark` |
+| UI | **Web Awesome v3.3.1** | npm package, bundled via esbuild, `wa-` prefix, 50+ components |
+| Charts | **Chart.js v4.x** | Direct usage with theme-aware wrapper, canvas-based rendering |
+| Theme | **Awesome** | Bright palette, Purple brand color, light/dark mode via `wa-light`/`wa-dark` |
 | Icons | **Font Awesome Free** 7.2.0 | Via Web Awesome's built-in CDN resolver (`ka-f.fontawesome.com`) |
 | Frontend | **JS SPA** | ES modules, History API router, esbuild bundled |
 | Build | **esbuild** | Bundles `frontend/src/` → `public/dist/`, minimal config |
@@ -36,7 +37,6 @@ veer/
   .dev.vars                    # OAuth + AE secrets (gitignored)
   .dev.vars.example            # Template for required env vars
   .gitignore
-  .npmrc                       # FA/WA registry config
   package.json
   wrangler.jsonc               # Worker config: D1, KV, Analytics Engine, Assets
   tsconfig.json
@@ -81,6 +81,8 @@ veer/
       auth-client.js           # better-auth createAuthClient wrapper (bundled) ✅
       lib/
         escape.js              # HTML/attribute escaping utilities ✅ (added in M1)
+        chart-helper.js        # Theme-aware Chart.js wrapper ✅
+        stats-common.js        # Shared stats utilities (skeleton, noData, fetchJSON) ✅
       views/
         home.js                # Landing / quick shorten ✅
         dashboard.js           # Link list (authenticated) ✅
@@ -92,9 +94,9 @@ veer/
       components/
         link-form.js           # Create/edit link form ✅
         link-table.js          # HTML table + WA styling + pagination ✅
-        stats-charts.js        # wa-line-chart, wa-bar-chart, wa-pie-chart (M2)
+        stats-charts.js        # Chart.js line/bar/doughnut charts (M2)
         nav-bar.js             # Top nav with user avatar, login/logout, theme toggle ✅
-        toast.js               # wa-toast notification helper ✅
+        toast.js               # wa-callout-based toast notification helper ✅
       styles/
         app.css                # Custom styles on top of WA theme ✅
     esbuild.mjs                # Build config: bundles src/ → public/dist/ ✅
@@ -161,28 +163,23 @@ import { passkeyClient } from "@better-auth/passkey/client";
 export const authClient = createAuthClient({ plugins: [passkeyClient()] });
 ```
 
-## Theming: Matter + Light/Dark Mode
+## Theming: Awesome + Light/Dark Mode
 
-Veer uses the **Matter** Pro theme with the **Mild** color palette and **Purple** brand color. Matter provides a clean, modern look with pill-shaped buttons, floating form labels, subtle ripple effects, and rounded panels.
+Veer uses the **Awesome** theme with the **Bright** color palette and **Purple** brand color. Awesome provides a vibrant, modern look suitable for dashboards and tools.
 
 ### Setup
 
 The theme CSS is imported via esbuild from npm. The `<html>` element receives both the theme and palette classes:
 
 ```html
-<html class="wa-theme-matter wa-palette-mild wa-light" lang="en">
+<html class="wa-theme-awesome wa-palette-bright wa-brand-purple wa-light" lang="en">
 ```
 
 **Theme + utilities import** (in `frontend/src/app.js`, bundled by esbuild):
 ```js
-import '@web.awesome.me/webawesome-pro/dist/styles/themes/matter.css';
-import '@web.awesome.me/webawesome-pro/dist/styles/utilities.css'; // layout (wa-stack, wa-split, wa-cluster, wa-grid, wa-flank, wa-frame), gap, align-items, border-radius, text
+import '@awesome.me/webawesome/dist/styles/themes/awesome.css';
+import '@awesome.me/webawesome/dist/styles/utilities.css'; // layout (wa-stack, wa-split, wa-cluster, wa-grid, wa-flank, wa-frame), gap, align-items, border-radius, text
 ```
-
-The `matter.css` file automatically imports the Mild palette and loads fonts from `fonts.bunny.net`:
-- **Body**: Wix Madefor Text (sans-serif)
-- **Code**: Roboto Mono (monospace)
-- **Longform**: Roboto Serif (serif)
 
 ### Light/Dark Mode
 
@@ -204,16 +201,16 @@ root.classList.add(saved || (prefersDark ? 'wa-dark' : 'wa-light'));
 
 A toggle button in the nav bar swaps the class and saves the preference. This is wired up in M1 and refined in M8 with a dedicated settings toggle.
 
-### Key Design Tokens (Matter)
+### Key Design Tokens
 
 | Token | Value |
 |-------|-------|
 | `--wa-color-brand-fill-loud` | Purple brand (buttons, active states) |
-| `--wa-color-surface-default` | White (light) / Neutral-05 (dark) |
-| `--wa-color-surface-raised` | Neutral-95 (light) / Neutral-10 (dark) — cards, panels |
-| `--wa-border-radius-l` | Rounded panels (`border-radius-scale: 1.33`) |
-| `--wa-form-control-border-radius` | Pill-shaped buttons (`border-radius-pill` in Matter) |
-| `--wa-font-family-body` | Wix Madefor Text |
+| `--wa-color-surface-default` | White (light) / dark surface (dark) |
+| `--wa-color-surface-raised` | Raised surface — cards, panels |
+| `--wa-color-text-default` | Default text color |
+| `--wa-color-text-subdued` | Secondary/muted text |
+| `--wa-color-border-default` | Default border color |
 
 ---
 
@@ -326,14 +323,15 @@ A toggle button in the nav bar swaps the class and saves the preference. This is
 - **Login conditional rendering** — OAuth buttons and passkey button only appear for configured methods. If nothing is configured, login shows "Have your administrator configure at least one login provider".
 
 #### WA components registered in `app.js`
-button, icon, button-group, input, card, details, avatar, spinner, toast, copy-button, radio-group, radio, skeleton
+button, icon, button-group, input, card, details, avatar, spinner, callout, copy-button, radio-group, radio, skeleton
 
 #### Frontend routes
 | Path | View | Auth required |
 |------|------|---------------|
 | `/` | home | No (shows marketing splash or create form) |
 | `/login` | login | No (redirects to home if logged in) |
-| `/dashboard` | dashboard | Yes (redirects to login) |
+| `/links` | dashboard (Links tab) | Yes (redirects to login) |
+| `/campaigns` | dashboard (Campaigns tab) | Yes (redirects to login) |
 | `/links/:id` | link-detail | Yes (redirects to login) |
 
 ---
@@ -353,138 +351,71 @@ button, icon, button-group, input, card, details, avatar, spinner, toast, copy-b
 
 Queries Analytics Engine via REST SQL API (using `CF_ACCOUNT_ID` + `CF_API_TOKEN` secrets). Falls back to `link_stats` D1 table for data older than 90 days or if AE is unavailable.
 
-### Chart Components (Web Awesome Pro)
+### Chart Components (Chart.js)
 
-All charts use WA Pro's Chart.js wrappers (since v3.3). They auto-theme to light/dark mode via CSS custom properties, require no Chart.js boilerplate, and accept data via the reactive `config` property for dynamic API-driven rendering.
+All charts use Chart.js directly via a thin theme-aware wrapper (`frontend/src/lib/chart-helper.js`). The wrapper reads WA design tokens (`--wa-color-text-default`, `--wa-color-text-subdued`, `--wa-color-border-default`, `--wa-color-brand-fill-loud`) from computed styles to auto-theme charts to the current light/dark mode.
 
-**Imports** (bundled by esbuild from npm):
 ```js
-import '@web.awesome.me/webawesome-pro/dist/components/line-chart/line-chart.js';
-import '@web.awesome.me/webawesome-pro/dist/components/bar-chart/bar-chart.js';
-import '@web.awesome.me/webawesome-pro/dist/components/doughnut-chart/doughnut-chart.js';
+// frontend/src/lib/chart-helper.js
+import { Chart, registerables } from "chart.js";
+Chart.register(...registerables);
+
+export function createChart(canvas, type, config) { /* theme-aware defaults */ }
+export function destroyChart(instance) { /* cleanup */ }
 ```
 
-#### Clicks Over Time — `<wa-line-chart>`
+#### Clicks Over Time — Line Chart
 
-Primary analytics view. Fetches `/api/stats/:linkId/timeseries` and sets `config` dynamically.
+Primary analytics view. Fetches `/api/stats/:linkId/timeseries` and renders a `<canvas>`.
 
-```html
-<wa-line-chart
-  id="clicks-timeline"
-  x-label="Date"
-  y-label="Clicks"
-  min="0"
-  label="Clicks Over Time"
-  description="Line chart showing total and unique clicks over the selected time period"
->
-</wa-line-chart>
-```
 ```js
 // frontend/src/components/stats-charts.js
-const chart = document.querySelector('#clicks-timeline');
-const data = await fetch(`/api/stats/${linkId}/timeseries?period=day`).then(r => r.json());
-
-chart.config = {
-  data: {
-    labels: data.labels,           // ["Mar 1", "Mar 2", ...]
-    datasets: [
-      { label: 'Total Clicks', data: data.clicks, fill: true },
-      { label: 'Unique Clicks', data: data.uniqueClicks }
-    ]
-  }
-};
+wrap.innerHTML = `<canvas id="clicks-timeline" style="height:200px;"></canvas>`;
+const canvas = wrap.querySelector("#clicks-timeline");
+createChart(canvas, "line", {
+  data: { labels, datasets: [{ label: "Clicks", data: clicks, fill: true }] },
+});
 ```
 
-Key attributes used: `x-label`, `y-label`, `min="0"`, `fill: true` on the primary dataset for area emphasis. Period selector (hour/day/week) re-fetches and reassigns `config` to trigger re-render.
+Period selector (hour/day/week) destroys the previous chart instance and creates a new one.
 
-#### Device & Browser Breakdown — `<wa-doughnut-chart>`
+#### Device & Browser Breakdown — Doughnut Charts
 
-Doughnut charts for proportional data. Hollow center works well in dashboard card layouts.
+Doughnut charts for browsers, OS, and device type. Each rendered into its own `<canvas>` inside a `wa-grid`.
 
-```html
-<div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem;">
-  <wa-doughnut-chart
-    id="browsers-chart"
-    legend-position="bottom"
-    label="Browser Breakdown"
-    description="Doughnut chart showing click distribution across browsers"
-  ></wa-doughnut-chart>
-
-  <wa-doughnut-chart
-    id="os-chart"
-    legend-position="bottom"
-    label="OS Breakdown"
-    description="Doughnut chart showing click distribution across operating systems"
-  ></wa-doughnut-chart>
-</div>
-```
 ```js
-const browsersChart = document.querySelector('#browsers-chart');
-const devicesData = await fetch(`/api/stats/${linkId}/devices`).then(r => r.json());
-
-browsersChart.config = {
-  data: {
-    labels: devicesData.browsers.map(b => b.name),   // ["Chrome", "Safari", "Firefox", ...]
-    datasets: [{ label: 'Clicks', data: devicesData.browsers.map(b => b.clicks) }]
-  }
-};
+// frontend/src/components/stats-devices.js
+createChart(canvas, "doughnut", {
+  data: { labels: items.map(i => i.name), datasets: [{ label: "Clicks", data: items.map(i => i.clicks) }] },
+});
 ```
 
-Separate doughnut charts for browsers, OS, and device type (desktop/mobile/tablet). Custom slice colors via `--fill-color-*` / `--border-color-*` CSS custom properties if the default 6-color palette needs extending.
+#### Top Referrers — Horizontal Bar Chart
 
-#### Top Referrers — `<wa-bar-chart>`
+Horizontal bars to accommodate long referrer domain names. Uses `indexAxis: "y"`.
 
-Horizontal bars to accommodate long referrer domain names.
-
-```html
-<wa-bar-chart
-  id="referrers-chart"
-  orientation="horizontal"
-  without-legend
-  label="Top Referrers"
-  description="Horizontal bar chart showing top traffic sources"
-></wa-bar-chart>
-```
 ```js
-const refChart = document.querySelector('#referrers-chart');
-const refData = await fetch(`/api/stats/${linkId}/referrers`).then(r => r.json());
-
-refChart.config = {
-  data: {
-    labels: refData.map(r => r.source),    // ["google.com", "twitter.com", ...]
-    datasets: [{ label: 'Clicks', data: refData.map(r => r.clicks) }]
-  }
-};
+// frontend/src/components/stats-referrers.js
+createChart(canvas, "bar", {
+  data: { labels: referrers.map(r => r.source), datasets: [{ label: "Clicks", data: referrers.map(r => r.clicks) }] },
+  options: { indexAxis: "y" },
+});
 ```
 
-Uses `without-legend` since there's only one dataset. `orientation="horizontal"` renders bars left-to-right.
+#### Geographic Breakdown — Bar Chart
 
-#### Geographic Breakdown — `<wa-bar-chart>`
-
-Top countries as a vertical bar chart, with optional drill-down to cities.
-
-```html
-<wa-bar-chart
-  id="geo-chart"
-  without-legend
-  x-label="Country"
-  y-label="Clicks"
-  label="Clicks by Country"
-  description="Bar chart showing click distribution across countries"
-></wa-bar-chart>
-```
+Top countries/cities as vertical bar charts.
 
 #### Shared Patterns
 
-- **Dynamic data**: All charts set `config` property after API fetch. `config` is shallowly reactive — reassigning triggers re-render automatically.
-- **Dark mode**: Charts auto-adapt when `wa-light` ↔ `wa-dark` toggles on `<html>`. The Matter theme's Mild palette provides distinct light/dark surface and text colors; chart grid lines, fills, and borders all update automatically via CSS custom properties.
-- **Theming**: Default 6-color chart palette (blue, pink, green, yellow, purple, orange) works well with Matter's Mild palette. Override `--fill-color-1` through `--fill-color-6` and `--border-color-1` through `--border-color-6` for custom palettes. Colors support `var(--wa-color-*)` and `color-mix()`.
-- **Accessibility**: Every chart gets `label` (short name, maps to `aria-label`) and `description` (insight-oriented text for screen readers).
-- **Chart.js access**: After render, `chart.chart` exposes the raw Chart.js instance for programmatic updates or image export.
+- **Dynamic data**: All charts created after API fetch. Previous instances destroyed before re-creation on period change.
+- **Dark mode**: Chart colors derived from WA CSS custom properties via `getComputedStyle()`, with fallbacks for both light and dark modes.
+- **Cleanup**: Every chart component tracks its Chart.js instances and calls `destroyChart()` before re-rendering.
 
 ### New Files
 - `src/routes/api/stats.ts` - Stats endpoints (queries AE SQL API, falls back to D1)
 - `src/services/useragent.ts` - Lightweight UA parser (regex, no library)
+- `frontend/src/lib/chart-helper.js` - Theme-aware Chart.js wrapper (createChart/destroyChart)
 - `frontend/src/components/stats-charts.js` - Orchestrates all chart components, handles API fetches and period selection
 - `frontend/src/components/stats-devices.js` - Browser/OS/device doughnut charts
 - `frontend/src/components/stats-geo.js` - Country/city bar charts
@@ -553,7 +484,7 @@ Top countries as a vertical bar chart, with optional drill-down to cities.
 - `frontend/src/views/dashboard.js` — Fixed `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input` → `input` event, inline flex → `wa-split`
 - `frontend/src/views/home.js` — Authenticated users redirect straight to `/dashboard` instead of showing create form on home
 - `frontend/src/components/nav-bar.js` — Replaced inline nav with `wa-split`/`wa-cluster`, added avatar dropdown menu (wa-dropdown) for logged-in users
-- `frontend/src/components/toast.js` — Rewritten to use persistent `<wa-toast>` container with `.create()` API instead of per-notification elements
+- `frontend/src/components/toast.js` — Uses `wa-callout` (closable, with auto-dismiss) in a fixed-position container for toast-style notifications
 - `frontend/src/components/stats-charts.js` — Fixed `--wa-color-neutral-500` → `--wa-color-text-subdued`, `wa-change` → `change` event, inline flex → `wa-split`
 - `frontend/src/components/link-table.js` — Used `wa-align-items-center` instead of inline `text-align:center`
 - `frontend/src/styles/app.css` — Removed custom flex rules replaced by WA utility classes (`wa-split`, `wa-cluster`, `wa-stack`)
@@ -571,12 +502,12 @@ Top countries as a vertical bar chart, with optional drill-down to cities.
 - **Internal link check** uses `getAuth(env).api.getSession()` directly in redirect handler
 - **Password field in form** tracks "touched" state to avoid sending empty password on edit (which would clear it)
 - **Slug is immutable** — PUT endpoint does not accept slug changes; frontend disables slug field when editing
-- **WA convention fixes across M1/M2 files** — `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input`/`wa-change` → `input`/`change` events, `--wa-color-neutral-*` → `--wa-color-text-subdued`, inline flex → WA utility classes (`wa-split`, `wa-cluster`), `<wa-toast>` rewritten to persistent container pattern
+- **WA convention fixes across M1/M2 files** — `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input`/`wa-change` → `input`/`change` events, `--wa-color-neutral-*` → `--wa-color-text-subdued`, inline flex → WA utility classes (`wa-split`, `wa-cluster`)
 - **Home view simplified** — Authenticated users redirect to `/dashboard`; home is landing page only
 - **Nav bar avatar dropdown** — Logged-in users get a `wa-dropdown` menu under their avatar (theme toggle + logout) instead of separate buttons
 
 #### WA components registered in `app.js` (cumulative)
-button, icon, button-group, input, card, details, avatar, spinner, toast, copy-button, radio-group, radio, skeleton, divider, line-chart, bar-chart, doughnut-chart, switch, textarea, qr-code, badge, dropdown, dropdown-item
+button, icon, button-group, input, card, details, avatar, spinner, callout, copy-button, radio-group, radio, skeleton, divider, switch, textarea, qr-code, badge, dropdown, dropdown-item
 
 ---
 
@@ -600,6 +531,50 @@ button, icon, button-group, input, card, details, avatar, spinner, toast, copy-b
 - Mobile targeting: iOS -> App Store, Android -> Play Store
 - `yourdomain.com/abc?ref=twitter` -> `example.com/page?ref=twitter`
 - Campaign aggregates click stats across grouped links
+
+### Implementation Notes
+
+**Implemented 2026-03-18. All M4 files complete.**
+
+#### Files created
+- `drizzle/migrations/0002_campaigns_targeting.sql` — Migration adding `campaigns`, `link_campaigns`, `link_targets` tables and `paramForwarding` column to `links`
+- `src/routes/api/campaigns.ts` — Full CRUD for campaigns with link association management and aggregate stats endpoint
+- `frontend/src/views/campaigns.js` — Campaign list view with create form
+- `frontend/src/views/campaign-detail.js` — Campaign detail with edit/delete, link list, aggregate stats, "Add Links" dialog
+
+#### Files modified
+- `src/db/schema.ts` — Added `primaryKey` import, `paramForwarding` column on links, and `campaigns`, `linkCampaigns`, `linkTargets` table definitions
+- `src/services/kv-cache.ts` — Added `CachedTarget` interface and `paramForwarding`/`targets` fields to `CachedRedirect`
+- `src/routes/redirect.ts` — Added `detectDeviceType()`, `resolveDestination()` (targeting + param forwarding evaluation), updated `resolveSlug` to fetch targeting rules, updated both `handleRedirect` and `handleRedirectPost` to use resolved destination URLs
+- `src/routes/api/links.ts` — Added `paramForwarding` and `campaignId` to create/update handlers, added `GET /:id/targets` and `PUT /:id/targets` endpoints, updated GET /:id to return targets and campaigns, updated all KV cache writes to include `paramForwarding` and `targets`
+- `src/index.ts` — Mounted campaign routes with auth middleware
+- `src/lib/constants.ts` — Added "campaigns" to `RESERVED_SLUGS`
+- `frontend/src/components/link-form.js` — Added param forwarding toggle, campaign assignment select, targeting rules section with dynamic add/remove rows
+- `frontend/src/views/link-detail.js` — Shows targeting rules table, param forwarding badge, campaign name badge
+- `frontend/src/app.js` — Added `wa-select`, `wa-option`, `wa-dialog` component imports; campaign view routes
+- `frontend/src/components/nav-bar.js` — Added "Campaigns" nav link for logged-in users
+- `frontend/src/styles/app.css` — Campaign card hover, targeting rule row styling
+
+#### Design decisions
+- **Targeting evaluation**: Rules sorted by priority (descending), first match wins. Geo matches `request.cf.country` (2-letter ISO). Device detection via lightweight regex (no library).
+- **Param forwarding**: Appends incoming query params to destination URL, only adding params not already present in destination.
+- **Campaign-link relationship**: Many-to-many via `link_campaigns` table. Link form shows single campaign select (first association) but schema supports multiple.
+- **Campaign stats**: Dedicated `GET /api/campaigns/:id/stats` endpoint aggregates `link_stats` across all campaign links.
+- **KV cache includes targets**: Targeting rules cached in KV alongside redirect data to avoid D1 lookups in hot path.
+- **D1 batch not used for target replacement**: Delete-then-insert is sequential; soft consistency is acceptable for targeting rule updates (not a hot path).
+
+#### WA components registered in `app.js` (cumulative)
+button, icon, button-group, input, card, details, avatar, spinner, callout, copy-button, radio-group, radio, skeleton, divider, switch, textarea, qr-code, badge, dropdown, dropdown-item, select, option, dialog
+
+#### Frontend routes (cumulative)
+| Path | View | Auth required |
+|------|------|---------------|
+| `/` | home | No |
+| `/login` | login | No |
+| `/links` | dashboard (Links tab) | Yes |
+| `/campaigns` | dashboard (Campaigns tab) | Yes |
+| `/links/:id` | link-detail | Yes |
+| `/campaigns/:id` | campaign-detail | Yes |
 
 ---
 
@@ -751,67 +726,35 @@ The component also includes a "Copy Link" button using `wa-copy-button` for the 
 | `0005_teams.sql` | M7 | teams, team_members, team_invites, ALTER links/user |
 | `0006_ab_testing.sql` | M8 | ab_tests, ab_variants |
 
-## Frontend Conventions (Web Awesome Pro)
+## Frontend Conventions (Web Awesome)
 
-**IMPORTANT: All frontend code MUST be verified against the `webawesome` skill before considering a milestone complete.**
+**The `webawesome` skill is the canonical reference.** Always read the component's doc (slots, attributes, events, variants) before using it. Do not guess from memory or Shoelace conventions — WA has diverged. Every slot name, event name, attribute name, and variant value must come from the skill docs for the specific component being used.
 
-### Component API
+### Verification rule
 
-- **Slots**: Use `start` / `end`, NOT `prefix` / `suffix`. The old Shoelace names do not exist in WA.
-  ```html
-  <!-- CORRECT -->
-  <wa-button><wa-icon slot="start" name="plus"></wa-icon> Create</wa-button>
-  <!-- WRONG -->
-  <wa-button><wa-icon slot="prefix" name="plus"></wa-icon> Create</wa-button>
-  ```
+Before a milestone is considered complete, load the `webawesome` skill and verify every `wa-*` element in changed files against its docs. Common things that differ from Shoelace and are easy to get wrong:
 
-- **Attributes**: WA renamed several attributes from their Shoelace origins:
-  | Wrong (Shoelace) | Correct (WA) |
-  |------------------|--------------|
-  | `help-text` | `hint` |
-  | `clearable` | `with-clear` |
+- **Slot names** — WA uses `start`/`end` (not `prefix`/`suffix`), but not every component has them. If the docs only list a `(default)` slot, don't use named slots.
+- **Attribute names** — e.g. `hint` not `help-text`, `with-clear` not `clearable`.
+- **Event names** — Standard DOM events (`input`, `change`) are unprefixed. Only component-specific events use `wa-` prefix.
+- **Variant values** — WA uses `brand` not `primary`. Always check the component's variant list.
+- **Declarative features** — Use `data-dialog="close"` / `data-dialog="open {id}"` instead of manual JS when no async logic is needed.
 
-- **`<wa-toast>`**: Is a **container**, not an individual notification. Create ONE persistent `<wa-toast>` element in the DOM and call `.create(message, { variant, duration })` on it. Never create/destroy toast elements per notification.
+### Style hierarchy
 
-- **`<wa-qr-code>`**: Renders via the **Canvas API**, not SVG. To export, query `shadowRoot.querySelector("canvas")` and use `canvas.toDataURL()`. There is no SVG to extract.
+When writing styles, prefer in this order (first available wins):
 
-### Event Names
+1. **WA utility classes** — `wa-stack`, `wa-cluster`, `wa-split`, `wa-grid`, `wa-flank`, `wa-frame`, `wa-gap-*`, `wa-align-items-*`, `wa-justify-content-*`, `wa-align-self-*`, `wa-border-radius-*`, `wa-visually-hidden`. See layout docs in the `webawesome` skill.
+2. **WA design tokens** — Semantic tokens only (`--wa-color-text-subdued`, `--wa-color-border-default`). Never use numeric palette tokens (`--wa-color-neutral-300`).
+3. **Custom CSS in `app.css`** — Only for things WA utilities genuinely can't express (e.g. `max-width`, `position`, `flex:1`, table styling).
+4. **Inline `style` attributes** — Last resort, for one-off values like `--min-column-size`, `--width`, `--size`.
 
-WA components emit **standard DOM event names** (`input`, `change`, `focus`, `blur`) — NOT `wa-`-prefixed versions of those. The `wa-` prefix is only used for component-specific events that have no DOM equivalent.
+**Never write inline `display:flex`, `align-items`, `justify-content`, `gap`, or `flex-direction` when a WA utility class exists.**
 
-| Component | Standard events | WA-specific events |
-|-----------|----------------|-------------------|
-| `wa-input` | `input`, `change`, `focus`, `blur` | `wa-clear`, `wa-invalid` |
-| `wa-select` | `input`, `change`, `focus`, `blur` | `wa-clear`, `wa-invalid` |
-| `wa-switch` | `input`, `change`, `focus`, `blur` | `wa-invalid` |
-| `wa-radio-group` | `change` | — |
-| `wa-dialog` | — | `wa-show`, `wa-hide`, `wa-after-show`, `wa-after-hide` |
-| `wa-details` | — | `wa-show`, `wa-hide`, `wa-after-show`, `wa-after-hide` |
+### Project-specific patterns
 
-### Design Tokens
-
-Use **semantic** tokens, not numeric palette tokens. Numeric tokens (e.g. `--wa-color-neutral-300`) may not exist in all themes/palettes or may not adapt to dark mode.
-
-| Wrong | Correct |
-|-------|---------|
-| `--wa-color-neutral-300` | `--wa-color-border-default` |
-| `--wa-color-neutral-500` | `--wa-color-text-subdued` |
-| `--wa-color-neutral-600` | `--wa-color-text-subdued` |
-
-### Layout Utility Classes
-
-Use WA's built-in layout utilities instead of inline flex/grid styles or custom CSS rules:
-
-| Inline style | WA utility class |
-|-------------|-----------------|
-| `display:flex; justify-content:space-between; align-items:center;` | `wa-split` |
-| `display:flex; align-items:center; gap:*;` | `wa-cluster wa-gap-{size}` |
-| `display:flex; flex-direction:column; gap:*;` | `wa-stack wa-gap-{size}` |
-| `display:grid; grid-template-columns:*; gap:*;` | `wa-grid wa-gap-{size}` |
-
-Gap sizes: `wa-gap-3xs`, `wa-gap-2xs`, `wa-gap-xs`, `wa-gap-s`, `wa-gap-m`, `wa-gap-l`, `wa-gap-xl`, `wa-gap-2xl`, `wa-gap-3xl`.
-
-Only use custom CSS when a layout genuinely has no WA utility equivalent.
+- **Toast**: `showToast(message, variant, duration)` in `frontend/src/components/toast.js`. Uses `wa-callout` in a fixed container.
+- **QR codes**: `<wa-qr-code>` renders via Canvas API, not SVG. Export via `shadowRoot.querySelector("canvas").toDataURL()`.
 
 ---
 
@@ -881,8 +824,8 @@ Only use custom CSS when a layout genuinely has no WA utility equivalent.
 
 ## Dependencies (as installed)
 
-**Runtime**: `hono@^4.12.5`, `better-auth@^1.5.5`, `@better-auth/passkey@^1.5.5`, `drizzle-orm@^0.45.1`, `@web.awesome.me/webawesome-pro@^3.3.1`
+**Runtime**: `hono@^4.12.5`, `better-auth@^1.5.5`, `@better-auth/passkey@^1.5.5`, `drizzle-orm@^0.45.1`, `@awesome.me/webawesome@^3.3.1`, `chart.js@^4.5.0`
 **Dev**: `wrangler@^4.74.0`, `drizzle-kit@^0.31.9`, `typescript@^5.9.3`, `esbuild@^0.27.3`
-**Frontend (bundled by esbuild)**: `better-auth/client` + `@better-auth/passkey/client` (from runtime deps), `@web.awesome.me/webawesome-pro` (components + theme CSS)
+**Frontend (bundled by esbuild)**: `better-auth/client` + `@better-auth/passkey/client` (from runtime deps), `@awesome.me/webawesome` (components + theme CSS), `chart.js` (analytics charts)
 
 Note: `@cloudflare/workers-types` is not a separate dep — `wrangler types` generates `bindings.ts` directly.

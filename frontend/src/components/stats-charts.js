@@ -1,5 +1,6 @@
 import { escapeHtml } from "../lib/escape.js";
 import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
+import { createChart, destroyChart } from "../lib/chart-helper.js";
 import { renderStatsDevices } from "./stats-devices.js";
 import { renderStatsGeo } from "./stats-geo.js";
 import { renderStatsReferrers } from "./stats-referrers.js";
@@ -23,6 +24,8 @@ async function loadSummary(container, linkId, days) {
   }
 }
 
+let timelineChart;
+
 async function loadTimeline(container, linkId, days) {
   const wrap = container.querySelector("#timeline-container");
   wrap.innerHTML = SKELETON;
@@ -38,11 +41,10 @@ async function loadTimeline(container, linkId, days) {
       return;
     }
 
-    wrap.innerHTML = `<wa-line-chart id="clicks-timeline" x-label="Date" y-label="Clicks" min="0"
-      label="Clicks Over Time" description="Line chart showing clicks over the selected time period"></wa-line-chart>`;
-
-    const chart = wrap.querySelector("#clicks-timeline");
-    chart.config = {
+    destroyChart(timelineChart);
+    wrap.innerHTML = `<canvas id="clicks-timeline" style="height:200px;"></canvas>`;
+    const canvas = wrap.querySelector("#clicks-timeline");
+    timelineChart = createChart(canvas, "line", {
       data: {
         labels,
         datasets: [{
@@ -51,7 +53,7 @@ async function loadTimeline(container, linkId, days) {
           fill: true,
         }],
       },
-    };
+    });
   } catch {
     wrap.innerHTML = `<div style="text-align:center;padding:2rem;color:var(--wa-color-text-subdued);">Failed to load timeline</div>`;
   }

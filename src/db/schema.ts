@@ -1,4 +1,4 @@
-import { sqliteTable, text, integer, uniqueIndex, index } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, uniqueIndex, index, primaryKey } from "drizzle-orm/sqlite-core";
 
 // Better Auth tables
 export const user = sqliteTable("user", {
@@ -87,9 +87,40 @@ export const links = sqliteTable("links", {
   ogTitle: text("ogTitle"),
   ogDescription: text("ogDescription"),
   ogImage: text("ogImage"),
+  paramForwarding: integer("paramForwarding", { mode: "boolean" }).notNull().default(false),
 }, (table) => [
   uniqueIndex("idx_links_slug").on(table.slug),
   index("idx_links_userId").on(table.userId),
+]);
+
+export const campaigns = sqliteTable("campaigns", {
+  id: text("id").primaryKey(),
+  userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  description: text("description"),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
+}, (table) => [
+  index("idx_campaigns_userId").on(table.userId),
+]);
+
+export const linkCampaigns = sqliteTable("link_campaigns", {
+  linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
+  campaignId: text("campaignId").notNull().references(() => campaigns.id, { onDelete: "cascade" }),
+}, (table) => [
+  primaryKey({ columns: [table.linkId, table.campaignId] }),
+  index("idx_link_campaigns_campaignId").on(table.campaignId),
+]);
+
+export const linkTargets = sqliteTable("link_targets", {
+  id: text("id").primaryKey(),
+  linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
+  type: text("type").notNull(), // "geo" | "device" — CHECK constraint enforced at DB level (0002 migration) + app validation
+  matchValue: text("matchValue").notNull(),
+  destinationUrl: text("destinationUrl").notNull(),
+  priority: integer("priority").notNull().default(0),
+}, (table) => [
+  index("idx_link_targets_linkId").on(table.linkId),
 ]);
 
 export const linkStats = sqliteTable("link_stats", {

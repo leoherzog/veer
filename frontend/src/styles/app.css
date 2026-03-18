@@ -77,6 +77,34 @@ body {
   border-radius: var(--wa-border-radius-s);
 }
 
+/* Campaign cards */
+.campaign-card:hover {
+  outline: 2px solid var(--wa-color-brand-fill-loud);
+  outline-offset: -2px;
+}
+
+/* Targeting rule rows */
+.target-rule {
+  flex-wrap: wrap;
+}
+
+/* Available link rows in dialog */
+.available-link-row:last-child {
+  border-bottom: none !important;
+}
+
+/* Toast container */
+#toast-container {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 400px;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .link-table { font-size: 0.875rem; }

@@ -1,6 +1,3 @@
-# Web Awesome registry token (for npm install)
-WEBAWESOME_NPM_TOKEN=
-
 # Better Auth
 BETTER_AUTH_SECRET=your-secret-min-32-chars-here!!!
 BETTER_AUTH_URL=http://localhost:8787

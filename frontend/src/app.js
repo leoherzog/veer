@@ -1,29 +1,33 @@
 // Web Awesome theme and components (bundled by esbuild)
-import "@web.awesome.me/webawesome-pro/dist/styles/themes/matter.css";
-import "@web.awesome.me/webawesome-pro/dist/styles/utilities.css";
-import "@web.awesome.me/webawesome-pro/dist/components/button/button.js";
-import "@web.awesome.me/webawesome-pro/dist/components/icon/icon.js";
-import "@web.awesome.me/webawesome-pro/dist/components/button-group/button-group.js";
-import "@web.awesome.me/webawesome-pro/dist/components/input/input.js";
-import "@web.awesome.me/webawesome-pro/dist/components/card/card.js";
-import "@web.awesome.me/webawesome-pro/dist/components/details/details.js";
-import "@web.awesome.me/webawesome-pro/dist/components/avatar/avatar.js";
-import "@web.awesome.me/webawesome-pro/dist/components/spinner/spinner.js";
-import "@web.awesome.me/webawesome-pro/dist/components/toast/toast.js";
-import "@web.awesome.me/webawesome-pro/dist/components/copy-button/copy-button.js";
-import "@web.awesome.me/webawesome-pro/dist/components/radio-group/radio-group.js";
-import "@web.awesome.me/webawesome-pro/dist/components/radio/radio.js";
-import "@web.awesome.me/webawesome-pro/dist/components/skeleton/skeleton.js";
-import "@web.awesome.me/webawesome-pro/dist/components/divider/divider.js";
-import "@web.awesome.me/webawesome-pro/dist/components/line-chart/line-chart.js";
-import "@web.awesome.me/webawesome-pro/dist/components/bar-chart/bar-chart.js";
-import "@web.awesome.me/webawesome-pro/dist/components/doughnut-chart/doughnut-chart.js";
-import "@web.awesome.me/webawesome-pro/dist/components/switch/switch.js";
-import "@web.awesome.me/webawesome-pro/dist/components/textarea/textarea.js";
-import "@web.awesome.me/webawesome-pro/dist/components/qr-code/qr-code.js";
-import "@web.awesome.me/webawesome-pro/dist/components/badge/badge.js";
-import "@web.awesome.me/webawesome-pro/dist/components/dropdown/dropdown.js";
-import "@web.awesome.me/webawesome-pro/dist/components/dropdown-item/dropdown-item.js";
+import "@awesome.me/webawesome/dist/styles/themes/awesome.css";
+import "@awesome.me/webawesome/dist/styles/utilities.css";
+import "@awesome.me/webawesome/dist/components/button/button.js";
+import "@awesome.me/webawesome/dist/components/icon/icon.js";
+import "@awesome.me/webawesome/dist/components/button-group/button-group.js";
+import "@awesome.me/webawesome/dist/components/input/input.js";
+import "@awesome.me/webawesome/dist/components/card/card.js";
+import "@awesome.me/webawesome/dist/components/details/details.js";
+import "@awesome.me/webawesome/dist/components/avatar/avatar.js";
+import "@awesome.me/webawesome/dist/components/spinner/spinner.js";
+import "@awesome.me/webawesome/dist/components/callout/callout.js";
+import "@awesome.me/webawesome/dist/components/copy-button/copy-button.js";
+import "@awesome.me/webawesome/dist/components/radio-group/radio-group.js";
+import "@awesome.me/webawesome/dist/components/radio/radio.js";
+import "@awesome.me/webawesome/dist/components/skeleton/skeleton.js";
+import "@awesome.me/webawesome/dist/components/divider/divider.js";
+import "@awesome.me/webawesome/dist/components/switch/switch.js";
+import "@awesome.me/webawesome/dist/components/textarea/textarea.js";
+import "@awesome.me/webawesome/dist/components/qr-code/qr-code.js";
+import "@awesome.me/webawesome/dist/components/badge/badge.js";
+import "@awesome.me/webawesome/dist/components/dropdown/dropdown.js";
+import "@awesome.me/webawesome/dist/components/dropdown-item/dropdown-item.js";
+import "@awesome.me/webawesome/dist/components/select/select.js";
+import "@awesome.me/webawesome/dist/components/option/option.js";
+import "@awesome.me/webawesome/dist/components/dialog/dialog.js";
+import "@awesome.me/webawesome/dist/components/tab-group/tab-group.js";
+import "@awesome.me/webawesome/dist/components/tab/tab.js";
+import "@awesome.me/webawesome/dist/components/tab-panel/tab-panel.js";
+import "@awesome.me/webawesome/dist/components/tooltip/tooltip.js";
 
 import "./styles/app.css";
 
@@ -34,6 +38,7 @@ import { renderHome } from "./views/home.js";
 import { renderLogin } from "./views/login.js";
 import { renderDashboard } from "./views/dashboard.js";
 import { renderLinkDetail } from "./views/link-detail.js";
+import { renderCampaignDetail } from "./views/campaign-detail.js";
 
 // Theme initialization
 const root = document.documentElement;
@@ -76,13 +81,21 @@ async function init() {
     if (currentUser) return render((el) => renderHome(el, currentUser));
     render((el) => renderLogin(el));
   });
-  addRoute("/dashboard", () => {
+  addRoute("/links", () => {
     if (!currentUser) return render((el) => renderLogin(el));
     render((el) => renderDashboard(el));
+  });
+  addRoute("/campaigns", () => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    render((el) => renderDashboard(el, { activeTab: "campaigns" }));
   });
   addRoute("/links/:id", (params) => {
     if (!currentUser) return render((el) => renderLogin(el));
     render((el) => renderLinkDetail(el, params));
+  });
+  addRoute("/campaigns/:id", (params) => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    render((el) => renderCampaignDetail(el, params));
   });
 
   setNotFound(() => {

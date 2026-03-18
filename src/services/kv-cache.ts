@@ -1,3 +1,10 @@
+export interface CachedTarget {
+  type: "geo" | "device";
+  matchValue: string;
+  destinationUrl: string;
+  priority: number;
+}
+
 export interface CachedRedirect {
   url: string;
   redirectType: number;
@@ -10,6 +17,8 @@ export interface CachedRedirect {
   ogTitle: string | null;
   ogDescription: string | null;
   ogImage: string | null;
+  paramForwarding: boolean;
+  targets: CachedTarget[] | null;
 }
 
 export async function getCachedRedirect(kv: KVNamespace, slug: string): Promise<CachedRedirect | null> {
