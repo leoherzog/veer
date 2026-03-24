@@ -1,8 +1,6 @@
 import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 
-let chart;
-
 export async function renderStatsReferrers(container, linkId, days = 30) {
   container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Top Referrers</h3>${SKELETON}</div></wa-card>`;
 
@@ -15,7 +13,7 @@ export async function renderStatsReferrers(container, linkId, days = 30) {
       return;
     }
 
-    destroyChart(chart);
+    destroyChart(container._chart);
     container.innerHTML = `
       <wa-card>
         <div class="wa-stack wa-gap-m">
@@ -27,7 +25,7 @@ export async function renderStatsReferrers(container, linkId, days = 30) {
 
     const canvas = container.querySelector("#referrers-chart");
     if (canvas) {
-      chart = createChart(canvas, "bar", {
+      container._chart = createChart(canvas, "bar", {
         data: {
           labels: referrers.map((r) => r.source),
           datasets: [{ label: "Clicks", data: referrers.map((r) => r.clicks) }],

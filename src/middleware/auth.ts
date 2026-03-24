@@ -12,6 +12,14 @@ export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  c.set("user", session.user as AuthUser);
+  const adminEmails = c.env.ADMIN_EMAILS?.split(",").map(e => e.trim().toLowerCase()) ?? [];
+  const isAdmin = adminEmails.includes(session.user.email.toLowerCase());
+
+  c.set("user", { ...session.user, isAdmin } as AuthUser);
+  await next();
+});
+
+export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
+  if (!c.var.user?.isAdmin) return c.json({ error: "Forbidden" }, 403);
   await next();
 });

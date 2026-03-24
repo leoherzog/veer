@@ -2,6 +2,9 @@
 BETTER_AUTH_SECRET=your-secret-min-32-chars-here!!!
 BETTER_AUTH_URL=http://localhost:8787
 
+# Admin access
+ADMIN_EMAILS=you@example.com
+
 # Cloudflare (for Analytics Engine SQL API reads)
 CF_ACCOUNT_ID=
 CF_API_TOKEN=

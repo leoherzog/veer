@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
 import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
@@ -81,6 +81,7 @@ describe("Redirect engine – GET /:slug", () => {
         ogImage: null,
         paramForwarding: false,
         targets: null,
+        domainHostname: null,
       });
 
       const res = await app.request("/kv-hit", {}, env, mockExecutionCtx());
@@ -104,6 +105,7 @@ describe("Redirect engine – GET /:slug", () => {
         ogImage: null,
         paramForwarding: false,
         targets: null,
+        domainHostname: null,
       });
 
       const res = await app.request("/kv-inactive", {}, env, mockExecutionCtx());

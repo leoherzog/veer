@@ -3,7 +3,7 @@ import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 
 export async function renderCampaignsPanel(container) {
-  container.innerHTML = `<div style="text-align:center;padding:3rem;"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
 
   let campaigns;
   try {
@@ -19,13 +19,13 @@ export async function renderCampaignsPanel(container) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
-        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="regular" style="font-size:0.6em;cursor:help;color:var(--wa-color-text-subdued);"></wa-icon></h1>
-        <wa-tooltip for="campaigns-help">Group related links together to track aggregate click stats across a promotion or project.</wa-tooltip>
+        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="regular" class="text-subdued" style="font-size:0.6em;cursor:help;"></wa-icon></h1>
         <wa-button variant="brand" id="new-campaign-btn">
           <wa-icon slot="start" name="plus"></wa-icon>
           New Campaign
         </wa-button>
       </div>
+      <wa-tooltip for="campaigns-help">Group related links together to track aggregate click stats across a promotion or project.</wa-tooltip>
       <div id="create-section" style="display:none;">
         <wa-card>
           <form id="campaign-form" class="wa-stack wa-gap-m">
@@ -85,9 +85,9 @@ export async function renderCampaignsPanel(container) {
 function renderCampaignList(container, campaigns) {
   if (!campaigns.length) {
     container.innerHTML = `
-      <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:3rem;">
-        <wa-icon name="bullhorn" style="font-size:2rem;opacity:0.5;"></wa-icon>
-        <p style="color:var(--wa-color-text-subdued);">No campaigns yet. Create one to group your links.</p>
+      <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
+        <wa-icon name="bullhorn" style="font-size:var(--wa-font-size-2xl);opacity:0.5;"></wa-icon>
+        <p class="text-subdued">No campaigns yet. Create one to group your links.</p>
       </div>
     `;
     return;
@@ -95,11 +95,11 @@ function renderCampaignList(container, campaigns) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-m">
       ${campaigns.map(c => `
-        <wa-card class="campaign-card" data-id="${escapeAttr(c.id)}" style="cursor:pointer;">
+        <wa-card class="campaign-card" data-id="${escapeAttr(c.id)}">
           <div class="wa-split">
             <div class="wa-stack wa-gap-2xs">
               <strong>${escapeHtml(c.name)}</strong>
-              ${c.description ? `<span style="color:var(--wa-color-text-subdued);font-size:0.875rem;">${escapeHtml(c.description)}</span>` : ""}
+              ${c.description ? `<span class="wa-body-s text-subdued">${escapeHtml(c.description)}</span>` : ""}
             </div>
             <wa-badge variant="neutral" pill>${c.linkCount ?? 0} link${(c.linkCount ?? 0) === 1 ? "" : "s"}</wa-badge>
           </div>

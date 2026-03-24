@@ -6,6 +6,7 @@ export type AuthUser = {
   name: string;
   email: string;
   image: string | null;
+  isAdmin: boolean;
 };
 
 /** Shared Hono environment type used across the app. */

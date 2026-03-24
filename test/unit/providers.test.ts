@@ -1,15 +1,20 @@
 import { describe, it, expect } from "vitest";
 import { getConfiguredProviders } from "../../src/lib/providers";
+import type { Env } from "../../src/bindings";
 
-const BASE_ENV = {
+const BASE_ENV: Env = {
   BETTER_AUTH_URL: "http://localhost:8787",
   BETTER_AUTH_SECRET: "test-secret",
   CF_ACCOUNT_ID: "test",
   CF_API_TOKEN: "test",
-} as any;
+  DB: {} as D1Database,
+  KV: {} as KVNamespace,
+  ANALYTICS: {} as AnalyticsEngineDataset,
+  ASSETS: {} as Fetcher,
+};
 
-function envWith(extra: Record<string, string>) {
-  return { ...BASE_ENV, ...extra } as any;
+function envWith(extra: Partial<Env>): Env {
+  return { ...BASE_ENV, ...extra };
 }
 
 describe("getConfiguredProviders", () => {

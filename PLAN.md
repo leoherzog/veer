@@ -57,7 +57,7 @@ veer/
         links.ts               # /api/links CRUD + PATCH /:id/active ✅
         stats.ts               # /api/stats/* analytics (M2)
         campaigns.ts           # /api/campaigns (M4)
-        domains.ts             # /api/domains (M5)
+        domains.ts             # /api/domains sync + config + access (M5) ✅
         keys.ts                # /api/keys (M6)
         bulk.ts                # /api/bulk (M6)
         teams.ts               # /api/teams (M7)
@@ -88,7 +88,7 @@ veer/
         dashboard.js           # Link list (authenticated) ✅
         link-detail.js         # Single link + stats ✅
         login.js               # OAuth provider buttons (dynamic from /api/auth/providers) ✅
-        settings.js            # User settings, API keys, domains (M6)
+        settings.js            # Settings: domains (M5) ✅, API keys (M6)
         campaigns.js           # Campaign management (M4)
         admin.js               # Admin panel (M7)
       components/
@@ -208,9 +208,9 @@ A toggle button in the nav bar swaps the class and saves the preference. This is
 | `--wa-color-brand-fill-loud` | Purple brand (buttons, active states) |
 | `--wa-color-surface-default` | White (light) / dark surface (dark) |
 | `--wa-color-surface-raised` | Raised surface — cards, panels |
-| `--wa-color-text-default` | Default text color |
-| `--wa-color-text-subdued` | Secondary/muted text |
-| `--wa-color-border-default` | Default border color |
+| `--wa-color-text-normal` | Default text color |
+| `--wa-color-text-quiet` | Secondary/muted text |
+| `--wa-color-neutral-border-normal` | Default border color |
 
 ---
 
@@ -353,7 +353,7 @@ Queries Analytics Engine via REST SQL API (using `CF_ACCOUNT_ID` + `CF_API_TOKEN
 
 ### Chart Components (Chart.js)
 
-All charts use Chart.js directly via a thin theme-aware wrapper (`frontend/src/lib/chart-helper.js`). The wrapper reads WA design tokens (`--wa-color-text-default`, `--wa-color-text-subdued`, `--wa-color-border-default`, `--wa-color-brand-fill-loud`) from computed styles to auto-theme charts to the current light/dark mode.
+All charts use Chart.js directly via a thin theme-aware wrapper (`frontend/src/lib/chart-helper.js`). The wrapper reads WA design tokens (`--wa-color-text-normal`, `--wa-color-text-quiet`, `--wa-color-neutral-border-normal`, `--wa-color-brand-fill-loud`) from computed styles to auto-theme charts to the current light/dark mode.
 
 ```js
 // frontend/src/lib/chart-helper.js
@@ -485,7 +485,7 @@ Top countries/cities as vertical bar charts.
 - `frontend/src/views/home.js` — Authenticated users redirect straight to `/dashboard` instead of showing create form on home
 - `frontend/src/components/nav-bar.js` — Replaced inline nav with `wa-split`/`wa-cluster`, added avatar dropdown menu (wa-dropdown) for logged-in users
 - `frontend/src/components/toast.js` — Uses `wa-callout` (closable, with auto-dismiss) in a fixed-position container for toast-style notifications
-- `frontend/src/components/stats-charts.js` — Fixed `--wa-color-neutral-500` → `--wa-color-text-subdued`, `wa-change` → `change` event, inline flex → `wa-split`
+- `frontend/src/components/stats-charts.js` — Fixed `--wa-color-neutral-500` → `--wa-color-text-quiet`, `wa-change` → `change` event, inline flex → `wa-split`
 - `frontend/src/components/link-table.js` — Used `wa-align-items-center` instead of inline `text-align:center`
 - `frontend/src/styles/app.css` — Removed custom flex rules replaced by WA utility classes (`wa-split`, `wa-cluster`, `wa-stack`)
 - `frontend/esbuild.mjs` — Added `--watch` flag support for dev mode
@@ -502,7 +502,7 @@ Top countries/cities as vertical bar charts.
 - **Internal link check** uses `getAuth(env).api.getSession()` directly in redirect handler
 - **Password field in form** tracks "touched" state to avoid sending empty password on edit (which would clear it)
 - **Slug is immutable** — PUT endpoint does not accept slug changes; frontend disables slug field when editing
-- **WA convention fixes across M1/M2 files** — `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input`/`wa-change` → `input`/`change` events, `--wa-color-neutral-*` → `--wa-color-text-subdued`, inline flex → WA utility classes (`wa-split`, `wa-cluster`)
+- **WA convention fixes across M1/M2 files** — `slot="prefix"` → `slot="start"`, `clearable` → `with-clear`, `wa-input`/`wa-change` → `input`/`change` events, `--wa-color-neutral-*` → `--wa-color-text-quiet`, inline flex → WA utility classes (`wa-split`, `wa-cluster`)
 - **Home view simplified** — Authenticated users redirect to `/dashboard`; home is landing page only
 - **Nav bar avatar dropdown** — Logged-in users get a `wa-dropdown` menu under their avatar (theme toggle + logout) instead of separate buttons
 
@@ -580,22 +580,156 @@ button, icon, button-group, input, card, details, avatar, spinner, callout, copy
 
 ## Milestone 5: Custom Domains & Branding
 
-**Delivers**: Custom branded domains, root/404 redirects, branded QR codes.
+**Delivers**: Custom branded domains (admin-synced from Cloudflare), root/404 redirects, domain access control, branded QR codes.
 
-### New Table
-- `domains` (id, userId, hostname UNIQUE, isVerified, rootRedirect?, notFoundRedirect?, createdAt, updatedAt)
-- ALTER links: add `domainId` TEXT? FK
+### New Tables
+- `domain_config` (hostname TEXT PK, rootRedirect?, notFoundRedirect?, accessMode TEXT DEFAULT 'all', updatedAt INT)
+- `domain_access` (hostname TEXT FK, email TEXT, PK(hostname, email)) — controls which users can create links on restricted domains
+- ALTER links: add `domainHostname` TEXT? FK → `domain_config.hostname`
+
+### Admin Model (No DNS Verification)
+
+Domains are **not** user-created. Instead, an admin clicks "Sync from Cloudflare" which calls `POST /api/domains/sync`. The sync endpoint:
+1. Fetches `GET /accounts/{CF_ACCOUNT_ID}/workers/domains?service={WORKER_NAME}` from the Cloudflare API to discover hostnames routed to this Worker
+2. Always includes the primary hostname (from `BETTER_AUTH_URL`)
+3. Upserts new hostnames into `domain_config` with `accessMode: "all"` (preserves existing config)
+4. Deletes hostnames no longer in Cloudflare (except primary)
+
+Admin status is determined by `ADMIN_EMAILS` env var (comma-separated list checked in `requireAuth` middleware). The `requireAdmin` middleware guards admin-only routes.
+
+### Domain Access Control
+
+Each domain has an `accessMode`:
+- `"all"` — any authenticated user can create links on this domain
+- `"restricted"` — only emails listed in `domain_access` (or admins) can create links on this domain
+
+Link create/update validates domain access via `validateDomainAccess()` in `links.ts`.
+
+### API Endpoints Added
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/domains` | Yes | List domains (admin sees all; non-admin sees `accessMode='all'` + domains they have access to) |
+| POST | `/api/domains/sync` | Admin | Sync domains from Cloudflare API → D1 |
+| GET | `/api/domains/:hostname` | Admin | Get domain config + access email list |
+| PUT | `/api/domains/:hostname` | Admin | Update rootRedirect, notFoundRedirect, accessMode |
+| GET | `/api/domains/:hostname/access` | Admin | List access emails for domain |
+| PUT | `/api/domains/:hostname/access` | Admin | Replace access emails (array of emails) |
 
 ### Key Changes
-- `redirect.ts` - Resolve domain from Host header, scope slug lookup by domain
-- `kv-cache.ts` - KV key format: `{hostname}:{slug}` for custom domains, bare `{slug}` for default
-- Domain CRUD with DNS verification
-- Branded QR codes with customizable colors/logo
+- `redirect.ts` — `resolveHostInfo()` compares Host header to primary hostname. `resolveSlug()` scopes by `domainHostname` (IS NULL for default, specific hostname for custom). `handleCustomDomainRoot()` serves `rootRedirect` on bare custom domain visits. Slug miss on custom domain checks `notFoundRedirect` before falling through.
+- `kv-cache.ts` — `kvKey()` helper: `{hostname}:{slug}` for custom domains, bare `{slug}` for default. All get/set/delete functions accept optional `hostname` parameter.
+- `middleware/auth.ts` — `requireAuth` computes `isAdmin` from `ADMIN_EMAILS` env var, injects into `c.var.user`. New `requireAdmin` middleware checks `c.var.user.isAdmin`.
+- `links.ts` — `domainHostname` field in create/update. `validateDomainAccess()` checks domain exists + user has access. All KV operations pass domain hostname for scoped keys. Domain change in PUT deletes old KV key before writing new one.
+- Branded QR codes with customizable fill/background colors
 
 ### Verification
-- Add custom domain, verify DNS, create link on it
-- `brand.co/slug` redirects correctly
+- Admin syncs domains from Cloudflare, sees them in Settings
+- Configure rootRedirect and notFoundRedirect per domain
+- Restrict domain access to specific emails
+- Create link on custom domain → `brand.co/slug` redirects correctly
 - Root domain and 404 redirects work
+- Branded QR code renders with custom colors
+
+### Implementation Notes
+
+**Implemented 2026-03-18. All M5 files complete. Reviewed and fixed 2026-03-20.**
+
+#### Files created
+- `drizzle/migrations/0003_custom_domains.sql` — Original per-user domain schema (superseded by 0004)
+- `drizzle/migrations/0004_simplified_domains.sql` — Reworked schema: CREATE TABLE domain_config + domain_access, ADD domainHostname to links, migrate data from 0003 domains table, DROP old tables. Includes partial unique index `idx_links_slug_default` for NULL domainHostname.
+- `src/routes/api/domains.ts` — Domain sync (Cloudflare API), config CRUD, access management (all admin-only except GET list)
+- `src/services/rate-limit.ts` — Shared KV-based rate limiting helper (`checkRateLimit`), used by both redirect password gate and API password check
+- `frontend/src/views/settings.js` — Settings page with Domains tab (admin-only), sync button, inline edit rows
+
+#### Files modified
+- `src/db/schema.ts` — Added `domainConfig` table (hostname PK, rootRedirect, notFoundRedirect, accessMode, updatedAt), `domainAccess` table (hostname+email composite PK), added `domainHostname` column + index to `links` table. Composite unique index `(slug, domainHostname)` + partial unique index comment for NULL enforcement.
+- `src/services/kv-cache.ts` — Added `domainHostname` to `CachedRedirect` interface, added `kvKey()` helper for domain-scoped keys (`hostname:slug`), updated all three functions to accept optional `hostname` parameter
+- `src/routes/redirect.ts` — Added `isCustomDomainHost()` (shared host comparison), `resolveHostInfo()` (Host header parsing), `lookupDomain()` (D1 lookup for domain config), `handleCustomDomainRoot()` (root redirect for custom domains). Updated `resolveSlug` to scope by `domainHostname`. Custom domain slug miss checks `notFoundRedirect` before falling through to SPA. Bot/OG meta check runs before password gate. Rate limiting uses shared `checkRateLimit` with per-slug key.
+- `src/routes/api/links.ts` — Added `domainHostname` to create/update bodies, `validateDomainAccess()` (domain exists + access check via accessMode/domain_access table). GET /:id returns `domainHostname`. All KV write/delete operations pass domain hostname. Domain change in PUT deletes old KV key before writing new one and validates slug uniqueness on target domain. Rate limiting uses shared `checkRateLimit`.
+- `src/routes/api/domains.ts` — Domain sync cleans up orphaned KV entries before deleting domains. PUT returns re-fetched record for consistent timestamps. Email array validation filters non-string elements.
+- `src/index.ts` — Mounted domain routes with auth middleware, admin-only middleware on sync/config/access routes, added `handleCustomDomainRoot` handler for `/` before `/:slug`
+- `src/middleware/auth.ts` — `requireAuth` checks `ADMIN_EMAILS` env var, sets `isAdmin` on user. Added `requireAdmin` middleware export.
+- `src/types.ts` — Added `isAdmin: boolean` to `AuthUser` type
+- `src/bindings.ts` — Added `ADMIN_EMAILS`, `WORKER_NAME` to Env interface
+- `src/lib/constants.ts` — Added "settings" to RESERVED_SLUGS
+- `wrangler.jsonc` — Added `WORKER_NAME: "veer"` to vars
+- `frontend/src/app.js` — Added settings route + import, registered tab-group/tab/tab-panel/tooltip WA components
+- `frontend/src/components/nav-bar.js` — Added "Settings" dropdown item with gear icon, wired up navigation
+- `frontend/src/components/link-form.js` — Added domain select dropdown (fetches `/api/domains` for available domains), `domainHostname` in submission data
+- `frontend/src/components/qr-code.js` — Branded QR with color pickers (native `<input type="color">`), real-time fill/background updates via `wa-qr-code` fill/background attributes
+- `frontend/src/views/link-detail.js` — Uses `domainHostname` from API response, constructs `https://{hostname}/{slug}` short URL for custom domains, "Custom Domain" badge
+- `frontend/src/views/settings.js` — Hostnames escaped in CSS selectors (`CSS.escape`) and URL paths (`encodeURIComponent`). Non-admins see helpful message instead of empty tab group.
+- `frontend/src/styles/app.css` — Settings view, domain row, domain edit row styles. Dead CSS removed (`.nav-link`, `.domain-verify-info`). Text utility classes consolidated (`.text-quiet, .text-subdued`).
+- `frontend/src/components/link-table.js` — Short URLs use `link.domainHostname` when present
+- `frontend/src/views/campaign-detail.js` — Short URLs use `link.domainHostname` when present
+- `test/setup.ts` — Added domain_config/domain_access DDL, `idx_links_domainHostname` index, `idx_links_slug_default` partial unique index
+- `test/helpers.ts` — `createTestLink` accepts `domainHostname` override
+- `test/unit/kv-cache.test.ts` — Domain-scoped KV key tests (kvKey format, roundtrip, isolation, delete)
+- `test/integration/redirect.test.ts` — Added `domainHostname: null` to test CachedRedirect objects
+- `test/unit/redirect.test.ts` — Added `domainHostname: null` to cachedRedirect helper and test objects
+
+#### Design decisions
+- **No DNS verification needed**: Since domains are synced from the Cloudflare API (which already knows what's routed to this Worker), manual DNS TXT verification is unnecessary. This is a significant simplification over the original plan.
+- **Admin-synced, not user-created**: Domain lifecycle is managed by admins, not individual users. Admins sync from Cloudflare, then configure per-domain settings (redirects, access control).
+- **`ADMIN_EMAILS` env var**: Admin status is determined by checking the user's email against a comma-separated `ADMIN_EMAILS` env var, computed in `requireAuth` middleware. No DB role column needed.
+- **`WORKER_NAME` env var**: Used to query the Cloudflare API for domains routed to this specific Worker. Defaults to `"veer"`.
+- **Hostname as primary key**: `domain_config` uses `hostname` as PK (not a UUID). Links reference `domainHostname` directly (FK to `domain_config.hostname`), eliminating joins for display.
+- **Access control model**: `accessMode` is either `"all"` (any user) or `"restricted"` (only emails in `domain_access` table). Admins always have access.
+- **KV key scoping**: Custom domain keys use `{hostname}:{slug}` format, default domain uses bare `{slug}`. Backwards compatible — existing KV entries unaffected.
+- **Domain-scoped slug uniqueness**: Composite unique index `(slug, domainHostname)` + partial unique index `idx_links_slug_default WHERE domainHostname IS NULL` (SQLite treats NULLs as distinct in composite indexes). Same slug can exist on different domains. Manual check-then-insert also guards against races in the create handler.
+- **Domain sync KV cleanup**: Before deleting a domain during sync, all KV entries for links on that domain are deleted to prevent orphaned `hostname:slug` keys.
+- **Slug uniqueness on domain change**: PUT handler validates slug uniqueness on the target domain when `domainHostname` changes, matching the CREATE handler's check.
+- **Custom domain root handling**: Separate `handleCustomDomainRoot` handler on `/` (before `/:slug`) checks for rootRedirect on custom domains.
+- **Custom domain 404**: When slug not found on custom domain, checks `notFoundRedirect` before falling through to SPA. Domain lookup only runs in the `!resolved` branch (not on the hot path).
+- **Hostname is immutable in domain_config**: Hostnames come from Cloudflare sync only. PUT endpoint only accepts rootRedirect/notFoundRedirect/accessMode changes.
+- **KV key migration on domain change**: PUT link handler deletes old domain-scoped KV key before writing new one when domainHostname changes.
+- **Bot/OG meta before password gate**: Bot user-agent check runs before the password gate so social preview crawlers see OG meta tags for password-protected links with OG metadata.
+- **Shared rate limiting**: `src/services/rate-limit.ts` provides a single `checkRateLimit(kv, key, limit, windowSeconds)` function used by both the redirect password POST and the API password check endpoint. Keys include slug/link ID for per-link granularity.
+- **Branded QR**: Uses native `<input type="color">` (not wa-input) for color pickers since WA input doesn't support type="color". Updates `wa-qr-code` fill/background attributes in real-time.
+- **Link detail domain resolution**: GET /api/links/:id returns `domainHostname` directly (no join needed since it's stored on the link), avoiding an extra fetch from the frontend.
+- **Migration path**: 0003 creates the original per-user domain schema, 0004 replaces it with the simplified admin model and migrates any existing data. For fresh deployments these could be squashed.
+
+#### Resolved issues (from initial review 2026-03-20)
+All issues identified during code review have been fixed:
+- ~~Slug uniqueness not domain-scoped~~ → Composite + partial unique index, manual check in create/update
+- ~~Password POST handler ignores domain scoping~~ → Fixed with domain-scoped WHERE clause
+- ~~Unused D1 query in handleRedirectPost~~ → Removed
+- ~~Domain lookup on every custom domain redirect~~ → Moved to `!resolved` branch only
+- ~~Empty settings page for non-admins~~ → Shows "No settings available" message
+- ~~Link table shows wrong short URLs for custom domains~~ → Uses `link.domainHostname` when present
+- ~~No test coverage for M5 functionality~~ → Domain-scoped KV tests added (kvKey format, roundtrip, isolation, delete); test helpers support `domainHostname`
+- ~~Domain sync orphans KV cache entries~~ → KV cleanup before domain deletion
+- ~~Slug uniqueness not checked on domain change in PUT~~ → Added check excluding current link
+- ~~Rate limit not atomic / duplicated~~ → Shared `checkRateLimit` helper with per-slug keys
+- ~~Domain config PUT returns inconsistent timestamp~~ → Re-fetches after update
+- ~~Email array elements not validated as strings~~ → Filtered before `.trim()`
+- ~~Bot check after password gate~~ → Moved before password gate
+- ~~Host resolution logic duplicated~~ → Extracted `isCustomDomainHost()` helper
+- ~~Dead/duplicate CSS~~ → Removed `.nav-link`, `.domain-verify-info`; consolidated `.text-quiet`/`.text-subdued`
+- ~~Hostname unescaped in CSS selector / URL~~ → `CSS.escape()` and `encodeURIComponent()`
+- ~~PLAN.md wrong design token names~~ → Fixed to `--wa-color-text-normal`, `--wa-color-text-quiet`, `--wa-color-neutral-border-normal`
+
+#### Resolved issues (from WA audit 2026-03-20)
+All issues identified during Web Awesome component audit have been fixed:
+- ~~`wa-callout` `closable` property used in toast.js~~ → Removed; not a valid callout property
+- ~~`wa-callout` `wa-hide` event used in toast.js~~ → Removed; callout has no events. Toasts rely on `setTimeout` for auto-dismiss.
+- ~~`wa-icon variant="regular"` on FA Free icon in campaigns.js~~ → Removed; FA Free only has solid (default) and brands families
+- ~~`wa-copy-button` `--font-size` custom property~~ → Changed to standard `font-size` CSS property; `--font-size` is not a documented copy-button custom property
+- **`wa-button circle` attribute** — Not a native WA attribute. Kept as a project convention with custom CSS in `app.css` (`wa-button[circle]::part(base)`) to achieve circular icon buttons. WA has no built-in circle button variant.
+
+#### WA components registered in `app.js` (cumulative)
+button, icon, button-group, input, card, details, avatar, spinner, callout, copy-button, radio-group, radio, skeleton, divider, switch, textarea, qr-code, badge, dropdown, dropdown-item, select, option, dialog, tab-group, tab, tab-panel, tooltip
+
+#### Frontend routes (cumulative)
+| Path | View | Auth required |
+|------|------|---------------|
+| `/` | home | No |
+| `/login` | login | No |
+| `/links` | dashboard (Links tab) | Yes |
+| `/campaigns` | dashboard (Campaigns tab) | Yes |
+| `/links/:id` | link-detail | Yes |
+| `/campaigns/:id` | campaign-detail | Yes |
+| `/settings` | settings (Domains tab) | Yes (admin-only content) |
 
 ---
 
@@ -721,7 +855,8 @@ The component also includes a "Copy Link" button using `wa-copy-button` for the 
 | `0000_initial.sql` | M1 ✅ | user, session, account, verification, passkey, links, link_stats |
 | `0001_link_features.sql` | M3 | ALTER links (+expiration, password, internal, OG) |
 | `0002_campaigns_targeting.sql` | M4 | campaigns, link_campaigns, link_targets, ALTER links |
-| `0003_custom_domains.sql` | M5 | domains, ALTER links (+domainId) |
+| `0003_custom_domains.sql` | M5 | domains (original, superseded by 0004) |
+| `0004_simplified_domains.sql` | M5 | domain_config, domain_access, ALTER links (+domainHostname), DROP domains |
 | `0004_api_keys.sql` | M6 | api_keys, public_reports |
 | `0005_teams.sql` | M7 | teams, team_members, team_invites, ALTER links/user |
 | `0006_ab_testing.sql` | M8 | ab_tests, ab_variants |
@@ -745,7 +880,7 @@ Before a milestone is considered complete, load the `webawesome` skill and verif
 When writing styles, prefer in this order (first available wins):
 
 1. **WA utility classes** — `wa-stack`, `wa-cluster`, `wa-split`, `wa-grid`, `wa-flank`, `wa-frame`, `wa-gap-*`, `wa-align-items-*`, `wa-justify-content-*`, `wa-align-self-*`, `wa-border-radius-*`, `wa-visually-hidden`. See layout docs in the `webawesome` skill.
-2. **WA design tokens** — Semantic tokens only (`--wa-color-text-subdued`, `--wa-color-border-default`). Never use numeric palette tokens (`--wa-color-neutral-300`).
+2. **WA design tokens** — Semantic tokens only (`--wa-color-text-quiet`, `--wa-color-neutral-border-normal`). Never use numeric palette tokens (`--wa-color-neutral-300`).
 3. **Custom CSS in `app.css`** — Only for things WA utilities genuinely can't express (e.g. `max-width`, `position`, `flex:1`, table styling).
 4. **Inline `style` attributes** — Last resort, for one-off values like `--min-column-size`, `--width`, `--size`.
 
@@ -817,8 +952,10 @@ When writing styles, prefer in this order (first available wins):
 
 ### Required Env Vars (via wrangler.jsonc `vars`)
 - `BETTER_AUTH_URL` - Base URL of the deployment
-- `CF_ACCOUNT_ID` - Cloudflare account ID (not secret, used for AE API URL)
+- `CF_ACCOUNT_ID` - Cloudflare account ID (not secret, used for AE API URL and domain sync)
+- `WORKER_NAME` - Worker service name for Cloudflare API domain sync (default: `"veer"`)
 - `PASSKEY_ENABLED` - Set to `"true"` to enable WebAuthn passkey login (optional, no extra secrets needed)
+- `ADMIN_EMAILS` - Comma-separated list of admin email addresses (optional, enables admin features like domain management)
 
 ---
 

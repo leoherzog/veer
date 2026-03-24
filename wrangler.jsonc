@@ -30,8 +30,7 @@
     }
   ],
   "vars": {
-    "BETTER_AUTH_URL": "http://localhost:8787",
-    "CF_ACCOUNT_ID": ""
+    "WORKER_NAME": "veer"
   },
   "placement": { "mode": "smart" },
   "observability": {

@@ -64,7 +64,7 @@ function renderPasskeyButton(container, enabled) {
 
 export function renderLogin(container) {
   container.innerHTML = `
-    <div class="login-view wa-stack wa-gap-l" style="max-width:400px;margin:3rem auto;text-align:center;">
+    <div class="login-view wa-stack wa-gap-l">
       <h1>Sign in to Veer</h1>
       <p id="login-help">Choose a provider to continue</p>
       <div class="wa-stack wa-gap-s" id="provider-buttons">

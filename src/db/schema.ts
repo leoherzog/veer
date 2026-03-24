@@ -70,6 +70,21 @@ export const passkey = sqliteTable("passkey", {
 ]);
 
 // Application tables
+export const domainConfig = sqliteTable("domain_config", {
+  hostname: text("hostname").primaryKey(),
+  rootRedirect: text("rootRedirect"),
+  notFoundRedirect: text("notFoundRedirect"),
+  accessMode: text("accessMode").notNull().default("all"),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
+});
+
+export const domainAccess = sqliteTable("domain_access", {
+  hostname: text("hostname").notNull().references(() => domainConfig.hostname, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.hostname, table.email] }),
+]);
+
 export const links = sqliteTable("links", {
   id: text("id").primaryKey(),
   userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
@@ -88,9 +103,14 @@ export const links = sqliteTable("links", {
   ogDescription: text("ogDescription"),
   ogImage: text("ogImage"),
   paramForwarding: integer("paramForwarding", { mode: "boolean" }).notNull().default(false),
+  domainHostname: text("domainHostname").references(() => domainConfig.hostname, { onDelete: "set null" }),
 }, (table) => [
-  uniqueIndex("idx_links_slug").on(table.slug),
+  // NOTE: A partial unique index "idx_links_slug_default" WHERE domainHostname IS NULL
+  // also exists (in migration 0004) to enforce slug uniqueness on the default domain.
+  // Drizzle ORM does not support partial indexes declaratively.
+  uniqueIndex("idx_links_slug_domain").on(table.slug, table.domainHostname),
   index("idx_links_userId").on(table.userId),
+  index("idx_links_domainHostname").on(table.domainHostname),
 ]);
 
 export const campaigns = sqliteTable("campaigns", {

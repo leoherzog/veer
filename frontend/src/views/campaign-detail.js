@@ -3,7 +3,7 @@ import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 
 export async function renderCampaignDetail(container, { id }) {
-  container.innerHTML = `<div style="text-align:center;padding:3rem;"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
 
   let campaign;
   let campaignLinks;
@@ -12,7 +12,7 @@ export async function renderCampaignDetail(container, { id }) {
     const campRes = await fetch(`/api/campaigns/${id}`);
     if (campRes.status === 401) { window.location.href = "/login"; return; }
     if (!campRes.ok) {
-      container.innerHTML = `<div style="text-align:center;padding:3rem;"><p>Campaign not found.</p></div>`;
+      container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><p>Campaign not found.</p></div>`;
       return;
     }
     ({ data: campaign } = await campRes.json());
@@ -28,12 +28,12 @@ export async function renderCampaignDetail(container, { id }) {
     } catch { /* stats are best-effort */ }
   } catch {
     showToast("Failed to load campaign details", "danger");
-    container.innerHTML = `<div style="text-align:center;padding:3rem;"><p>Failed to load campaign. Please try again.</p></div>`;
+    container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><p>Failed to load campaign. Please try again.</p></div>`;
     return;
   }
 
   container.innerHTML = `
-    <div class="campaign-detail-view wa-stack wa-gap-l" style="max-width:960px;margin:2rem auto;">
+    <div class="campaign-detail-view wa-stack wa-gap-l">
       <div class="wa-split">
         <div class="wa-cluster wa-gap-s wa-align-items-center">
           <wa-button variant="neutral" appearance="plain" circle id="back-btn" aria-label="Back to campaigns">
@@ -53,7 +53,7 @@ export async function renderCampaignDetail(container, { id }) {
         </div>
       </div>
 
-      ${campaign.description ? `<p style="color:var(--wa-color-text-subdued);">${escapeHtml(campaign.description)}</p>` : ""}
+      ${campaign.description ? `<p class="text-subdued">${escapeHtml(campaign.description)}</p>` : ""}
 
       <div id="edit-section" style="display:none;">
         <wa-card>
@@ -68,17 +68,17 @@ export async function renderCampaignDetail(container, { id }) {
         </wa-card>
       </div>
 
-      <div class="wa-cluster wa-gap-m">
-        <wa-card style="flex:1;text-align:center;">
-          <div class="wa-stack wa-gap-2xs">
-            <span style="font-size:1.5rem;font-weight:700;">${campaignLinks.length}</span>
-            <span style="color:var(--wa-color-text-subdued);font-size:0.875rem;">Links</span>
+      <div class="wa-split wa-gap-m">
+        <wa-card>
+          <div class="wa-stack wa-gap-2xs wa-align-items-center">
+            <span class="wa-heading-xl">${campaignLinks.length}</span>
+            <span class="wa-caption-s text-subdued">Links</span>
           </div>
         </wa-card>
-        <wa-card style="flex:1;text-align:center;">
-          <div class="wa-stack wa-gap-2xs">
-            <span style="font-size:1.5rem;font-weight:700;">${totalClicks}</span>
-            <span style="color:var(--wa-color-text-subdued);font-size:0.875rem;">Total Clicks</span>
+        <wa-card>
+          <div class="wa-stack wa-gap-2xs wa-align-items-center">
+            <span class="wa-heading-xl">${totalClicks}</span>
+            <span class="wa-caption-s text-subdued">Total Clicks</span>
           </div>
         </wa-card>
       </div>
@@ -94,7 +94,7 @@ export async function renderCampaignDetail(container, { id }) {
 
       <wa-dialog id="add-links-dialog" label="Add Links to Campaign" style="--width:600px;">
         <div id="available-links-list" class="wa-stack wa-gap-s">
-          <div style="text-align:center;padding:1rem;"><wa-spinner></wa-spinner></div>
+          <div class="text-center" style="padding:var(--wa-space-m);"><wa-spinner></wa-spinner></div>
         </div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Close</wa-button>
       </wa-dialog>
@@ -172,15 +172,15 @@ export async function renderCampaignDetail(container, { id }) {
 function renderCampaignLinks(container, links, campaignId, rootContainer) {
   if (!links.length) {
     container.innerHTML = `
-      <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:2rem;">
-        <wa-icon name="link-slash" style="font-size:2rem;opacity:0.5;"></wa-icon>
-        <p style="color:var(--wa-color-text-subdued);">No links in this campaign yet.</p>
+      <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-2xl);">
+        <wa-icon name="link-slash" style="font-size:var(--wa-font-size-2xl);opacity:0.5;"></wa-icon>
+        <p class="text-subdued">No links in this campaign yet.</p>
       </div>
     `;
     return;
   }
 
-  const baseUrl = location.origin;
+  const shortUrl = (link) => link.domainHostname ? `https://${link.domainHostname}/${link.slug}` : `${location.origin}/${link.slug}`;
   container.innerHTML = `
     <table class="link-table" aria-label="Campaign links">
       <thead>
@@ -197,7 +197,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
             <td>
               <div class="wa-cluster wa-gap-2xs">
                 <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
-                <wa-copy-button value="${escapeAttr(baseUrl + "/" + link.slug)}" copy-label="Copy" success-label="Copied!" style="--font-size:0.875rem;"></wa-copy-button>
+                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" style="font-size:0.875rem;"></wa-copy-button>
               </div>
             </td>
             <td class="truncate">${escapeHtml(link.destinationUrl)}</td>
@@ -231,7 +231,12 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
           return;
         }
         showToast("Link removed from campaign", "success");
-        renderCampaignDetail(rootContainer, { id: campaignId });
+        const idx = links.findIndex(l => l.id === linkId);
+        if (idx !== -1) links.splice(idx, 1);
+        renderCampaignLinks(container, links, campaignId, rootContainer);
+        // Update link count display
+        const countEl = rootContainer.querySelector(".wa-heading-xl");
+        if (countEl) countEl.textContent = links.length;
       } catch {
         showToast("Network error", "danger");
       }
@@ -240,11 +245,11 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
 }
 
 async function loadAvailableLinks(container, campaignId, existingLinks, rootContainer) {
-  container.innerHTML = `<div style="text-align:center;padding:1rem;"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-m);"><wa-spinner></wa-spinner></div>`;
   try {
     const res = await fetch("/api/links?limit=100");
     if (!res.ok) {
-      container.innerHTML = `<p style="color:var(--wa-color-text-subdued);">Failed to load links.</p>`;
+      container.innerHTML = `<p class="text-subdued">Failed to load links.</p>`;
       return;
     }
     const { data: allLinks } = await res.json();
@@ -252,17 +257,17 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
     const available = allLinks.filter(l => !existingIds.has(l.id));
 
     if (!available.length) {
-      container.innerHTML = `<p style="color:var(--wa-color-text-subdued);text-align:center;padding:1rem;">All your links are already in this campaign.</p>`;
+      container.innerHTML = `<p class="text-center text-subdued" style="padding:var(--wa-space-m);">All your links are already in this campaign.</p>`;
       return;
     }
 
     container.innerHTML = `
       <div class="wa-stack wa-gap-s">
         ${available.map(link => `
-          <div class="wa-split available-link-row" style="padding:0.5rem 0;border-bottom:1px solid var(--wa-color-border-default);">
+          <div class="wa-split available-link-row">
             <div class="wa-stack wa-gap-2xs">
               <strong>${escapeHtml(link.slug)}</strong>
-              <span class="truncate" style="font-size:0.875rem;color:var(--wa-color-text-subdued);">${escapeHtml(link.destinationUrl)}</span>
+              <span class="truncate wa-body-s text-subdued">${escapeHtml(link.destinationUrl)}</span>
             </div>
             <wa-button size="small" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
           </div>
@@ -288,10 +293,16 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
           }
           showToast("Link added to campaign", "success");
           btn.closest(".available-link-row").remove();
-          // Close dialog then refresh
+          // Mutate local state and re-render links section
+          const addedLink = available.find(l => l.id === linkId);
+          if (addedLink) existingLinks.push(addedLink);
+          const linksContainer = rootContainer.querySelector("#campaign-links-list");
+          if (linksContainer) renderCampaignLinks(linksContainer, existingLinks, campaignId, rootContainer);
+          const countEl = rootContainer.querySelector(".wa-heading-xl");
+          if (countEl) countEl.textContent = existingLinks.length;
+          // Close dialog
           const dlg = rootContainer.querySelector("#add-links-dialog");
           if (dlg) dlg.open = false;
-          renderCampaignDetail(rootContainer, { id: campaignId });
         } catch {
           showToast("Network error", "danger");
         } finally {
@@ -301,6 +312,6 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
       });
     });
   } catch {
-    container.innerHTML = `<p style="color:var(--wa-color-text-subdued);">Failed to load links.</p>`;
+    container.innerHTML = `<p class="text-subdued">Failed to load links.</p>`;
   }
 }

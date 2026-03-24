@@ -19,17 +19,23 @@ export interface CachedRedirect {
   ogImage: string | null;
   paramForwarding: boolean;
   targets: CachedTarget[] | null;
+  domainHostname: string | null;
 }
 
-export async function getCachedRedirect(kv: KVNamespace, slug: string): Promise<CachedRedirect | null> {
-  const value = await kv.get(slug, { type: "json", cacheTtl: 30 });
+/** Build a KV key: `hostname:slug` for custom domains, bare `slug` for default. */
+export function kvKey(slug: string, hostname?: string | null): string {
+  return hostname ? `${hostname}:${slug}` : slug;
+}
+
+export async function getCachedRedirect(kv: KVNamespace, slug: string, hostname?: string | null): Promise<CachedRedirect | null> {
+  const value = await kv.get(kvKey(slug, hostname), { type: "json", cacheTtl: 30 });
   return value as CachedRedirect | null;
 }
 
-export async function setCachedRedirect(kv: KVNamespace, slug: string, data: CachedRedirect): Promise<void> {
-  await kv.put(slug, JSON.stringify(data), { expirationTtl: 86400 });
+export async function setCachedRedirect(kv: KVNamespace, slug: string, data: CachedRedirect, hostname?: string | null): Promise<void> {
+  await kv.put(kvKey(slug, hostname), JSON.stringify(data), { expirationTtl: 86400 });
 }
 
-export async function deleteCachedRedirect(kv: KVNamespace, slug: string): Promise<void> {
-  await kv.delete(slug);
+export async function deleteCachedRedirect(kv: KVNamespace, slug: string, hostname?: string | null): Promise<void> {
+  await kv.delete(kvKey(slug, hostname));
 }

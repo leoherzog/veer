@@ -82,7 +82,7 @@ statsRoutes.get("/:linkId/timeseries", async (c) => {
   }
 
   try {
-    const accountId = c.env.CF_ACCOUNT_ID;
+    const accountId = c.env.CF_ACCOUNT_ID!;
     const apiToken = c.env.CF_API_TOKEN!;
     let query: string;
     let formatFn: (s: string) => string;
@@ -104,8 +104,8 @@ statsRoutes.get("/:linkId/timeseries", async (c) => {
     }
 
     const result = await queryAnalyticsEngine(accountId, apiToken, query);
-    const labels = result.data.map((r: any) => formatFn(String(r[aliasCol])));
-    const clicks = result.data.map((r: any) => Number(r.clicks));
+    const labels = result.data.map((r) => formatFn(String(r[aliasCol])));
+    const clicks = result.data.map((r) => Number(r.clicks));
 
     return c.json({ data: { labels, clicks } });
   } catch (e) {
@@ -140,7 +140,7 @@ statsRoutes.get("/:linkId/geo", async (c) => {
   }
 
   try {
-    const accountId = c.env.CF_ACCOUNT_ID;
+    const accountId = c.env.CF_ACCOUNT_ID!;
     const apiToken = c.env.CF_API_TOKEN!;
     const interval = `'${days}' day`;
     const [countriesResult, citiesResult] = await Promise.all([
@@ -150,8 +150,8 @@ statsRoutes.get("/:linkId/geo", async (c) => {
         `SELECT blob5 as city, count() as clicks FROM veer_clicks WHERE index1 = '${linkId}' AND timestamp > now() - interval ${interval} GROUP BY city ORDER BY clicks DESC LIMIT 20`),
     ]);
 
-    const countries = countriesResult.data.map((r: any) => ({ name: r.country || "Unknown", clicks: Number(r.clicks) }));
-    const cities = citiesResult.data.map((r: any) => ({ name: r.city || "Unknown", clicks: Number(r.clicks) }));
+    const countries = countriesResult.data.map((r) => ({ name: r.country || "Unknown", clicks: Number(r.clicks) }));
+    const cities = citiesResult.data.map((r) => ({ name: r.city || "Unknown", clicks: Number(r.clicks) }));
 
     return c.json({ data: { countries, cities } });
   } catch (e) {
@@ -171,7 +171,7 @@ statsRoutes.get("/:linkId/devices", async (c) => {
   }
 
   try {
-    const accountId = c.env.CF_ACCOUNT_ID;
+    const accountId = c.env.CF_ACCOUNT_ID!;
     const apiToken = c.env.CF_API_TOKEN!;
     const result = await queryAnalyticsEngine(accountId, apiToken,
       `SELECT blob3 as userAgent, count() as clicks FROM veer_clicks WHERE index1 = '${linkId}' AND timestamp > now() - interval '${days}' day GROUP BY userAgent ORDER BY clicks DESC LIMIT 200`);
@@ -213,7 +213,7 @@ statsRoutes.get("/:linkId/referrers", async (c) => {
   }
 
   try {
-    const accountId = c.env.CF_ACCOUNT_ID;
+    const accountId = c.env.CF_ACCOUNT_ID!;
     const apiToken = c.env.CF_API_TOKEN!;
     const result = await queryAnalyticsEngine(accountId, apiToken,
       `SELECT blob4 as referrer, count() as clicks FROM veer_clicks WHERE index1 = '${linkId}' AND timestamp > now() - interval '${days}' day AND blob4 != '' GROUP BY referrer ORDER BY clicks DESC LIMIT 200`);
@@ -249,7 +249,7 @@ statsRoutes.get("/:linkId/summary", async (c) => {
   }
 
   try {
-    const accountId = c.env.CF_ACCOUNT_ID;
+    const accountId = c.env.CF_ACCOUNT_ID!;
     const apiToken = c.env.CF_API_TOKEN!;
     const interval = `'${days}' day`;
     const [summaryResult, countryResult, referrerResult] = await Promise.all([

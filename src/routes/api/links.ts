@@ -1,11 +1,11 @@
 import { Hono, type Context } from "hono";
 import { eq, desc, asc, sql, and, or, like } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
-import { links, linkStats, linkTargets, linkCampaigns, campaigns } from "../../db/schema";
+import { links, linkStats, linkTargets, linkCampaigns, campaigns, domainConfig, domainAccess } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect, deleteCachedRedirect } from "../../services/kv-cache";
-import { HTTPException } from "hono/http-exception";
-import { badRequest, notFound, conflict } from "../../lib/errors";
+import { badRequest, notFound, conflict, checkBodySize } from "../../lib/errors";
 import { hashPassword, verifyPassword } from "../../services/password";
 import type { AppEnv } from "../../types";
 import type { CachedRedirect, CachedTarget } from "../../services/kv-cache";
@@ -17,7 +17,7 @@ async function buildCachedRedirect(
   link: { id: string; destinationUrl: string; redirectType: number; isActive: boolean | number;
     expiresAt: Date | string | number | null; maxClicks: number | null; password: string | null;
     isInternal: boolean | number; ogTitle: string | null; ogDescription: string | null;
-    ogImage: string | null; paramForwarding: boolean | number },
+    ogImage: string | null; paramForwarding: boolean | number; domainHostname?: string | null },
   preloadedTargets?: CachedTarget[] | null,
 ): Promise<CachedRedirect> {
   let kvExpiresAt: number | null = null;
@@ -50,21 +50,26 @@ async function buildCachedRedirect(
     ogImage: link.ogImage ?? null,
     paramForwarding: !!link.paramForwarding,
     targets,
+    domainHostname: link.domainHostname ?? null,
   };
 }
 
-/** Validate a destination URL: must be parseable and use http(s) scheme. */
-function validateDestinationUrl(url: string): void {
-  if (!url) throw badRequest("destinationUrl is required");
+/** Validate that a URL is parseable and uses http(s) scheme. */
+function validateHttpUrl(url: string, fieldName: string): void {
+  if (!url) throw badRequest(`${fieldName} is required`);
   let parsed: URL;
   try {
     parsed = new URL(url);
   } catch {
-    throw badRequest("Invalid destination URL");
+    throw badRequest(`Invalid ${fieldName}`);
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw badRequest("Only http and https URLs are allowed");
+    throw badRequest(`${fieldName} must use http or https`);
   }
+}
+
+function validateDestinationUrl(url: string): void {
+  validateHttpUrl(url, "destinationUrl");
 }
 
 function parseExpiresAt(value: string | number): Date {
@@ -83,16 +88,8 @@ function parseMaxClicks(value: number): number {
 }
 
 function validateOgImageUrl(url: string): string {
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw badRequest("ogImage must be an http or https URL");
-    }
-    return url;
-  } catch (e) {
-    if (e instanceof HTTPException) throw e;
-    throw badRequest("ogImage must be a valid URL");
-  }
+  validateHttpUrl(url, "ogImage");
+  return url;
 }
 
 /** Strip the password hash from a link record, replacing with hasPassword boolean. */
@@ -101,12 +98,19 @@ function stripPassword<T extends { password?: string | null }>(link: T): Omit<T,
   return { ...rest, hasPassword: !!password };
 }
 
-async function checkRateLimit(kv: KVNamespace, ip: string): Promise<boolean> {
-  const key = `ratelimit:pw:${ip}`;
-  const current = parseInt(await kv.get(key) || "0", 10);
-  if (current >= 5) return false;
-  await kv.put(key, String(current + 1), { expirationTtl: 900 });
-  return true;
+import { checkRateLimit } from "../../services/rate-limit";
+
+/** Validate domain access: checks domain exists in domain_config AND user has access. */
+async function validateDomainAccess(db: Database, hostname: string, userEmail: string, isAdmin: boolean): Promise<void> {
+  const domain = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
+  if (!domain) throw badRequest("Domain not found");
+  if (isAdmin) return;
+  if (domain.accessMode === "all") return;
+  // Restricted mode: check domain_access table
+  const access = await db.select().from(domainAccess)
+    .where(and(eq(domainAccess.hostname, hostname), eq(domainAccess.email, userEmail.toLowerCase())))
+    .get();
+  if (!access) throw badRequest("You do not have access to this domain");
 }
 
 const linkRoutes = new Hono<AppEnv>();
@@ -158,10 +162,7 @@ linkRoutes.post("/", async (c) => {
   const user = c.var.user;
   const db = getDb(c.env.DB);
 
-  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
-  if (contentLength > 10_000) {
-    throw new HTTPException(413, { message: "Request body too large" });
-  }
+  checkBodySize(c.req.header("content-length"));
 
   let body: {
     slug: string;
@@ -177,6 +178,8 @@ linkRoutes.post("/", async (c) => {
     ogImage?: string;
     paramForwarding?: boolean;
     campaignId?: string | null;
+    campaignIds?: string[];
+    domainHostname?: string | null;
   };
   try {
     body = await c.req.json();
@@ -185,6 +188,11 @@ linkRoutes.post("/", async (c) => {
   }
 
   validateDestinationUrl(body.destinationUrl);
+
+  // Validate domain access if provided
+  if (body.domainHostname) {
+    await validateDomainAccess(db, body.domainHostname, user.email, user.isAdmin);
+  }
 
   const slugCheck = validateSlug(body.slug);
   if (!slugCheck.valid) throw badRequest(slugCheck.error!);
@@ -220,6 +228,15 @@ linkRoutes.post("/", async (c) => {
 
   const id = crypto.randomUUID();
   const now = new Date();
+  const domainHostname = body.domainHostname || null;
+
+  // Check slug uniqueness within the target domain
+  // (SQLite UNIQUE index treats NULLs as distinct, so we must check manually)
+  const slugWhereClause = domainHostname
+    ? and(eq(links.slug, body.slug), eq(links.domainHostname, domainHostname))
+    : and(eq(links.slug, body.slug), sql`${links.domainHostname} IS NULL`);
+  const existing = await db.select({ id: links.id }).from(links).where(slugWhereClause).get();
+  if (existing) throw conflict("Slug already taken");
 
   try {
     await db.insert(links).values({
@@ -237,6 +254,7 @@ linkRoutes.post("/", async (c) => {
       ogTitle,
       ogDescription,
       ogImage,
+      domainHostname: body.domainHostname || null,
       createdAt: now,
       updatedAt: now,
     });
@@ -247,19 +265,21 @@ linkRoutes.post("/", async (c) => {
     throw e;
   }
 
-  // Write-through to KV
+  // Write-through to KV (domain-scoped key)
   const kvData = await buildCachedRedirect(db, {
     id, destinationUrl: body.destinationUrl, redirectType, isActive: true,
     expiresAt, maxClicks, password: passwordHash, isInternal, ogTitle, ogDescription, ogImage, paramForwarding,
+    domainHostname: body.domainHostname || null,
   }, null);
-  await setCachedRedirect(c.env.KV, body.slug, kvData);
+  await setCachedRedirect(c.env.KV, body.slug, kvData, body.domainHostname || null);
 
-  // Handle campaign association on create
-  if (body.campaignId) {
+  // Handle campaign associations on create
+  const createCampaignIds = body.campaignIds?.length ? body.campaignIds : body.campaignId ? [body.campaignId] : [];
+  for (const cid of createCampaignIds) {
     const campaign = await db.select({ id: campaigns.id }).from(campaigns)
-      .where(and(eq(campaigns.id, body.campaignId), eq(campaigns.userId, user.id))).get();
+      .where(and(eq(campaigns.id, cid), eq(campaigns.userId, user.id))).get();
     if (campaign) {
-      await db.insert(linkCampaigns).values({ linkId: id, campaignId: body.campaignId })
+      await db.insert(linkCampaigns).values({ linkId: id, campaignId: cid })
         .onConflictDoNothing();
     }
   }
@@ -280,6 +300,7 @@ linkRoutes.post("/", async (c) => {
       ogTitle,
       ogDescription,
       ogImage,
+      domainHostname: body.domainHostname || null,
       createdAt: now,
       updatedAt: now,
       isActive: true,
@@ -316,6 +337,7 @@ linkRoutes.get("/:id", async (c) => {
       totalClicks: statsResult[0]?.totalClicks ?? 0,
       targets,
       campaigns: linkedCampaigns,
+      domainHostname: link.domainHostname ?? null,
     },
   });
 });
@@ -329,10 +351,7 @@ linkRoutes.put("/:id", async (c) => {
   const existing = await db.select().from(links).where(eq(links.id, id)).get();
   if (!existing || existing.userId !== user.id) throw notFound("Link not found");
 
-  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
-  if (contentLength > 10_000) {
-    throw new HTTPException(413, { message: "Request body too large" });
-  }
+  checkBodySize(c.req.header("content-length"));
 
   let body: {
     destinationUrl?: string;
@@ -347,6 +366,8 @@ linkRoutes.put("/:id", async (c) => {
     ogImage?: string | null;
     paramForwarding?: boolean;
     campaignId?: string | null;
+    campaignIds?: string[];
+    domainHostname?: string | null;
   };
   try {
     body = await c.req.json();
@@ -355,6 +376,23 @@ linkRoutes.put("/:id", async (c) => {
   }
 
   const updates: Partial<typeof links.$inferInsert> = { updatedAt: new Date() };
+
+  // Handle domain change
+  if (body.domainHostname !== undefined) {
+    if (body.domainHostname) {
+      await validateDomainAccess(db, body.domainHostname, user.email, user.isAdmin);
+    }
+    const newDomainHostname = body.domainHostname || null;
+    // Check slug uniqueness on target domain (exclude current link)
+    if (newDomainHostname !== existing.domainHostname) {
+      const slugCheck = newDomainHostname
+        ? and(eq(links.slug, existing.slug), eq(links.domainHostname, newDomainHostname), sql`${links.id} != ${id}`)
+        : and(eq(links.slug, existing.slug), sql`${links.domainHostname} IS NULL`, sql`${links.id} != ${id}`);
+      const conflict_row = await db.select({ id: links.id }).from(links).where(slugCheck).get();
+      if (conflict_row) throw conflict("Slug already taken on target domain");
+    }
+    updates.domainHostname = newDomainHostname;
+  }
 
   if (body.destinationUrl !== undefined) {
     validateDestinationUrl(body.destinationUrl);
@@ -407,19 +445,29 @@ linkRoutes.put("/:id", async (c) => {
 
   await db.update(links).set(updates).where(eq(links.id, id));
 
-  // Handle campaign association update
-  if (body.campaignId !== undefined) {
-    // Validate new campaignId ownership BEFORE deleting existing associations
-    if (body.campaignId) {
+  // Delete old domain KV key after D1 commit (if domain changed)
+  if (body.domainHostname !== undefined && existing.domainHostname !== (body.domainHostname || null)) {
+    await deleteCachedRedirect(c.env.KV, existing.slug, existing.domainHostname);
+  }
+
+  // Handle campaign association update (supports campaignIds array or legacy campaignId)
+  const hasCampaignIds = body.campaignIds !== undefined;
+  const hasLegacyCampaignId = body.campaignId !== undefined;
+  if (hasCampaignIds || hasLegacyCampaignId) {
+    const updateCampaignIds = hasCampaignIds
+      ? (body.campaignIds || [])
+      : body.campaignId ? [body.campaignId] : [];
+    // Validate all campaign IDs ownership BEFORE deleting existing associations
+    for (const cid of updateCampaignIds) {
       const campaign = await db.select({ id: campaigns.id }).from(campaigns)
-        .where(and(eq(campaigns.id, body.campaignId), eq(campaigns.userId, user.id))).get();
+        .where(and(eq(campaigns.id, cid), eq(campaigns.userId, user.id))).get();
       if (!campaign) throw badRequest("Campaign not found or does not belong to you");
     }
     // Remove existing campaign associations
     await db.delete(linkCampaigns).where(eq(linkCampaigns.linkId, id));
-    // Add new association if specified
-    if (body.campaignId) {
-      await db.insert(linkCampaigns).values({ linkId: id, campaignId: body.campaignId });
+    // Add new associations
+    for (const cid of updateCampaignIds) {
+      await db.insert(linkCampaigns).values({ linkId: id, campaignId: cid });
     }
   }
 
@@ -428,8 +476,23 @@ linkRoutes.put("/:id", async (c) => {
   // Determine password for KV (updates may have changed it)
   const mergedPassword = updates.password !== undefined ? (updates.password as string | null) : existing.password;
 
-  const kvData = await buildCachedRedirect(db, { ...merged, id, password: mergedPassword } as any);
-  await setCachedRedirect(c.env.KV, existing.slug, kvData);
+  const mergedHostname = updates.domainHostname !== undefined ? (updates.domainHostname as string | null) : existing.domainHostname;
+  const kvData = await buildCachedRedirect(db, {
+    id,
+    destinationUrl: (merged.destinationUrl ?? existing.destinationUrl) as string,
+    redirectType: (merged.redirectType ?? existing.redirectType) as number,
+    isActive: merged.isActive ?? existing.isActive,
+    expiresAt: merged.expiresAt !== undefined ? merged.expiresAt : existing.expiresAt,
+    maxClicks: merged.maxClicks !== undefined ? (merged.maxClicks ?? null) : existing.maxClicks,
+    password: mergedPassword,
+    isInternal: merged.isInternal ?? existing.isInternal,
+    ogTitle: merged.ogTitle !== undefined ? (merged.ogTitle ?? null) : existing.ogTitle,
+    ogDescription: merged.ogDescription !== undefined ? (merged.ogDescription ?? null) : existing.ogDescription,
+    ogImage: merged.ogImage !== undefined ? (merged.ogImage ?? null) : existing.ogImage,
+    paramForwarding: merged.paramForwarding ?? existing.paramForwarding,
+    domainHostname: mergedHostname,
+  });
+  await setCachedRedirect(c.env.KV, existing.slug, kvData, mergedHostname);
 
   // Build response — strip password hash
   const response = stripPassword(merged as typeof existing);
@@ -452,10 +515,10 @@ linkRoutes.patch("/:id/active", async (c) => {
 
   // Invalidate KV cache when deactivating, re-populate when activating
   if (!isActive) {
-    await deleteCachedRedirect(c.env.KV, link.slug);
+    await deleteCachedRedirect(c.env.KV, link.slug, link.domainHostname);
   } else {
-    const kvData = await buildCachedRedirect(db, { ...link, isActive: true } as any);
-    await setCachedRedirect(c.env.KV, link.slug, kvData);
+    const kvData = await buildCachedRedirect(db, { ...link, isActive: true });
+    await setCachedRedirect(c.env.KV, link.slug, kvData, link.domainHostname);
   }
 
   return c.json({ success: true, isActive });
@@ -471,7 +534,7 @@ linkRoutes.delete("/:id", async (c) => {
   if (!link || link.userId !== user.id) throw notFound("Link not found");
 
   await db.delete(links).where(eq(links.id, id));
-  await deleteCachedRedirect(c.env.KV, link.slug);
+  await deleteCachedRedirect(c.env.KV, link.slug, link.domainHostname);
 
   return c.json({ success: true });
 });
@@ -498,10 +561,7 @@ linkRoutes.put("/:id/targets", async (c) => {
   const link = await db.select().from(links).where(eq(links.id, id)).get();
   if (!link || link.userId !== user.id) throw notFound("Link not found");
 
-  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
-  if (contentLength > 10_000) {
-    throw new HTTPException(413, { message: "Request body too large" });
-  }
+  checkBodySize(c.req.header("content-length"));
 
   let body: { targets: { type: string; matchValue: string; destinationUrl: string; priority?: number }[] };
   try {
@@ -542,7 +602,7 @@ linkRoutes.put("/:id/targets", async (c) => {
 
   // Replace all targets atomically via db.batch()
   const newTargets: CachedTarget[] = [];
-  const batchOps: any[] = [
+  const batchOps: [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]] = [
     db.delete(linkTargets).where(eq(linkTargets.linkId, id)),
   ];
   for (const t of body.targets) {
@@ -565,11 +625,11 @@ linkRoutes.put("/:id/targets", async (c) => {
       priority,
     });
   }
-  await db.batch(batchOps as [any, ...any[]]);
+  await db.batch(batchOps);
 
-  // Update KV cache with new targets
-  const kvData = await buildCachedRedirect(db, link as any, newTargets.length > 0 ? newTargets : null);
-  await setCachedRedirect(c.env.KV, link.slug, kvData);
+  // Update KV cache with new targets (domain-scoped)
+  const kvData = await buildCachedRedirect(db, link, newTargets.length > 0 ? newTargets : null);
+  await setCachedRedirect(c.env.KV, link.slug, kvData, link.domainHostname);
 
   // Fetch the inserted targets to return with IDs
   const insertedTargets = await db.select().from(linkTargets).where(eq(linkTargets.linkId, id));
@@ -579,12 +639,9 @@ linkRoutes.put("/:id/targets", async (c) => {
 /** Public endpoint: verify a link's password via JSON API (no auth required). */
 export async function checkPassword(c: Context<AppEnv, "/api/links/:id/check-password">) {
   const ip = c.req.header("cf-connecting-ip") || "unknown";
-  const allowed = await checkRateLimit(c.env.KV, ip);
-  if (!allowed) {
-    return c.json({ error: "Too many attempts, try again later" }, 429);
-  }
-
   const id = c.req.param("id");
+  await checkRateLimit(c.env.KV, `ratelimit:pw-api:${id}:${ip}`, 5, 900);
+
   const db = getDb(c.env.DB);
 
   const link = await db.select({ password: links.password })

@@ -35,13 +35,26 @@ export function writeClickEvent(analytics: AnalyticsEngineDataset, event: ClickE
   });
 }
 
+// AE SQL API response types
+export type AERow = Record<string, string | number>;
+
+export interface AEMeta {
+  name: string;
+  type: string;
+}
+
+export interface AEResult {
+  data: AERow[];
+  meta: AEMeta[];
+}
+
 // WARNING: The AE SQL API does not support parameterized queries.
 // Callers MUST sanitize any user-controlled values before interpolating into the query string.
 export async function queryAnalyticsEngine(
   accountId: string,
   apiToken: string,
   query: string
-): Promise<{ data: any[]; meta: any }> {
+): Promise<AEResult> {
   const url = `https://api.cloudflare.com/client/v4/accounts/${accountId}/analytics_engine/sql`;
   const resp = await fetch(url, {
     method: "POST",
@@ -51,12 +64,12 @@ export async function queryAnalyticsEngine(
   if (!resp.ok) {
     throw new Error(`AE API returned ${resp.status}: ${resp.statusText}`);
   }
-  const result = await resp.json<{ success: boolean; errors?: { message: string }[]; data?: any[]; meta?: any }>();
+  const result = await resp.json<{ success: boolean; errors?: { message: string }[]; data?: AERow[]; meta?: AEMeta[] }>();
   if (!result.success) {
     const msg = result.errors?.[0]?.message ?? "Analytics Engine query failed";
     throw new Error(msg);
   }
-  return { data: result.data ?? [], meta: result.meta ?? {} };
+  return { data: result.data ?? [], meta: result.meta ?? [] };
 }
 
 export async function incrementClickStats(db: Database, linkId: string): Promise<void> {

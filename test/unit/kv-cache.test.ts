@@ -1,9 +1,10 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   getCachedRedirect,
   setCachedRedirect,
   deleteCachedRedirect,
+  kvKey,
 } from "../../src/services/kv-cache";
 
 describe("KV cache service", () => {
@@ -23,6 +24,7 @@ describe("KV cache service", () => {
     ogImage: null,
     paramForwarding: false,
     targets: null,
+        domainHostname: null,
   };
 
   it("getCachedRedirect returns null for missing key", async () => {
@@ -58,6 +60,7 @@ describe("KV cache service", () => {
       ogImage: null,
       paramForwarding: false,
       targets: null,
+        domainHostname: null,
     };
     await setCachedRedirect(kv, "full-fields", data);
     const result = await getCachedRedirect(kv, "full-fields");
@@ -85,5 +88,47 @@ describe("KV cache service", () => {
     await deleteCachedRedirect(kv, "slug-a");
     expect(await getCachedRedirect(kv, "slug-a")).toBeNull();
     expect(await getCachedRedirect(kv, "slug-b")).toEqual(dataB);
+  });
+
+  describe("domain-scoped keys", () => {
+    it("kvKey returns hostname:slug for custom domains, bare slug for default", () => {
+      expect(kvKey("my-slug")).toBe("my-slug");
+      expect(kvKey("my-slug", null)).toBe("my-slug");
+      expect(kvKey("my-slug", "brand.co")).toBe("brand.co:my-slug");
+    });
+
+    it("stores and retrieves with domain-scoped key", async () => {
+      const data = { ...sampleRedirect, domainHostname: "brand.co" };
+      await setCachedRedirect(kv, "scoped-slug", data, "brand.co");
+      const result = await getCachedRedirect(kv, "scoped-slug", "brand.co");
+      expect(result).toEqual(data);
+    });
+
+    it("domain-scoped key is isolated from default key", async () => {
+      const domainData = { ...sampleRedirect, domainHostname: "brand.co", linkId: "link-domain" };
+      const defaultData = { ...sampleRedirect, linkId: "link-default" };
+
+      await setCachedRedirect(kv, "shared-slug", domainData, "brand.co");
+      await setCachedRedirect(kv, "shared-slug", defaultData);
+
+      const domainResult = await getCachedRedirect(kv, "shared-slug", "brand.co");
+      const defaultResult = await getCachedRedirect(kv, "shared-slug");
+
+      expect(domainResult?.linkId).toBe("link-domain");
+      expect(defaultResult?.linkId).toBe("link-default");
+    });
+
+    it("deletes domain-scoped key without affecting default", async () => {
+      const domainData = { ...sampleRedirect, domainHostname: "brand.co" };
+      const defaultData = { ...sampleRedirect };
+
+      await setCachedRedirect(kv, "del-test", domainData, "brand.co");
+      await setCachedRedirect(kv, "del-test", defaultData);
+
+      await deleteCachedRedirect(kv, "del-test", "brand.co");
+
+      expect(await getCachedRedirect(kv, "del-test", "brand.co")).toBeNull();
+      expect(await getCachedRedirect(kv, "del-test")).toEqual(defaultData);
+    });
   });
 });

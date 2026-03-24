@@ -6,7 +6,7 @@ import { renderCampaignsPanel } from "./campaigns.js";
 
 export function renderDashboard(container, { activeTab = "links" } = {}) {
   container.innerHTML = `
-    <div class="dashboard-view" style="max-width:960px;margin:2rem auto;">
+    <div class="dashboard-view">
       <wa-tab-group id="dashboard-tabs">
         <wa-tab panel="links">
           <wa-icon name="link"></wa-icon>

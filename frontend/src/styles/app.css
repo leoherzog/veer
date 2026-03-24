@@ -10,10 +10,6 @@ body {
   min-height: 100vh;
 }
 
-#nav {
-  border-bottom: 1px solid var(--wa-color-border-default);
-}
-
 #main {
   flex: 1;
   padding: 0 1rem;
@@ -35,15 +31,6 @@ body {
   color: var(--wa-color-brand-fill-loud);
 }
 
-.nav-link {
-  text-decoration: none;
-  color: var(--wa-color-text-default);
-}
-
-.nav-link:hover {
-  color: var(--wa-color-brand-fill-loud);
-}
-
 /* Link table */
 .link-table {
   width: 100%;
@@ -54,12 +41,12 @@ body {
 .link-table td {
   padding: 0.75rem;
   text-align: left;
-  border-bottom: 1px solid var(--wa-color-border-default);
+  border-bottom: 1px solid var(--wa-color-neutral-border-normal);
 }
 
 .link-table th {
   font-weight: 600;
-  color: var(--wa-color-text-subdued);
+  color: var(--wa-color-text-quiet);
   font-size: 0.875rem;
 }
 
@@ -70,27 +57,26 @@ body {
   white-space: nowrap;
 }
 
-/* Focus styles */
-.nav-link:focus-visible {
-  outline: 2px solid var(--wa-color-brand-fill-loud);
-  outline-offset: 2px;
-  border-radius: var(--wa-border-radius-s);
+/* Campaign cards */
+.campaign-card {
+  cursor: pointer;
 }
 
-/* Campaign cards */
 .campaign-card:hover {
   outline: 2px solid var(--wa-color-brand-fill-loud);
   outline-offset: -2px;
 }
 
-/* Targeting rule rows */
-.target-rule {
-  flex-wrap: wrap;
+/* Circle icon buttons — wa-button has no native circle attribute */
+wa-button[circle]::part(base) {
+  border-radius: 50%;
+  aspect-ratio: 1;
+  padding: 0;
 }
 
-/* Available link rows in dialog */
+/* Available link rows in dialog — base styles now in view containers section */
 .available-link-row:last-child {
-  border-bottom: none !important;
+  border-bottom: none;
 }
 
 /* Toast container */
@@ -103,6 +89,83 @@ body {
   flex-direction: column;
   gap: 0.5rem;
   max-width: 400px;
+}
+
+/* Settings */
+.settings-view {
+  max-width: 960px;
+  margin: var(--wa-space-2xl) auto;
+}
+
+/* View containers */
+.home-view {
+  max-width: 600px;
+  margin: var(--wa-space-3xl) auto;
+  text-align: center;
+}
+
+.login-view {
+  max-width: 400px;
+  margin: var(--wa-space-3xl) auto;
+  text-align: center;
+}
+
+.link-detail-view {
+  max-width: 900px;
+  margin: var(--wa-space-2xl) auto;
+}
+
+.dashboard-view {
+  max-width: 960px;
+  margin: var(--wa-space-2xl) auto;
+}
+
+.campaign-detail-view {
+  max-width: 960px;
+  margin: var(--wa-space-2xl) auto;
+}
+
+/* Text color utilities (WA has no text color classes) */
+.text-quiet, .text-subdued { color: var(--wa-color-text-quiet); }
+.text-center { text-align: center; }
+
+/* OG social preview */
+.og-preview {
+  border: 1px solid var(--wa-color-neutral-border-normal);
+  border-radius: var(--wa-border-radius-m);
+  overflow: hidden;
+}
+
+.og-preview img {
+  width: 100%;
+  max-height: 200px;
+  object-fit: cover;
+}
+
+.og-preview-body {
+  padding: var(--wa-space-m);
+}
+
+/* QR color picker */
+.qr-color-input {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid var(--wa-color-neutral-border-normal);
+  border-radius: var(--wa-border-radius-s);
+  cursor: pointer;
+}
+
+/* Sortable table headers */
+.link-table th[data-sort] {
+  cursor: pointer;
+  user-select: none;
+}
+
+/* Available link rows in dialog */
+.available-link-row {
+  padding: var(--wa-space-xs) 0;
+  border-bottom: 1px solid var(--wa-color-neutral-border-normal);
 }
 
 /* Responsive */

@@ -1,11 +1,12 @@
 import type { Context, Next } from "hono";
 import type { AppEnv } from "../types";
 import { getDb } from "../db";
-import { links, linkStats, linkTargets } from "../db/schema";
-import { eq, sql } from "drizzle-orm";
+import { links, linkStats, linkTargets, domainConfig } from "../db/schema";
+import { eq, and, sql } from "drizzle-orm";
 import { getCachedRedirect, setCachedRedirect } from "../services/kv-cache";
 import { writeClickEvent, incrementClickStats } from "../services/analytics";
 import { verifyPassword } from "../services/password";
+import { checkRateLimit } from "../services/rate-limit";
 import { getAuth } from "../auth";
 
 /** Render a minimal self-contained HTML page. */
@@ -66,7 +67,7 @@ function gonePage(message: string): Response {
   });
 }
 
-function detectDeviceType(ua: string): "mobile" | "tablet" | "desktop" {
+export function detectDeviceType(ua: string): "mobile" | "tablet" | "desktop" {
   if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua)) return "tablet";
   if (/Mobile|iPhone|iPod|Android.*Mobile|webOS|BlackBerry|Opera Mini|IEMobile/i.test(ua)) return "mobile";
   return "desktop";
@@ -116,17 +117,35 @@ function forbiddenPage(): Response {
   });
 }
 
+/** Check whether a host is a custom domain (not primary, localhost, or 127.0.0.1). */
+function isCustomDomainHost(host: string, primaryUrl: string): boolean {
+  const primaryHost = new URL(primaryUrl).hostname;
+  return host !== primaryHost && host !== "localhost" && host !== "127.0.0.1";
+}
+
+/** Determine if the request is for a custom domain vs the primary domain. */
+function resolveHostInfo(c: Context<AppEnv, "/:slug">) {
+  const host = c.req.header("host")?.split(":")[0]?.toLowerCase() || "";
+  const isCustomDomain = isCustomDomainHost(host, c.env.BETTER_AUTH_URL);
+  return { host, isCustomDomain };
+}
+
 /** Resolve a slug to cached redirect data, populating KV on miss. */
-async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string) {
-  let cached = await getCachedRedirect(c.env.KV, slug);
+async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname?: string | null) {
+  let cached = await getCachedRedirect(c.env.KV, slug, hostname);
 
   if (cached && !cached.isActive) return null;
 
   if (!cached) {
     const db = getDb(c.env.DB);
-    const link = await db.select().from(links)
-      .where(eq(links.slug, slug))
-      .get();
+
+    // Scope slug lookup by domain: custom domain links have domainHostname set,
+    // default domain links have domainHostname NULL
+    const whereClause = hostname
+      ? and(eq(links.slug, slug), eq(links.domainHostname, hostname))
+      : and(eq(links.slug, slug), sql`${links.domainHostname} IS NULL`);
+
+    const link = await db.select().from(links).where(whereClause).get();
 
     if (!link || !link.isActive) return null;
 
@@ -153,10 +172,11 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string) {
         destinationUrl: t.destinationUrl,
         priority: t.priority,
       })) : null,
+      domainHostname: link.domainHostname ?? null,
     };
 
     c.executionCtx.waitUntil(
-      setCachedRedirect(c.env.KV, slug, cached)
+      setCachedRedirect(c.env.KV, slug, cached, hostname)
     );
   }
 
@@ -204,7 +224,7 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
 
   // Evaluate targeting rules (higher priority first, first match wins)
   if (resolved.targets?.length) {
-    const cf = (c.req.raw as any).cf;
+    const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf;
     const country = (cf?.country as string) || "";
     const ua = c.req.header("user-agent") || "";
     const device = detectDeviceType(ua);
@@ -255,24 +275,39 @@ function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, 
 
 export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
   const slug = c.req.param("slug");
-  const resolved = await resolveSlug(c, slug);
-  if (!resolved) return next();
+  const { host, isCustomDomain } = resolveHostInfo(c);
+
+  const resolved = await resolveSlug(c, slug, isCustomDomain ? host : null);
+
+  if (!resolved) {
+    // Custom domain: check notFoundRedirect before falling through
+    if (isCustomDomain) {
+      const domain = await getDb(c.env.DB).select().from(domainConfig)
+        .where(eq(domainConfig.hostname, host))
+        .get();
+      if (domain?.notFoundRedirect) {
+        return c.redirect(domain.notFoundRedirect, 302);
+      }
+    }
+    return next();
+  }
 
   // Check constraints (expiration, internal, max clicks)
   const blocked = await checkConstraints(c, resolved);
   if (blocked) return blocked;
 
-  // Password gate — serve the form on GET
-  if (resolved.hasPassword) {
-    return passwordGatePage(slug);
-  }
-
   const destinationUrl = resolveDestination(c, resolved);
 
+  // Bot/OG check BEFORE password gate — bots should see OG meta tags even for protected links
   const hasOg = resolved.ogTitle || resolved.ogDescription || resolved.ogImage;
   if (hasOg && isBotRequest(c)) {
     const shortUrl = new URL(`/${slug}`, c.req.url).href;
     return ogMetaPage(slug, destinationUrl, resolved, shortUrl);
+  }
+
+  // Password gate — serve the form on GET
+  if (resolved.hasPassword) {
+    return passwordGatePage(slug);
   }
 
   trackClick(c, slug, resolved.linkId, destinationUrl);
@@ -281,21 +316,51 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
 
 export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Next) {
   const slug = c.req.param("slug");
-  const resolved = await resolveSlug(c, slug);
-  if (!resolved) return next();
+  const { host, isCustomDomain } = resolveHostInfo(c);
+
+  const hostname = isCustomDomain ? host : null;
+
+  // Query D1 directly — no need to go through KV cache on the POST path
+  const db = getDb(c.env.DB);
+  const whereClause = hostname
+    ? and(eq(links.slug, slug), eq(links.domainHostname, hostname))
+    : and(eq(links.slug, slug), sql`${links.domainHostname} IS NULL`);
+  const link = await db.select().from(links).where(whereClause).get();
+
+  if (!link || !link.isActive) return next();
 
   // POST is only for password-protected links
-  if (!resolved.hasPassword) {
+  if (!link.password) {
     return c.text("Method Not Allowed", 405);
   }
 
   const ip = c.req.header("cf-connecting-ip") || "unknown";
-  const rlKey = `ratelimit:pw:${ip}`;
-  const rlCurrent = parseInt(await c.env.KV.get(rlKey) || "0", 10);
-  if (rlCurrent >= 5) {
-    return c.json({ error: "Too many attempts, try again later" }, 429);
-  }
-  await c.env.KV.put(rlKey, String(rlCurrent + 1), { expirationTtl: 900 });
+  await checkRateLimit(c.env.KV, `ratelimit:pw:${slug}:${ip}`, 5, 900);
+
+  // Build resolved shape for checkConstraints and resolveDestination
+  const targets = await db.select().from(linkTargets)
+    .where(eq(linkTargets.linkId, link.id));
+  const resolved = {
+    url: link.destinationUrl,
+    redirectType: link.redirectType,
+    linkId: link.id,
+    isActive: link.isActive,
+    expiresAt: link.expiresAt ? Math.floor(new Date(link.expiresAt).getTime() / 1000) : null,
+    maxClicks: link.maxClicks ?? null,
+    hasPassword: true,
+    isInternal: link.isInternal ?? false,
+    ogTitle: link.ogTitle ?? null,
+    ogDescription: link.ogDescription ?? null,
+    ogImage: link.ogImage ?? null,
+    paramForwarding: link.paramForwarding ?? false,
+    targets: targets.length > 0 ? targets.map(t => ({
+      type: t.type as "geo" | "device",
+      matchValue: t.matchValue,
+      destinationUrl: t.destinationUrl,
+      priority: t.priority,
+    })) : null,
+    domainHostname: link.domainHostname ?? null,
+  };
 
   // Check constraints before processing password
   const blocked = await checkConstraints(c, resolved);
@@ -309,17 +374,6 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
     return passwordGatePage(slug, "Please enter a password.");
   }
 
-  // Look up link in D1 to get stored password hash
-  const db = getDb(c.env.DB);
-  const link = await db.select({ password: links.password })
-    .from(links)
-    .where(eq(links.slug, slug))
-    .get();
-
-  if (!link || !link.password) {
-    return next();
-  }
-
   const valid = await verifyPassword(submittedPassword, link.password);
   if (!valid) {
     return passwordGatePage(slug, "Incorrect password. Please try again.");
@@ -329,4 +383,26 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   const destinationUrl = resolveDestination(c, resolved);
   trackClick(c, slug, resolved.linkId, destinationUrl);
   return c.redirect(destinationUrl, resolved.redirectType as 301 | 302);
+}
+
+/** Handle root path on custom domains (rootRedirect). */
+export async function handleCustomDomainRoot(c: Context<AppEnv, "/">, next: Next) {
+  const host = c.req.header("host")?.split(":")[0]?.toLowerCase() || "";
+  if (!isCustomDomainHost(host, c.env.BETTER_AUTH_URL)) {
+    return next();
+  }
+
+  const db = getDb(c.env.DB);
+  const domain = await db.select().from(domainConfig)
+    .where(eq(domainConfig.hostname, host))
+    .get();
+
+  if (!domain) return next();
+
+  if (domain.rootRedirect) {
+    return c.redirect(domain.rootRedirect, 302);
+  }
+
+  // Custom domain root with no redirect configured — fall through to SPA
+  return next();
 }

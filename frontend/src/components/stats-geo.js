@@ -1,8 +1,6 @@
 import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 
-let charts = [];
-
 export async function renderStatsGeo(container, linkId, days = 30) {
   container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Geographic</h3>${SKELETON}</div></wa-card>`;
 
@@ -17,8 +15,7 @@ export async function renderStatsGeo(container, linkId, days = 30) {
       return;
     }
 
-    charts.forEach(destroyChart);
-    charts = [];
+    (container._charts || []).forEach(destroyChart);
 
     container.innerHTML = `
       <wa-card>
@@ -30,6 +27,7 @@ export async function renderStatsGeo(container, linkId, days = 30) {
       </wa-card>
     `;
 
+    const charts = [];
     function makeBar(id, items, labelKey) {
       const canvas = container.querySelector(`#${id}`);
       if (!canvas || !items.length) return;
@@ -43,6 +41,7 @@ export async function renderStatsGeo(container, linkId, days = 30) {
 
     makeBar("geo-countries", countries, "name");
     makeBar("geo-cities", cities, "name");
+    container._charts = charts;
   } catch {
     container.innerHTML = `<wa-card>${noData("Failed to load geographic data")}</wa-card>`;
   }

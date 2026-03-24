@@ -5,9 +5,9 @@ function getThemeColors() {
   const style = getComputedStyle(document.documentElement);
   const isDark = document.documentElement.classList.contains("wa-dark");
   return {
-    text: style.getPropertyValue("--wa-color-text-default").trim() || (isDark ? "#e5e5e5" : "#333"),
-    subdued: style.getPropertyValue("--wa-color-text-subdued").trim() || (isDark ? "#999" : "#666"),
-    border: style.getPropertyValue("--wa-color-border-default").trim() || (isDark ? "#444" : "#ddd"),
+    text: style.getPropertyValue("--wa-color-text-normal").trim() || (isDark ? "#e5e5e5" : "#333"),
+    subdued: style.getPropertyValue("--wa-color-text-quiet").trim() || (isDark ? "#999" : "#666"),
+    border: style.getPropertyValue("--wa-color-neutral-border-normal").trim() || (isDark ? "#444" : "#ddd"),
     brand: style.getPropertyValue("--wa-color-brand-fill-loud").trim() || "#7c3aed",
   };
 }

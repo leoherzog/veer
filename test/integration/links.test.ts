@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
 import { setupAuth, createTestLink } from "../helpers";
@@ -247,18 +247,16 @@ describe("Links API", () => {
       expect(json.data.destinationUrl).toBe("https://new-destination.com");
     });
 
-    it("updates the slug and invalidates old KV entry", async () => {
-      const link = await createTestLink(env.DB, { slug: "old-slug", userId });
+    it("ignores slug in PUT body (slug is immutable)", async () => {
+      const link = await createTestLink(env.DB, { slug: "immutable-slug", userId });
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
-        body: { slug: "new-slug" },
+        body: { slug: "new-slug", title: "Updated" },
       });
       expect(res.status).toBe(200);
-      const json = await res.json() as { data: { slug: string } };
-      expect(json.data.slug).toBe("new-slug");
-
-      const oldKv = await env.KV.get("old-slug");
-      expect(oldKv).toBeNull();
+      const json = await res.json() as { data: { slug: string; title: string } };
+      expect(json.data.slug).toBe("immutable-slug");
+      expect(json.data.title).toBe("Updated");
     });
 
     it("updates the title", async () => {
@@ -280,15 +278,17 @@ describe("Links API", () => {
       expect(res.status).toBe(404);
     });
 
-    it("returns 409 for slug conflict with existing link", async () => {
-      await createTestLink(env.DB, { slug: "conflict-target", userId });
-      const link = await createTestLink(env.DB, { slug: "conflict-source", userId });
+    it("PUT does not allow slug changes so no slug conflict is possible", async () => {
+      await createTestLink(env.DB, { slug: "conflict-target2", userId });
+      const link = await createTestLink(env.DB, { slug: "conflict-source2", userId });
 
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
-        body: { slug: "conflict-target" },
+        body: { slug: "conflict-target2", title: "test" },
       });
-      expect(res.status).toBe(409);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { slug: string } };
+      expect(json.data.slug).toBe("conflict-source2");
     });
   });
 

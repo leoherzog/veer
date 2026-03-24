@@ -2,6 +2,16 @@ import { authClient } from "../auth-client.js";
 import { navigate } from "../router.js";
 import { escapeAttr } from "../lib/escape.js";
 
+function toggleTheme(iconEl, labelEl) {
+  const root = document.documentElement;
+  const isDark = root.classList.contains("wa-dark");
+  root.classList.remove(isDark ? "wa-dark" : "wa-light");
+  root.classList.add(isDark ? "wa-light" : "wa-dark");
+  localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
+  if (iconEl) iconEl.name = isDark ? "moon" : "sun";
+  if (labelEl) labelEl.textContent = isDark ? "Dark Mode" : "Light Mode";
+}
+
 export function renderNavBar(container, user) {
   container.innerHTML = `
     <nav class="nav-bar wa-split">
@@ -15,9 +25,13 @@ export function renderNavBar(container, user) {
               <wa-button slot="trigger" variant="neutral" appearance="plain" circle>
                 <wa-avatar id="user-avatar" image="${escapeAttr(user.image || "")}" label="${escapeAttr(user.name)}" style="--size: 2rem;"></wa-avatar>
               </wa-button>
+              <wa-dropdown-item id="settings-link">
+                <wa-icon slot="icon" name="gear"></wa-icon>
+                Settings
+              </wa-dropdown-item>
               <wa-dropdown-item id="theme-toggle">
                 <wa-icon slot="icon" name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}"></wa-icon>
-                ${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}
+                <span class="theme-label">${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}</span>
               </wa-dropdown-item>
               <wa-divider></wa-divider>
               <wa-dropdown-item id="logout-btn">
@@ -40,15 +54,10 @@ export function renderNavBar(container, user) {
   if (dropdown) {
     dropdown.addEventListener("wa-select", async (e) => {
       const item = e.detail.item;
-      if (item.id === "theme-toggle") {
-        const root = document.documentElement;
-        const isDark = root.classList.contains("wa-dark");
-        root.classList.remove(isDark ? "wa-dark" : "wa-light");
-        root.classList.add(isDark ? "wa-light" : "wa-dark");
-        localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
-        const icon = item.querySelector("wa-icon");
-        if (icon) icon.name = isDark ? "moon" : "sun";
-        item.lastChild.textContent = isDark ? " Dark Mode" : " Light Mode";
+      if (item.id === "settings-link") {
+        navigate("/settings");
+      } else if (item.id === "theme-toggle") {
+        toggleTheme(item.querySelector("wa-icon"), item.querySelector(".theme-label"));
       } else if (item.id === "logout-btn") {
         await authClient.signOut();
         history.replaceState(null, "", "/");
@@ -60,16 +69,9 @@ export function renderNavBar(container, user) {
   // Theme toggle (logged-out state)
   if (!user) {
     container.querySelector("#theme-toggle")?.addEventListener("click", () => {
-      const root = document.documentElement;
-      const isDark = root.classList.contains("wa-dark");
-      root.classList.remove(isDark ? "wa-dark" : "wa-light");
-      root.classList.add(isDark ? "wa-light" : "wa-dark");
-      localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
       const icon = container.querySelector("#theme-toggle wa-icon");
-      if (icon) {
-        icon.name = isDark ? "moon" : "sun";
-        icon.label = isDark ? "Dark Mode" : "Light Mode";
-      }
+      toggleTheme(icon, null);
+      if (icon) icon.label = icon.name === "moon" ? "Dark Mode" : "Light Mode";
     });
   }
 

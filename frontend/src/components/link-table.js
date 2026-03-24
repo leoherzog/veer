@@ -16,19 +16,19 @@ function sortIndicator(col, sort) {
 
 export function renderLinkTable(container, { links, pagination, sort, onPageChange, onSort }) {
   if (!links.length) {
-    container.innerHTML = `<div class="wa-stack wa-gap-m wa-align-items-center" style="padding: 3rem;">
-      <wa-icon name="link-slash" style="font-size: 2rem; opacity: 0.5;"></wa-icon>
+    container.innerHTML = `<div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
+      <wa-icon name="link-slash" style="font-size:var(--wa-font-size-2xl);opacity:0.5;"></wa-icon>
       <p>No links yet. Create your first short link above.</p>
     </div>`;
     return;
   }
 
-  const baseUrl = location.origin;
+  const shortUrl = (link) => link.domainHostname ? `https://${link.domainHostname}/${link.slug}` : `${location.origin}/${link.slug}`;
   container.innerHTML = `
     <table class="link-table" aria-label="Your links">
       <thead>
         <tr>
-          ${COLUMNS.map((col) => `<th data-sort="${col.key}" style="cursor:pointer;user-select:none;">${col.label}${sortIndicator(col.key, sort)}</th>`).join("")}
+          ${COLUMNS.map((col) => `<th data-sort="${col.key}">${col.label}${sortIndicator(col.key, sort)}</th>`).join("")}
           <th></th>
         </tr>
       </thead>
@@ -38,7 +38,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
             <td>
               <div class="wa-cluster wa-gap-2xs">
                 <span>/${escapeHtml(link.slug)}</span>
-                <wa-copy-button value="${escapeAttr(baseUrl + "/" + link.slug)}" copy-label="Copy" success-label="Copied!" style="--font-size: 0.875rem;"></wa-copy-button>
+                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" style="font-size: 0.875rem;"></wa-copy-button>
               </div>
             </td>
             <td class="truncate">${escapeHtml(link.destinationUrl)}</td>
@@ -47,7 +47,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
             <td>
               <div class="wa-cluster wa-gap-2xs">
                 <wa-button size="small" variant="neutral" appearance="plain" circle data-edit="/links/${escapeAttr(link.id)}"><wa-icon name="pen-to-square" label="Edit"></wa-icon></wa-button>
-                <wa-button size="small" variant="neutral" appearance="plain" circle data-href="${escapeAttr(baseUrl + "/" + link.slug)}"><wa-icon name="arrow-up-right-from-square" label="Visit"></wa-icon></wa-button>
+                <wa-button size="small" variant="neutral" appearance="plain" circle data-href="${escapeAttr(shortUrl(link))}"><wa-icon name="arrow-up-right-from-square" label="Visit"></wa-icon></wa-button>
               </div>
             </td>
           </tr>
@@ -55,7 +55,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
       </tbody>
     </table>
     ${pagination.total > pagination.limit ? `
-      <div class="wa-cluster wa-gap-s wa-justify-content-center" style="margin-top:1rem;">
+      <div class="wa-cluster wa-gap-s wa-justify-content-center" style="margin-top:var(--wa-space-m);">
         <wa-button size="small" variant="neutral" ${pagination.page <= 1 ? "disabled" : ""} id="prev-page" aria-label="Previous page">Previous</wa-button>
         <span>Page ${pagination.page} of ${Math.ceil(pagination.total / pagination.limit)}</span>
         <wa-button size="small" variant="neutral" ${pagination.page * pagination.limit >= pagination.total ? "disabled" : ""} id="next-page" aria-label="Next page">Next</wa-button>

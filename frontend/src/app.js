@@ -39,14 +39,7 @@ import { renderLogin } from "./views/login.js";
 import { renderDashboard } from "./views/dashboard.js";
 import { renderLinkDetail } from "./views/link-detail.js";
 import { renderCampaignDetail } from "./views/campaign-detail.js";
-
-// Theme initialization
-const root = document.documentElement;
-const saved = localStorage.getItem("theme");
-const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
-const theme = saved || (prefersDark ? "wa-dark" : "wa-light");
-root.classList.remove("wa-light", "wa-dark");
-root.classList.add(theme);
+import { renderSettings } from "./views/settings.js";
 
 let currentUser = null;
 
@@ -69,7 +62,7 @@ async function init() {
     main.innerHTML = "";
     Promise.resolve(viewFn(main)).catch((err) => {
       console.error(err);
-      main.innerHTML = '<div style="text-align:center;padding:3rem;"><h2>Something went wrong</h2><p>Please try again.</p></div>';
+      main.innerHTML = '<div class="text-center" style="padding:var(--wa-space-3xl);"><h2>Something went wrong</h2><p>Please try again.</p></div>';
     });
     if (!initialLoad) main.focus();
     initialLoad = false;
@@ -97,10 +90,14 @@ async function init() {
     if (!currentUser) return render((el) => renderLogin(el));
     render((el) => renderCampaignDetail(el, params));
   });
+  addRoute("/settings", () => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    render((el) => renderSettings(el));
+  });
 
   setNotFound(() => {
     render((el) => {
-      el.innerHTML = `<div role="alert" style="text-align:center;padding:3rem;"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
+      el.innerHTML = `<div role="alert" class="text-center" style="padding:var(--wa-space-3xl);"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
     });
   });
 

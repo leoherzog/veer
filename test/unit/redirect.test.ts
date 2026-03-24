@@ -1,17 +1,9 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
 import { setupAuth, mockExecutionCtx } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
-
-// ── Pure function replica for unit testing ─────────────────────────────
-// detectDeviceType is not exported from redirect.ts, so we replicate its
-// logic here to verify the regex classification independently.
-function detectDeviceType(ua: string): "mobile" | "tablet" | "desktop" {
-  if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua)) return "tablet";
-  if (/Mobile|iPhone|iPod|Android.*Mobile|webOS|BlackBerry|Opera Mini|IEMobile/i.test(ua)) return "mobile";
-  return "desktop";
-}
+import { detectDeviceType } from "../../src/routes/redirect";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -31,6 +23,7 @@ function cachedRedirect(overrides: Partial<Parameters<typeof setCachedRedirect>[
     ogImage: null,
     paramForwarding: false,
     targets: null,
+    domainHostname: null,
     ...overrides,
   };
 }
@@ -275,6 +268,7 @@ describe("Targeting evaluation via redirect", () => {
       await setCachedRedirect(env.KV, "no-targets", cachedRedirect({
         url: "https://default.example.com/plain",
         targets: null,
+        domainHostname: null,
       }));
 
       const req = cfRequest("/no-targets");

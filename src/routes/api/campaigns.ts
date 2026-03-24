@@ -1,36 +1,31 @@
-import { Hono } from "hono";
+import { Hono, type MiddlewareHandler } from "hono";
 import { eq, sql, and, gte, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { campaigns, linkCampaigns, links, linkStats } from "../../db/schema";
-import { HTTPException } from "hono/http-exception";
-import { badRequest, notFound } from "../../lib/errors";
+import { badRequest, notFound, checkBodySize } from "../../lib/errors";
 import type { AppEnv } from "../../types";
 
-type CampaignEnv = AppEnv & { Variables: AppEnv["Variables"] & { campaign: typeof campaigns.$inferSelect } };
+type Campaign = typeof campaigns.$inferSelect;
 
-const campaignRoutes = new Hono<AppEnv>();
+type CampaignEnv = AppEnv & {
+  Variables: AppEnv["Variables"] & { campaign: Campaign };
+};
 
-// Ownership middleware for /:id/* routes
-campaignRoutes.use("/:id/*", async (c, next) => {
+const campaignRoutes = new Hono<CampaignEnv>();
+
+const loadCampaign: MiddlewareHandler<CampaignEnv> = async (c, next) => {
+  if (c.var.campaign) return next();
   const user = c.var.user;
   const db = getDb(c.env.DB);
-  const id = c.req.param("id");
+  const id = c.req.param("id")!;
   const campaign = await db.select().from(campaigns).where(eq(campaigns.id, id)).get();
   if (!campaign || campaign.userId !== user.id) throw notFound("Campaign not found");
-  c.set("campaign" as any, campaign);
+  c.set("campaign", campaign);
   return next();
-});
-// Also match bare /:id (not covered by /:id/*)
-campaignRoutes.use("/:id", async (c, next) => {
-  if ((c.var as any).campaign) return next();
-  const user = c.var.user;
-  const db = getDb(c.env.DB);
-  const id = c.req.param("id");
-  const campaign = await db.select().from(campaigns).where(eq(campaigns.id, id)).get();
-  if (!campaign || campaign.userId !== user.id) throw notFound("Campaign not found");
-  c.set("campaign" as any, campaign);
-  return next();
-});
+}
+
+campaignRoutes.use("/:id/*", loadCampaign);
+campaignRoutes.use("/:id", loadCampaign);
 
 // List user's campaigns (with link count)
 campaignRoutes.get("/", async (c) => {
@@ -60,10 +55,7 @@ campaignRoutes.post("/", async (c) => {
   const user = c.var.user;
   const db = getDb(c.env.DB);
 
-  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
-  if (contentLength > 10_000) {
-    throw new HTTPException(413, { message: "Request body too large" });
-  }
+  checkBodySize(c.req.header("content-length"));
 
   let body: { name: string; description?: string };
   try {
@@ -110,7 +102,7 @@ campaignRoutes.post("/", async (c) => {
 campaignRoutes.get("/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-  const campaign = (c.var as any).campaign;
+  const campaign = c.var.campaign;
 
   // Fetch linked links with per-link click totals
   const linkedRows = await db
@@ -136,12 +128,9 @@ campaignRoutes.get("/:id", async (c) => {
 campaignRoutes.put("/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-  const existing = (c.var as any).campaign;
+  const existing = c.var.campaign;
 
-  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
-  if (contentLength > 10_000) {
-    throw new HTTPException(413, { message: "Request body too large" });
-  }
+  checkBodySize(c.req.header("content-length"));
 
   let body: { name?: string; description?: string | null };
   try {
@@ -191,10 +180,7 @@ campaignRoutes.post("/:id/links", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
-  const contentLength = parseInt(c.req.header("content-length") || "0", 10);
-  if (contentLength > 10_000) {
-    throw new HTTPException(413, { message: "Request body too large" });
-  }
+  checkBodySize(c.req.header("content-length"));
 
   let body: { linkIds: string[] };
   try {

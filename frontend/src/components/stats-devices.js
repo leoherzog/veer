@@ -1,8 +1,6 @@
 import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 
-let charts = [];
-
 export async function renderStatsDevices(container, linkId, days = 30) {
   container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Devices &amp; Browsers</h3>${SKELETON}</div></wa-card>`;
 
@@ -14,8 +12,7 @@ export async function renderStatsDevices(container, linkId, days = 30) {
     const devices = data.devices ?? [];
 
     const nd = noData();
-    charts.forEach(destroyChart);
-    charts = [];
+    (container._charts || []).forEach(destroyChart);
 
     container.innerHTML = `
       <wa-card>
@@ -30,6 +27,7 @@ export async function renderStatsDevices(container, linkId, days = 30) {
       </wa-card>
     `;
 
+    const charts = [];
     function makeDoughnut(id, items) {
       const canvas = container.querySelector(`#${id}`);
       if (!canvas || !items.length) return;
@@ -44,6 +42,7 @@ export async function renderStatsDevices(container, linkId, days = 30) {
     makeDoughnut("browsers-chart", browsers);
     makeDoughnut("os-chart", os);
     makeDoughnut("device-chart", devices);
+    container._charts = charts;
   } catch {
     container.innerHTML = `<wa-card>${noData("Failed to load device data")}</wa-card>`;
   }

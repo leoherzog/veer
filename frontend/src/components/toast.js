@@ -11,9 +11,7 @@ function getContainer() {
 export function showToast(message, variant = "neutral", duration = 3000) {
   const callout = document.createElement("wa-callout");
   callout.variant = variant;
-  callout.closable = true;
   callout.textContent = message;
-  callout.addEventListener("wa-hide", () => callout.remove());
   getContainer().appendChild(callout);
   setTimeout(() => {
     if (callout.parentNode) callout.remove();

@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeEach } from "vitest";
 import { writeClickEvent, incrementClickStats } from "../../src/services/analytics";
 import { getDb } from "../../src/db";
@@ -104,11 +104,11 @@ describe("incrementClickStats", () => {
 
     expect(rows.results.length).toBe(2);
 
-    const pastRow = rows.results.find((r) => r.date === "2025-01-01");
+    const pastRow = rows.results.find((r: { date: string; clicks: number }) => r.date === "2025-01-01");
     expect(pastRow).toBeDefined();
     expect(pastRow!.clicks).toBe(5);
 
-    const todayRow = rows.results.find((r) => r.date !== "2025-01-01");
+    const todayRow = rows.results.find((r: { date: string; clicks: number }) => r.date !== "2025-01-01");
     expect(todayRow).toBeDefined();
     expect(todayRow!.clicks).toBe(1);
   });

@@ -14,12 +14,12 @@ function createTargetRow(target = {}) {
   const row = document.createElement("div");
   row.className = "target-rule wa-cluster wa-gap-s wa-align-items-end";
   row.innerHTML = `
-    <wa-select name="targetType" label="Type" value="${escapeAttr(target.type || "geo")}" style="min-width:120px;">
-      <wa-option value="geo">Country</wa-option>
-      <wa-option value="device">Device</wa-option>
+    <wa-select name="targetType" label="Type" style="min-width:120px;">
+      <wa-option value="geo" ${(target.type || "geo") === "geo" ? "selected" : ""}>Country</wa-option>
+      <wa-option value="device" ${target.type === "device" ? "selected" : ""}>Device</wa-option>
     </wa-select>
-    <wa-input name="targetMatch" label="Match" placeholder="US" hint="Country code or device type" value="${escapeAttr(target.matchValue || target.match || "")}" style="min-width:120px;"></wa-input>
-    <wa-input name="targetUrl" label="Destination" type="url" placeholder="https://..." value="${escapeAttr(target.destinationUrl || target.url || "")}" style="flex:1;"></wa-input>
+    <wa-input name="targetMatch" label="Match" placeholder="US" hint="Country code or device type" value="${escapeAttr(target.matchValue || "")}" style="min-width:120px;"></wa-input>
+    <wa-input name="targetUrl" label="Destination" type="url" placeholder="https://..." value="${escapeAttr(target.destinationUrl || "")}" style="flex:1;"></wa-input>
     <wa-input name="targetPriority" label="Priority" type="number" value="${escapeAttr(target.priority != null ? String(target.priority) : "0")}" style="max-width:80px;"></wa-input>
     <wa-button variant="danger" appearance="plain" circle class="remove-target-btn" aria-label="Remove rule">
       <wa-icon name="xmark"></wa-icon>
@@ -73,7 +73,7 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
         value="${escapeAttr(link?.title || "")}"
       ></wa-input>
       <wa-details summary="Advanced Options">
-        <div class="wa-stack wa-gap-m" style="padding-top:0.5rem;">
+        <div class="wa-stack wa-gap-m" style="padding-top:var(--wa-space-xs);">
           <wa-radio-group label="Redirect Type" name="redirectType" value="${link?.redirectType || 302}" orientation="horizontal">
             <wa-radio value="302">302 Temporary</wa-radio>
             <wa-radio value="301">301 Permanent</wa-radio>
@@ -103,10 +103,12 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
           ></wa-input>
           <wa-switch name="isInternal" ${link?.isInternal ? "checked" : ""}>Internal link (hidden from public listings)</wa-switch>
           <wa-divider></wa-divider>
-          <wa-switch name="paramForwarding" ${link?.paramForwarding ? "checked" : ""}>Forward query parameters to destination</wa-switch>
+          <wa-switch name="paramForwarding" ${link ? (link.paramForwarding ? "checked" : "") : "checked"}>Forward query parameters to destination</wa-switch>
           <wa-divider></wa-divider>
-          <wa-select name="campaignId" label="Campaign (optional)" with-clear value="${escapeAttr(link?.campaigns?.[0]?.id || "")}">
-            <wa-option value="">None</wa-option>
+          <wa-select name="campaignIds" label="Campaigns (optional)" multiple with-clear max-options-visible="3">
+          </wa-select>
+          <wa-select name="domainHostname" label="Domain (optional)" with-clear>
+            <wa-option value="" selected>Default domain</wa-option>
           </wa-select>
           <wa-divider></wa-divider>
           <div class="wa-stack wa-gap-s">
@@ -117,7 +119,7 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
                 Add Rule
               </wa-button>
             </div>
-            <p style="font-size:0.875rem;color:var(--wa-color-text-subdued);margin:0;">Redirect visitors to different URLs based on country or device type.</p>
+            <p class="wa-body-s text-quiet" style="margin:0;">Redirect visitors to different URLs based on country or device type.</p>
             <div id="targets-list" class="wa-stack wa-gap-s"></div>
           </div>
           <wa-divider></wa-divider>
@@ -149,22 +151,38 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
   `;
 
   // Populate campaigns dropdown
-  const campaignSelect = container.querySelector('[name="campaignId"]');
+  const campaignSelect = container.querySelector('[name="campaignIds"]');
   fetch("/api/campaigns")
     .then(res => res.ok ? res.json() : { data: [] })
     .then(({ data }) => {
+      const selectedIds = new Set((link?.campaigns || []).map(c => c.id));
       for (const c of data) {
         const opt = document.createElement("wa-option");
         opt.value = c.id;
         opt.textContent = c.name;
+        if (selectedIds.has(c.id)) opt.selected = true;
         campaignSelect.appendChild(opt);
-      }
-      // Re-set value after options are added
-      if (link?.campaigns?.[0]?.id) {
-        campaignSelect.value = link.campaigns[0].id;
       }
     })
     .catch(() => {}); // silently ignore
+
+  // Populate domains dropdown
+  const domainSelect = container.querySelector('[name="domainHostname"]');
+  fetch("/api/domains")
+    .then(res => res.ok ? res.json() : { data: [] })
+    .then(({ data }) => {
+      for (const d of data) {
+        const opt = document.createElement("wa-option");
+        opt.value = d.hostname;
+        opt.textContent = d.hostname;
+        domainSelect.appendChild(opt);
+      }
+      if (link?.domainHostname) {
+        const match = domainSelect.querySelector(`wa-option[value="${CSS.escape(link.domainHostname)}"]`);
+        if (match) match.selected = true;
+      }
+    })
+    .catch(() => {});
 
   // Populate existing targeting rules
   const targetsList = container.querySelector("#targets-list");
@@ -214,7 +232,8 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
 
     const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
     const passwordVal = passwordInput.value;
-    const campaignIdVal = form.querySelector('[name="campaignId"]').value;
+    const campaignIdsVal = form.querySelector('[name="campaignIds"]').value || [];
+    const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;
 
     const data = {
       ...(!isEdit && { slug: form.querySelector('[name="slug"]').value.trim() }),
@@ -225,7 +244,8 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
       maxClicks: maxClicksVal ? Number(maxClicksVal) : null,
       isInternal: form.querySelector('[name="isInternal"]').checked,
       paramForwarding: form.querySelector('[name="paramForwarding"]').checked,
-      campaignId: campaignIdVal || null,
+      campaignIds: Array.isArray(campaignIdsVal) ? campaignIdsVal : campaignIdsVal ? [campaignIdsVal] : [],
+      domainHostname: domainHostnameVal || null,
       ogTitle: form.querySelector('[name="ogTitle"]').value.trim() || null,
       ogDescription: form.querySelector('[name="ogDescription"]').value.trim() || null,
       ogImage: form.querySelector('[name="ogImage"]').value.trim() || null,

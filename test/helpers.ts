@@ -1,4 +1,7 @@
-import { env } from "cloudflare:test";
+import { env } from "cloudflare:workers";
+
+/** Cloudflare.Env extended with secrets that are not in the generated wrangler types. */
+type EnvWithSecrets = Cloudflare.Env & { BETTER_AUTH_SECRET?: string };
 
 const TEST_SECRET = "test-secret-minimum-32-characters-long";
 let userCounter = 0;
@@ -26,7 +29,7 @@ async function signSessionToken(token: string, secret: string): Promise<string> 
  * using the same HMAC-SHA256 approach Better Auth uses internally.
  */
 export async function setupAuth(
-  envBindings: typeof env = env,
+  envBindings: EnvWithSecrets = env,
   overrides: { email?: string; name?: string } = {}
 ) {
   userCounter++;
@@ -71,14 +74,6 @@ export async function setupAuth(
   };
 }
 
-/** Get headers with a specific signed session token. */
-export function authHeaders(signedToken: string): Record<string, string> {
-  return {
-    Cookie: `better-auth.session_token=${signedToken}`,
-    "Content-Type": "application/json",
-  };
-}
-
 /** Insert a link directly into D1 for test setup. */
 export async function createTestLink(
   db: D1Database = env.DB,
@@ -90,6 +85,7 @@ export async function createTestLink(
     redirectType: number;
     title: string | null;
     isActive: boolean;
+    domainHostname: string | null;
   }> = {}
 ) {
   const id = overrides.id ?? crypto.randomUUID();
@@ -99,17 +95,18 @@ export async function createTestLink(
   const redirectType = overrides.redirectType ?? 302;
   const title = overrides.title ?? null;
   const isActive = overrides.isActive !== false;
+  const domainHostname = overrides.domainHostname ?? null;
   const now = Math.floor(Date.now() / 1000);
 
   await db
     .prepare(
-      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, isActive)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, isActive, domainHostname)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, userId, slug, destinationUrl, redirectType, title, now, now, isActive ? 1 : 0)
+    .bind(id, userId, slug, destinationUrl, redirectType, title, now, now, isActive ? 1 : 0, domainHostname)
     .run();
 
-  return { id, userId, slug, destinationUrl, redirectType, title, isActive, createdAt: now, updatedAt: now };
+  return { id, userId, slug, destinationUrl, redirectType, title, isActive, domainHostname, createdAt: now, updatedAt: now };
 }
 
 /** Mock execution context for app.request() calls that need waitUntil. */
@@ -120,5 +117,7 @@ export function mockExecutionCtx(): ExecutionContext {
       p.catch(() => {});
     },
     passThroughOnException: () => {},
+    exports: {} as Cloudflare.Exports,
+    props: {},
   };
 }

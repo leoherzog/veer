@@ -2,12 +2,13 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "./types";
 import { corsMiddleware } from "./middleware/cors";
-import { requireAuth } from "./middleware/auth";
+import { requireAuth, requireAdmin } from "./middleware/auth";
 import authRoutes from "./routes/api/auth";
 import linkRoutes, { checkPassword } from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
 import campaignRoutes from "./routes/api/campaigns";
-import { handleRedirect, handleRedirectPost } from "./routes/redirect";
+import domainRoutes from "./routes/api/domains";
+import { handleRedirect, handleRedirectPost, handleCustomDomainRoot } from "./routes/redirect";
 
 const app = new Hono<AppEnv>();
 
@@ -50,6 +51,15 @@ app.use("/api/links/*", requireAuth);
 app.use("/api/stats/*", requireAuth);
 app.use("/api/campaigns", requireAuth);
 app.use("/api/campaigns/*", requireAuth);
+app.use("/api/domains", requireAuth);
+app.use("/api/domains/*", requireAuth);
+
+// Admin-only domain management routes (sync, individual config, access)
+app.post("/api/domains/sync", requireAdmin);
+app.get("/api/domains/:hostname", requireAdmin);
+app.put("/api/domains/:hostname", requireAdmin);
+app.get("/api/domains/:hostname/access", requireAdmin);
+app.put("/api/domains/:hostname/access", requireAdmin);
 
 // Current user profile
 app.get("/api/me", async (c) => {
@@ -60,6 +70,10 @@ app.get("/api/me", async (c) => {
 app.route("/api/links", linkRoutes);
 app.route("/api/stats", statsRoutes);
 app.route("/api/campaigns", campaignRoutes);
+app.route("/api/domains", domainRoutes);
+
+// Custom domain root redirect (before /:slug to handle bare domain visits)
+app.get("/", handleCustomDomainRoot);
 
 // Redirect engine (must come after /api/*), falls through to SPA on miss
 app.get("/:slug", handleRedirect);

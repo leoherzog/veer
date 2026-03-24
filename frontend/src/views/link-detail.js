@@ -29,8 +29,16 @@ function buildBadges(link) {
     badges.push(`<wa-badge variant="neutral" pill>Param Forwarding</wa-badge>`);
   }
 
-  if (link.campaignName) {
+  if (link.campaigns?.length) {
+    for (const c of link.campaigns) {
+      badges.push(`<wa-badge variant="brand" pill>${escapeHtml(c.name)}</wa-badge>`);
+    }
+  } else if (link.campaignName) {
     badges.push(`<wa-badge variant="brand" pill>${escapeHtml(link.campaignName)}</wa-badge>`);
+  }
+
+  if (link.domainHostname) {
+    badges.push(`<wa-badge variant="neutral" pill>Custom Domain: ${escapeHtml(link.domainHostname)}</wa-badge>`);
   }
 
   return badges.join(" ");
@@ -43,11 +51,11 @@ function buildOgPreview(link) {
     <wa-card>
       <div class="wa-stack wa-gap-s">
         <h3>Social Preview</h3>
-        <div style="border:1px solid var(--wa-color-border-default);border-radius:var(--wa-border-radius-medium);overflow:hidden;">
-          ${safeOgImage ? `<img src="${escapeAttr(safeOgImage)}" alt="OG preview" style="width:100%;max-height:200px;object-fit:cover;">` : ""}
-          <div style="padding:0.75rem;">
-            ${link.ogTitle ? `<div style="font-weight:600;">${escapeHtml(link.ogTitle)}</div>` : ""}
-            ${link.ogDescription ? `<div style="color:var(--wa-color-text-subdued);font-size:0.875rem;margin-top:0.25rem;">${escapeHtml(link.ogDescription)}</div>` : ""}
+        <div class="og-preview">
+          ${safeOgImage ? `<img src="${escapeAttr(safeOgImage)}" alt="OG preview">` : ""}
+          <div class="og-preview-body">
+            ${link.ogTitle ? `<div style="font-weight:var(--wa-font-weight-bold);">${escapeHtml(link.ogTitle)}</div>` : ""}
+            ${link.ogDescription ? `<div class="wa-body-s text-quiet" style="margin-top:var(--wa-space-3xs);">${escapeHtml(link.ogDescription)}</div>` : ""}
           </div>
         </div>
       </div>
@@ -87,7 +95,7 @@ function buildTargetingRules(targets) {
 }
 
 export async function renderLinkDetail(container, { id }) {
-  container.innerHTML = `<div style="text-align:center;padding:3rem;"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
 
   let link;
   let targets = [];
@@ -98,7 +106,7 @@ export async function renderLinkDetail(container, { id }) {
     ]);
     if (linkRes.status === 401) { window.location.href = "/login"; return; }
     if (!linkRes.ok) {
-      container.innerHTML = `<div style="text-align:center;padding:3rem;"><p>Link not found.</p></div>`;
+      container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><p>Link not found.</p></div>`;
       return;
     }
     ({ data: link } = await linkRes.json());
@@ -107,14 +115,18 @@ export async function renderLinkDetail(container, { id }) {
     }
   } catch {
     showToast("Failed to load link details", "danger");
-    container.innerHTML = `<div style="text-align:center;padding:3rem;"><p>Failed to load link. Please try again.</p></div>`;
+    container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><p>Failed to load link. Please try again.</p></div>`;
     return;
   }
 
   // Attach targets to link for edit form
   link.targets = targets;
 
-  const shortUrl = `${location.origin}/${link.slug}`;
+  // Use domainHostname from API response (returned by GET /api/links/:id)
+  const domainHostname = link.domainHostname;
+  const shortUrl = domainHostname
+    ? `https://${domainHostname}/${link.slug}`
+    : `${location.origin}/${link.slug}`;
   const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
   const badges = buildBadges(link);
   const maxClicksInfo = link.maxClicks != null
@@ -122,7 +134,7 @@ export async function renderLinkDetail(container, { id }) {
     : "";
 
   container.innerHTML = `
-    <div class="link-detail-view wa-stack wa-gap-l" style="max-width:900px;margin:2rem auto;">
+    <div class="link-detail-view wa-stack wa-gap-l">
       <div class="wa-split">
         <h1>/${escapeHtml(link.slug)}</h1>
         <div class="wa-cluster wa-gap-xs">
@@ -150,7 +162,7 @@ export async function renderLinkDetail(container, { id }) {
             ${maxClicksInfo}
             <div><strong>Created:</strong> ${new Date(link.createdAt).toLocaleString()}</div>
             ${link.paramForwarding ? `<div><strong>Query Params:</strong> Forwarded to destination</div>` : ""}
-            ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:0.25rem;">${badges}</div>` : ""}
+            ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:var(--wa-space-3xs);">${badges}</div>` : ""}
           </div>
           <div id="qr-container"></div>
         </div>
