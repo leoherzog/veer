@@ -3,7 +3,7 @@
   "name": "veer",
   "main": "src/index.ts",
   "compatibility_date": "2026-03-06",
-  "compatibility_flags": ["nodejs_compat"],
+  "compatibility_flags": ["nodejs_compat_v2"],
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
@@ -13,14 +13,12 @@
     {
       "binding": "DB",
       "database_name": "veer-db",
-      "database_id": "placeholder-replace-after-create",
       "migrations_dir": "drizzle/migrations"
     }
   ],
   "kv_namespaces": [
     {
-      "binding": "KV",
-      "id": "placeholder-replace-after-create"
+      "binding": "KV"
     }
   ],
   "analytics_engine_datasets": [
@@ -30,12 +28,38 @@
     }
   ],
   "vars": {
-    "WORKER_NAME": "veer"
+    "WORKER_NAME": "veer",
+    "BETTER_AUTH_URL": "https://veer.production.example"
   },
   "placement": { "mode": "smart" },
   "observability": {
     "enabled": true,
-    "logs": { "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+    "logs": { "head_sampling_rate": 1 }
+  },
+  "env": {
+    "staging": {
+      "vars": {
+        "WORKER_NAME": "veer-staging",
+        "BETTER_AUTH_URL": "https://veer-staging.example"
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "veer-db-staging",
+          "migrations_dir": "drizzle/migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "KV"
+        }
+      ],
+      "analytics_engine_datasets": [
+        {
+          "binding": "ANALYTICS",
+          "dataset": "veer_clicks_staging"
+        }
+      ]
+    }
   }
 }

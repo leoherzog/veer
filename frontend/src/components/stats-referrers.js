@@ -18,7 +18,9 @@ export async function renderStatsReferrers(container, linkId, days = 30) {
       <wa-card>
         <div class="wa-stack wa-gap-m">
           <h3>Top Referrers</h3>
-          <canvas id="referrers-chart" style="height:200px;"></canvas>
+          <div class="wa-frame:landscape">
+            <canvas id="referrers-chart"></canvas>
+          </div>
         </div>
       </wa-card>
     `;

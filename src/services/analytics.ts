@@ -1,7 +1,3 @@
-import type { Database } from "../db";
-import { linkStats } from "../db/schema";
-import { sql } from "drizzle-orm";
-
 interface ClickEvent {
   linkId: string;
   slug: string;
@@ -70,16 +66,4 @@ export async function queryAnalyticsEngine(
     throw new Error(msg);
   }
   return { data: result.data ?? [], meta: result.meta ?? [] };
-}
-
-export async function incrementClickStats(db: Database, linkId: string): Promise<void> {
-  const today = new Date().toISOString().slice(0, 10);
-  await db
-    .insert(linkStats)
-    // TODO: uniqueClicks tracking requires IP-hash or cookie-based deduplication (future milestone)
-    .values({ linkId, date: today, clicks: 1, uniqueClicks: 0 })
-    .onConflictDoUpdate({
-      target: [linkStats.linkId, linkStats.date],
-      set: { clicks: sql`${linkStats.clicks} + 1` },
-    });
 }

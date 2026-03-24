@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, createTestLink } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
+import { hashPassword } from "../../src/services/password";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -354,6 +355,487 @@ describe("Links API", () => {
     it("returns 404 for non-existent link", async () => {
       const res = await api("DELETE", "/api/links/nonexistent-id", { headers });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // NO BODY tests (Task 1)
+  // -----------------------------------------------------------------------
+  describe("No body requests", () => {
+    it("POST /api/links with no body returns 400", async () => {
+      const res = await app.request("/api/links", {
+        method: "POST",
+        headers: { Cookie: headers.Cookie },
+      }, env);
+      expect(res.status).toBe(400);
+    });
+
+    it("PUT /api/links/:id with no body returns 400", async () => {
+      const link = await createTestLink(env.DB, { slug: `no-body-put-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await app.request(`/api/links/${link.id}`, {
+        method: "PUT",
+        headers: { Cookie: headers.Cookie },
+      }, env);
+      expect(res.status).toBe(400);
+    });
+
+    it("PUT /api/links/:id/targets with no body returns 400", async () => {
+      const link = await createTestLink(env.DB, { slug: `no-body-targets-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await app.request(`/api/links/${link.id}/targets`, {
+        method: "PUT",
+        headers: { Cookie: headers.Cookie },
+      }, env);
+      expect(res.status).toBe(400);
+    });
+
+    it("PATCH /api/links/:id/active with no body toggles (does not crash)", async () => {
+      const link = await createTestLink(env.DB, { slug: `no-body-toggle-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
+      const res = await app.request(`/api/links/${link.id}/active`, {
+        method: "PATCH",
+        headers: { Cookie: headers.Cookie },
+      }, env);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { isActive: boolean };
+      expect(json.isActive).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // checkPassword (Task 3)
+  // -----------------------------------------------------------------------
+  describe("POST /api/links/:id/check-password", () => {
+    it("returns success for correct password", async () => {
+      const hashed = await hashPassword("secret123");
+      const link = await createTestLink(env.DB, { slug: `pw-correct-${crypto.randomUUID().slice(0, 8)}`, userId });
+      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
+
+      const res = await app.request(`/api/links/${link.id}/check-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "secret123" }),
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(200);
+      const json = await res.json() as { valid: boolean };
+      expect(json.valid).toBe(true);
+    });
+
+    it("returns valid:false for wrong password", async () => {
+      const hashed = await hashPassword("secret123");
+      const link = await createTestLink(env.DB, { slug: `pw-wrong-${crypto.randomUUID().slice(0, 8)}`, userId });
+      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
+
+      const res = await app.request(`/api/links/${link.id}/check-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "wrongpass" }),
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(200);
+      const json = await res.json() as { valid: boolean };
+      expect(json.valid).toBe(false);
+    });
+
+    it("returns 404 for link with no password", async () => {
+      const link = await createTestLink(env.DB, { slug: `pw-none-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await app.request(`/api/links/${link.id}/check-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "anything" }),
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(404);
+    });
+
+    it("returns 400 for no body", async () => {
+      const hashed = await hashPassword("secret123");
+      const link = await createTestLink(env.DB, { slug: `pw-nobody-${crypto.randomUUID().slice(0, 8)}`, userId });
+      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
+
+      const res = await app.request(`/api/links/${link.id}/check-password`, {
+        method: "POST",
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 400 for missing password field", async () => {
+      const hashed = await hashPassword("secret123");
+      const link = await createTestLink(env.DB, { slug: `pw-nofield-${crypto.randomUUID().slice(0, 8)}`, userId });
+      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
+
+      const res = await app.request(`/api/links/${link.id}/check-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notPassword: "test" }),
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Link create with advanced fields (Task 13)
+  // -----------------------------------------------------------------------
+  describe("POST /api/links – advanced fields", () => {
+    it("creates link with OG fields", async () => {
+      const res = await postLink({
+        slug: `og-link-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com/og",
+        ogTitle: "My Title",
+        ogDescription: "My Description",
+        ogImage: "https://example.com/image.png",
+      }, headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { ogTitle: string; ogDescription: string; ogImage: string } };
+      expect(json.data.ogTitle).toBe("My Title");
+      expect(json.data.ogDescription).toBe("My Description");
+      expect(json.data.ogImage).toBe("https://example.com/image.png");
+    });
+
+    it("rejects invalid ogImage URL (ftp://)", async () => {
+      const res = await postLink({
+        slug: `og-ftp-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        ogImage: "ftp://files.example.com/image.png",
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects expiresAt in the past", async () => {
+      const res = await postLink({
+        slug: `exp-past-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        expiresAt: "2020-01-01T00:00:00Z",
+      }, headers);
+      expect(res.status).toBe(400);
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain("expiresAt must be in the future");
+    });
+
+    it("rejects invalid expiresAt string", async () => {
+      const res = await postLink({
+        slug: `exp-invalid-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        expiresAt: "not-a-date",
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects maxClicks: 0", async () => {
+      const res = await postLink({
+        slug: `mc-zero-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        maxClicks: 0,
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects maxClicks: -1", async () => {
+      const res = await postLink({
+        slug: `mc-neg-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        maxClicks: -1,
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("creates link with password (hasPassword: true, no hash in response)", async () => {
+      const res = await postLink({
+        slug: `pw-create-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        password: "mysecret",
+      }, headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { hasPassword: boolean; password?: string } };
+      expect(json.data.hasPassword).toBe(true);
+      expect(json.data).not.toHaveProperty("password");
+    });
+
+    it("creates link with isInternal: true", async () => {
+      const res = await postLink({
+        slug: `internal-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        isInternal: true,
+      }, headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { isInternal: boolean } };
+      expect(json.data.isInternal).toBe(true);
+    });
+
+    it("creates link with paramForwarding: true", async () => {
+      const res = await postLink({
+        slug: `paramfwd-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        paramForwarding: true,
+      }, headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { paramForwarding: boolean } };
+      expect(json.data.paramForwarding).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Link update clearing fields (Task 14)
+  // -----------------------------------------------------------------------
+  describe("PUT /api/links/:id – clearing fields", () => {
+    it("clears expiresAt with null", async () => {
+      const link = await createTestLink(env.DB, { slug: `clear-exp-${crypto.randomUUID().slice(0, 8)}`, userId });
+      // Set expiresAt first
+      await env.DB.prepare("UPDATE links SET expiresAt = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000) + 86400, link.id).run();
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { expiresAt: null },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { expiresAt: unknown } };
+      expect(json.data.expiresAt).toBeNull();
+    });
+
+    it("clears maxClicks with null", async () => {
+      const link = await createTestLink(env.DB, { slug: `clear-mc-${crypto.randomUUID().slice(0, 8)}`, userId });
+      await env.DB.prepare("UPDATE links SET maxClicks = ? WHERE id = ?").bind(100, link.id).run();
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { maxClicks: null },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { maxClicks: unknown } };
+      expect(json.data.maxClicks).toBeNull();
+    });
+
+    it("clears password with empty string", async () => {
+      const link = await createTestLink(env.DB, { slug: `clear-pw-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const hashed = await hashPassword("secret");
+      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { password: "" },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { hasPassword: boolean } };
+      expect(json.data.hasPassword).toBe(false);
+    });
+
+    it("clears ogImage with null", async () => {
+      const link = await createTestLink(env.DB, { slug: `clear-og-${crypto.randomUUID().slice(0, 8)}`, userId });
+      await env.DB.prepare("UPDATE links SET ogImage = ? WHERE id = ?").bind("https://example.com/img.png", link.id).run();
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { ogImage: null },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { ogImage: unknown } };
+      expect(json.data.ogImage).toBeNull();
+    });
+
+    it("toggles isInternal and paramForwarding", async () => {
+      const link = await createTestLink(env.DB, { slug: `toggle-flags-${crypto.randomUUID().slice(0, 8)}`, userId });
+
+      const res1 = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { isInternal: true, paramForwarding: true },
+      });
+      expect(res1.status).toBe(200);
+      const json1 = await res1.json() as { data: { isInternal: boolean; paramForwarding: boolean } };
+      expect(json1.data.isInternal).toBe(true);
+      expect(json1.data.paramForwarding).toBe(true);
+
+      const res2 = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { isInternal: false, paramForwarding: false },
+      });
+      expect(res2.status).toBe(200);
+      const json2 = await res2.json() as { data: { isInternal: boolean; paramForwarding: boolean } };
+      expect(json2.data.isInternal).toBe(false);
+      expect(json2.data.paramForwarding).toBe(false);
+    });
+
+    it("changes redirectType from 302 to 301", async () => {
+      const link = await createTestLink(env.DB, { slug: `redir-change-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { redirectType: 301 },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { redirectType: number } };
+      expect(json.data.redirectType).toBe(301);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Target validation errors (Task 15)
+  // -----------------------------------------------------------------------
+  describe("PUT /api/links/:id/targets – validation", () => {
+    let targetLinkId: string;
+
+    beforeAll(async () => {
+      const link = await createTestLink(env.DB, { slug: `target-val-${crypto.randomUUID().slice(0, 8)}`, userId });
+      targetLinkId = link.id;
+    });
+
+    it("rejects targets not an array", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: "not-array" } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects invalid type (not geo/device)", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "browser", matchValue: "chrome", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects empty matchValue", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "geo", matchValue: "", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects geo matchValue 'USA' (not 2-letter)", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "geo", matchValue: "USA", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects device matchValue 'phone' (not mobile/tablet/desktop)", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "device", matchValue: "phone", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects invalid destinationUrl in target", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "geo", matchValue: "US", destinationUrl: "ftp://bad.com" }] } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("clears all rules with empty array", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [] } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: unknown[] };
+      expect(json.data).toHaveLength(0);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Search SQL wildcard escaping (Task 17)
+  // -----------------------------------------------------------------------
+  describe("GET /api/links – search wildcard escaping", () => {
+    it("search for % only matches literal percent", async () => {
+      await createTestLink(env.DB, { slug: `has-percent-${crypto.randomUUID().slice(0, 8)}%sign`, userId });
+      await createTestLink(env.DB, { slug: `normal-link-${crypto.randomUUID().slice(0, 8)}`, userId });
+
+      const res = await api("GET", "/api/links?q=%25", { headers });
+      const json = await res.json() as { data: { slug: string }[] };
+      // All results should contain a literal % in slug, title, or destinationUrl
+      for (const item of json.data) {
+        expect(item.slug).toContain("%");
+      }
+    });
+
+    it("search for _ only matches literal underscore", async () => {
+      await createTestLink(env.DB, { slug: `has_underscore_${crypto.randomUUID().slice(0, 8)}`, userId });
+
+      const res = await api("GET", "/api/links?q=_underscore_", { headers });
+      const json = await res.json() as { data: { slug: string }[] };
+      for (const item of json.data) {
+        expect(item.slug).toContain("_underscore_");
+      }
+    });
+
+    it("search matches destinationUrl (not just slug/title)", async () => {
+      const unique = crypto.randomUUID().slice(0, 8);
+      await createTestLink(env.DB, { slug: `url-search-${unique}`, userId, destinationUrl: `https://uniquehost-${unique}.example.com` });
+
+      const res = await api("GET", `/api/links?q=uniquehost-${unique}`, { headers });
+      const json = await res.json() as { data: { slug: string }[] };
+      expect(json.data.some((l) => l.slug === `url-search-${unique}`)).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Sort and pagination edge cases (Task 18)
+  // -----------------------------------------------------------------------
+  describe("GET /api/links – sort and pagination", () => {
+    beforeAll(async () => {
+      // Create a few links with different slugs and titles
+      for (const suffix of ["alpha", "beta", "gamma"]) {
+        await createTestLink(env.DB, {
+          slug: `sort-${suffix}-${crypto.randomUUID().slice(0, 8)}`,
+          userId,
+          title: `Title-${suffix}`,
+        });
+      }
+    });
+
+    it("sorts by slug ascending", async () => {
+      const res = await api("GET", "/api/links?sort=slug&dir=asc", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { slug: string }[] };
+      const slugs = json.data.map((l) => l.slug);
+      const sorted = [...slugs].sort();
+      expect(slugs).toEqual(sorted);
+    });
+
+    it("sorts by title descending", async () => {
+      const res = await api("GET", "/api/links?sort=title&dir=desc", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { title: string | null }[] };
+      const titles = json.data.map((l) => l.title ?? "");
+      const sorted = [...titles].sort().reverse();
+      expect(titles).toEqual(sorted);
+    });
+
+    it("falls back to createdAt for invalid sort column", async () => {
+      const res = await api("GET", "/api/links?sort=invalid", { headers });
+      expect(res.status).toBe(200);
+      // Should not error — just default to createdAt desc
+      const json = await res.json() as { data: unknown[] };
+      expect(Array.isArray(json.data)).toBe(true);
+    });
+
+    it("clamps page=0 to page 1", async () => {
+      const res = await api("GET", "/api/links?page=0", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { pagination: { page: number } };
+      expect(json.pagination.page).toBe(1);
+    });
+
+    it("clamps limit=0 to default (20)", async () => {
+      const res = await api("GET", "/api/links?limit=0", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { pagination: { limit: number } };
+      // Number(0) || 20 = 20 (falsy fallback to default)
+      expect(json.pagination.limit).toBe(20);
+    });
+
+    it("clamps limit=101 to 100", async () => {
+      const res = await api("GET", "/api/links?limit=101", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { pagination: { limit: number } };
+      expect(json.pagination.limit).toBe(100);
+    });
+
+    it("treats page=abc as page 1", async () => {
+      const res = await api("GET", "/api/links?page=abc", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { pagination: { page: number } };
+      expect(json.pagination.page).toBe(1);
     });
   });
 });

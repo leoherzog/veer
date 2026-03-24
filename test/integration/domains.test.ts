@@ -304,6 +304,17 @@ describe("Domains API", () => {
       expect(json.data.notFoundRedirect).toBe("https://404.example.com");
     });
 
+    it("returns 400 when no body is sent", async () => {
+      const hostname = "no-body-put.example.com";
+      await createTestDomain(hostname);
+
+      const res = await app.request(`/api/domains/${hostname}`, {
+        method: "PUT",
+        headers: adminHeaders,
+      }, adminEnvObj);
+      expect(res.status).toBe(400);
+    });
+
     it("rejects invalid accessMode with 400", async () => {
       const hostname = "invalid-mode.example.com";
       await createTestDomain(hostname);

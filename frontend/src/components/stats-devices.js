@@ -19,9 +19,9 @@ export async function renderStatsDevices(container, linkId, days = 30) {
         <div class="wa-stack wa-gap-m">
           <h3>Devices &amp; Browsers</h3>
           <div class="wa-grid" style="--min-column-size:200px;">
-            <div>${browsers.length ? `<canvas id="browsers-chart" style="height:200px;"></canvas>` : nd}</div>
-            <div>${os.length ? `<canvas id="os-chart" style="height:200px;"></canvas>` : nd}</div>
-            <div>${devices.length ? `<canvas id="device-chart" style="height:200px;"></canvas>` : nd}</div>
+            <div>${browsers.length ? `<div class="wa-frame:square"><canvas id="browsers-chart"></canvas></div>` : nd}</div>
+            <div>${os.length ? `<div class="wa-frame:square"><canvas id="os-chart"></canvas></div>` : nd}</div>
+            <div>${devices.length ? `<div class="wa-frame:square"><canvas id="device-chart"></canvas></div>` : nd}</div>
           </div>
         </div>
       </wa-card>

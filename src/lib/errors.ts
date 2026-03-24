@@ -13,7 +13,8 @@ export function conflict(message: string): HTTPException {
 }
 
 export function checkBodySize(contentLength: string | undefined | null): void {
-  const len = parseInt(contentLength || "0", 10);
+  if (!contentLength) return; // Workers runtime enforces its own body size limits
+  const len = parseInt(contentLength, 10);
   if (len > 10_000) {
     throw new HTTPException(413, { message: "Request body too large" });
   }

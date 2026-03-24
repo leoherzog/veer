@@ -13,7 +13,7 @@ authRoutes.get("/providers", (c) => {
   });
 });
 
-authRoutes.all("/*", async (c) => {
+authRoutes.on(["POST", "GET"], "/*", async (c) => {
   const auth = getAuth(c.env);
   return auth.handler(c.req.raw);
 });

@@ -120,9 +120,7 @@ domainRoutes.post("/sync", async (c) => {
     if (!cfHostnames.has(row.hostname) && row.hostname !== primaryHost.toLowerCase()) {
       const domainLinks = await db.select({ slug: links.slug }).from(links)
         .where(eq(links.domainHostname, row.hostname));
-      for (const link of domainLinks) {
-        await deleteCachedRedirect(c.env.KV, link.slug, row.hostname);
-      }
+      await Promise.all(domainLinks.map(link => deleteCachedRedirect(c.env.KV, link.slug, row.hostname)));
       batchOps.push(
         db.delete(domainConfig).where(eq(domainConfig.hostname, row.hostname))
       );

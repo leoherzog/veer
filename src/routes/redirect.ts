@@ -4,9 +4,8 @@ import { getDb } from "../db";
 import { links, linkStats, linkTargets, domainConfig } from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
 import { getCachedRedirect, setCachedRedirect } from "../services/kv-cache";
-import { writeClickEvent, incrementClickStats } from "../services/analytics";
+import { writeClickEvent } from "../services/analytics";
 import { verifyPassword } from "../services/password";
-import { checkRateLimit } from "../services/rate-limit";
 import { getAuth } from "../auth";
 
 /** Render a minimal self-contained HTML page. */
@@ -262,15 +261,12 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
 
 /** Fire analytics and increment stats in the background. */
 function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, destinationUrl: string) {
-  writeClickEvent(c.env.ANALYTICS, {
+  writeClickEvent(c.env.ANALYTICS!, {
     linkId,
     slug,
     destinationUrl,
     request: c.req.raw,
   });
-  c.executionCtx.waitUntil(
-    incrementClickStats(getDb(c.env.DB), linkId)
-  );
 }
 
 export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
@@ -333,9 +329,6 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   if (!link.password) {
     return c.text("Method Not Allowed", 405);
   }
-
-  const ip = c.req.header("cf-connecting-ip") || "unknown";
-  await checkRateLimit(c.env.KV, `ratelimit:pw:${slug}:${ip}`, 5, 900);
 
   // Build resolved shape for checkConstraints and resolveDestination
   const targets = await db.select().from(linkTargets)

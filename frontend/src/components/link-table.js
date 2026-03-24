@@ -11,13 +11,13 @@ const COLUMNS = [
 function sortIndicator(col, sort) {
   if (sort.by !== col) return "";
   const icon = sort.dir === "asc" ? "angle-up" : "angle-down";
-  return ` <wa-icon name="${icon}" style="font-size:0.75em;"></wa-icon>`;
+  return ` <wa-icon name="${icon}" class="wa-font-size-xs"></wa-icon>`;
 }
 
 export function renderLinkTable(container, { links, pagination, sort, onPageChange, onSort }) {
   if (!links.length) {
     container.innerHTML = `<div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
-      <wa-icon name="link-slash" style="font-size:var(--wa-font-size-2xl);opacity:0.5;"></wa-icon>
+      <wa-icon name="link-slash" class="wa-font-size-2xl" style="opacity:0.5;"></wa-icon>
       <p>No links yet. Create your first short link above.</p>
     </div>`;
     return;
@@ -38,16 +38,16 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
             <td>
               <div class="wa-cluster wa-gap-2xs">
                 <span>/${escapeHtml(link.slug)}</span>
-                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" style="font-size: 0.875rem;"></wa-copy-button>
+                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
               </div>
             </td>
-            <td class="truncate">${escapeHtml(link.destinationUrl)}</td>
+            <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>
             <td>${escapeHtml(link.title || "")}</td>
             <td>${new Date(link.createdAt).toLocaleDateString()}</td>
             <td>
               <div class="wa-cluster wa-gap-2xs">
-                <wa-button size="small" variant="neutral" appearance="plain" circle data-edit="/links/${escapeAttr(link.id)}"><wa-icon name="pen-to-square" label="Edit"></wa-icon></wa-button>
-                <wa-button size="small" variant="neutral" appearance="plain" circle data-href="${escapeAttr(shortUrl(link))}"><wa-icon name="arrow-up-right-from-square" label="Visit"></wa-icon></wa-button>
+                <wa-button size="small" variant="neutral" appearance="plain" pill data-edit="/links/${escapeAttr(link.id)}"><wa-icon name="pen-to-square" label="Edit"></wa-icon></wa-button>
+                <wa-button size="small" variant="neutral" appearance="plain" pill data-href="${escapeAttr(shortUrl(link))}"><wa-icon name="arrow-up-right-from-square" label="Visit"></wa-icon></wa-button>
               </div>
             </td>
           </tr>

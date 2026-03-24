@@ -1,0 +1,271 @@
+import { Hono } from "hono";
+import { eq, and, inArray } from "drizzle-orm";
+import { getDb } from "../../db";
+import { links, domainConfig, domainAccess } from "../../db/schema";
+import { validateSlug } from "../../services/slug";
+import { setCachedRedirect } from "../../services/kv-cache";
+import { badRequest } from "../../lib/errors";
+import { HTTPException } from "hono/http-exception";
+import type { AppEnv } from "../../types";
+import type { CachedRedirect } from "../../services/kv-cache";
+import type { Database } from "../../db";
+
+/** Build a minimal CachedRedirect for a freshly created link (no targets). */
+function buildNewLinkCache(
+  id: string,
+  destinationUrl: string,
+  redirectType: number,
+  domainHostname: string | null,
+): CachedRedirect {
+  return {
+    url: destinationUrl,
+    redirectType,
+    linkId: id,
+    isActive: true,
+    expiresAt: null,
+    maxClicks: null,
+    hasPassword: false,
+    isInternal: false,
+    ogTitle: null,
+    ogDescription: null,
+    ogImage: null,
+    paramForwarding: false,
+    targets: null,
+    domainHostname,
+  };
+}
+
+/** Validate that a URL is parseable and uses http(s) scheme. */
+function validateHttpUrl(url: string, fieldName: string): string {
+  if (!url) throw badRequest(`${fieldName} is required`);
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw badRequest(`Invalid ${fieldName}`);
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw badRequest(`${fieldName} must use http or https`);
+  }
+  return url;
+}
+
+/** Validate domain access: checks domain exists AND user has access. */
+async function validateDomainAccess(db: Database, hostname: string, userEmail: string, isAdmin: boolean): Promise<void> {
+  const domain = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
+  if (!domain) throw badRequest("Domain not found");
+  if (isAdmin) return;
+  if (domain.accessMode === "all") return;
+  const access = await db.select().from(domainAccess)
+    .where(and(eq(domainAccess.hostname, hostname), eq(domainAccess.email, userEmail.toLowerCase())))
+    .get();
+  if (!access) throw badRequest("You do not have access to this domain");
+}
+
+interface BulkLinkInput {
+  slug: string;
+  destinationUrl: string;
+  title?: string;
+  redirectType?: number;
+  domainHostname?: string;
+}
+
+interface ValidatedLink {
+  index: number;
+  id: string;
+  slug: string;
+  destinationUrl: string;
+  redirectType: number;
+  title: string | null;
+  domainHostname: string | null;
+}
+
+type BulkResult =
+  | { slug: string; id: string; success: true }
+  | { slug: string; error: string; success: false };
+
+const bulkRoutes = new Hono<AppEnv>();
+
+bulkRoutes.post("/", async (c) => {
+  const user = c.var.user;
+
+  // Check body size — 100KB limit for bulk (allow missing Content-Length per Workers convention)
+  const contentLength = c.req.header("content-length");
+  if (contentLength && parseInt(contentLength, 10) > 100_000) {
+    throw new HTTPException(413, { message: "Request body too large (max 100KB)" });
+  }
+
+  let body: { links: BulkLinkInput[] };
+  try {
+    body = await c.req.json();
+  } catch {
+    throw badRequest("Invalid JSON body");
+  }
+
+  if (!Array.isArray(body.links)) {
+    throw badRequest("links must be an array");
+  }
+
+  if (body.links.length === 0) {
+    throw badRequest("links array must not be empty");
+  }
+
+  if (body.links.length > 50) {
+    throw badRequest("Maximum 50 links per request");
+  }
+
+  const db = getDb(c.env.DB);
+  const results: BulkResult[] = new Array(body.links.length);
+  const validated: ValidatedLink[] = [];
+
+  // Phase 1: Validate all inputs (format, domain access)
+  // Cache domain access checks to avoid repeated queries for the same domain
+  const domainAccessCache = new Map<string, boolean>();
+  const preValidated: ValidatedLink[] = [];
+
+  for (let i = 0; i < body.links.length; i++) {
+    const item = body.links[i];
+
+    // Guard against non-object array items
+    if (!item || typeof item !== "object") {
+      results[i] = { slug: "", success: false, error: "Invalid link entry" };
+      continue;
+    }
+
+    const slug = item.slug;
+
+    try {
+      const slugCheck = validateSlug(slug);
+      if (!slugCheck.valid) {
+        results[i] = { slug: slug ?? "", success: false, error: slugCheck.error! };
+        continue;
+      }
+
+      try {
+        validateHttpUrl(item.destinationUrl, "destinationUrl");
+      } catch (e) {
+        const msg = e instanceof HTTPException ? e.message : "Invalid destinationUrl";
+        results[i] = { slug, success: false, error: msg };
+        continue;
+      }
+
+      const domainHostname = item.domainHostname || null;
+
+      if (domainHostname) {
+        if (!domainAccessCache.has(domainHostname)) {
+          try {
+            await validateDomainAccess(db, domainHostname, user.email, user.isAdmin);
+            domainAccessCache.set(domainHostname, true);
+          } catch (e) {
+            domainAccessCache.set(domainHostname, false);
+            const msg = e instanceof HTTPException ? e.message : "Domain access error";
+            results[i] = { slug, success: false, error: msg };
+            continue;
+          }
+        } else if (!domainAccessCache.get(domainHostname)) {
+          results[i] = { slug, success: false, error: "You do not have access to this domain" };
+          continue;
+        }
+      }
+
+      preValidated.push({
+        index: i,
+        id: crypto.randomUUID(),
+        slug,
+        destinationUrl: item.destinationUrl,
+        redirectType: item.redirectType === 301 ? 301 : 302,
+        title: item.title || null,
+        domainHostname,
+      });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unexpected error";
+      results[i] = { slug: slug ?? "", success: false, error: msg };
+    }
+  }
+
+  // Detect intra-batch duplicate slugs before DB check
+  const seenInBatch = new Set<string>();
+  const deduped: ValidatedLink[] = [];
+  for (const v of preValidated) {
+    const key = `${v.slug}::${v.domainHostname ?? ""}`;
+    if (seenInBatch.has(key)) {
+      results[v.index] = { slug: v.slug, success: false, error: "Duplicate slug in batch" };
+    } else {
+      seenInBatch.add(key);
+      deduped.push(v);
+    }
+  }
+
+  // Batch slug-uniqueness check: single query for all deduped slugs
+  if (deduped.length > 0) {
+    const allSlugs = deduped.map(v => v.slug);
+    const existingSlugs = await db.select({ slug: links.slug, domainHostname: links.domainHostname })
+      .from(links)
+      .where(inArray(links.slug, allSlugs));
+
+    // Build a set of "slug::domain" keys for O(1) lookup (domain-scoped uniqueness)
+    const takenSet = new Set(existingSlugs.map(r => `${r.slug}::${r.domainHostname ?? ""}`));
+
+    for (const v of deduped) {
+      const key = `${v.slug}::${v.domainHostname ?? ""}`;
+      if (takenSet.has(key)) {
+        results[v.index] = { slug: v.slug, success: false, error: "Slug already taken" };
+      } else {
+        validated.push(v);
+      }
+    }
+  }
+
+  // Phase 2: Batch insert all validated links using db.batch() for atomicity
+  if (validated.length > 0) {
+    const now = new Date();
+    const batchOps = validated.map((v) =>
+      db.insert(links).values({
+        id: v.id,
+        userId: user.id,
+        slug: v.slug,
+        destinationUrl: v.destinationUrl,
+        redirectType: v.redirectType,
+        title: v.title,
+        expiresAt: null,
+        maxClicks: null,
+        password: null,
+        isInternal: false,
+        paramForwarding: false,
+        ogTitle: null,
+        ogDescription: null,
+        ogImage: null,
+        domainHostname: v.domainHostname,
+        createdAt: now,
+        updatedAt: now,
+      })
+    );
+
+    try {
+      await db.batch(batchOps as any);
+      // Batch succeeded — mark all as success
+      for (const v of validated) {
+        results[v.index] = { slug: v.slug, id: v.id, success: true };
+      }
+    } catch {
+      // Batch is atomic — all failed
+      for (const v of validated) {
+        results[v.index] = { slug: v.slug, success: false, error: "Insert failed (batch rolled back)" };
+      }
+    }
+
+    // Phase 3: Parallel KV cache writes for successfully inserted links (non-blocking)
+    c.executionCtx.waitUntil(Promise.all(
+      validated
+        .filter((v) => results[v.index]?.success)
+        .map((v) => {
+          const kvData = buildNewLinkCache(v.id, v.destinationUrl, v.redirectType, v.domainHostname);
+          return setCachedRedirect(c.env.KV, v.slug, kvData, v.domainHostname);
+        }),
+    ));
+  }
+
+  return c.json({ results });
+});
+
+export default bulkRoutes;

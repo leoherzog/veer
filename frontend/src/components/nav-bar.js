@@ -22,7 +22,7 @@ export function renderNavBar(container, user) {
         ${user
           ? `
             <wa-dropdown placement="bottom-end">
-              <wa-button slot="trigger" variant="neutral" appearance="plain" circle>
+              <wa-button slot="trigger" variant="neutral" appearance="plain" pill>
                 <wa-avatar id="user-avatar" image="${escapeAttr(user.image || "")}" label="${escapeAttr(user.name)}" style="--size: 2rem;"></wa-avatar>
               </wa-button>
               <wa-dropdown-item id="settings-link">
@@ -41,7 +41,7 @@ export function renderNavBar(container, user) {
             </wa-dropdown>
           `
           : `
-            <wa-button id="theme-toggle" size="small" variant="neutral" appearance="plain" circle><wa-icon name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}" label="${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
+            <wa-button id="theme-toggle" size="small" variant="neutral" appearance="plain" pill><wa-icon name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}" label="${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
             <wa-button size="small" variant="brand" id="login-btn">Login</wa-button>
           `
         }

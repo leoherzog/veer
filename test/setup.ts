@@ -57,6 +57,13 @@ beforeAll(async () => {
     STATEMENTS[2],  // link_stats
     STATEMENTS[3],  // idx_link_stats_linkId_date
     ...M2_STATEMENTS, // campaigns, link_targets, link_campaigns
+    // M4: api_keys, public_reports
+    `CREATE TABLE IF NOT EXISTS \`api_keys\` (\`id\` text PRIMARY KEY NOT NULL, \`userId\` text NOT NULL, \`name\` text NOT NULL, \`keyHash\` text NOT NULL, \`prefix\` text NOT NULL, \`lastUsedAt\` integer, \`createdAt\` integer NOT NULL, \`expiresAt\` integer, FOREIGN KEY (\`userId\`) REFERENCES \`user\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_api_keys_keyHash\` ON \`api_keys\` (\`keyHash\`)`,
+    `CREATE INDEX IF NOT EXISTS \`idx_api_keys_userId\` ON \`api_keys\` (\`userId\`)`,
+    `CREATE TABLE IF NOT EXISTS \`public_reports\` (\`id\` text PRIMARY KEY NOT NULL, \`linkId\` text NOT NULL, \`token\` text NOT NULL, \`isEnabled\` integer NOT NULL DEFAULT 1, \`createdAt\` integer NOT NULL, FOREIGN KEY (\`linkId\`) REFERENCES \`links\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_public_reports_token\` ON \`public_reports\` (\`token\`)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_public_reports_linkId\` ON \`public_reports\` (\`linkId\`)`,
   ];
 
   for (const sql of ordered) {

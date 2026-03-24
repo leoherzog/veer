@@ -6,6 +6,7 @@ import { links, linkStats } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
 import { queryAnalyticsEngine } from "../../services/analytics";
 import { parseUserAgent } from "../../services/useragent";
+import { formatDate, MONTHS } from "../../lib/date";
 import type { AppEnv } from "../../types";
 
 type StatsEnv = AppEnv & { Variables: AppEnv["Variables"] & { aeAvailable: boolean } };
@@ -30,13 +31,6 @@ statsRoutes.use("/:linkId/*", async (c, next) => {
   c.set("aeAvailable", !!(c.env.CF_ACCOUNT_ID && c.env.CF_API_TOKEN));
   await next();
 });
-
-const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
-}
 
 function formatHour(iso: string): string {
   const d = new Date(iso);

@@ -342,6 +342,16 @@ describe("Campaigns API", () => {
       expect(res.status).toBe(404);
     });
 
+    it("returns 400 when no body is sent", async () => {
+      const campaign = await createTestCampaign(userId, { name: "No Body PUT" });
+
+      const res = await app.request(`/api/campaigns/${campaign.id}`, {
+        method: "PUT",
+        headers,
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(400);
+    });
+
     it("returns 404 when updating another user's campaign", async () => {
       const otherAuth = await setupAuth(env, { email: "campaigns-iso2@test.com" });
       const otherCampaign = await createTestCampaign(otherAuth.user.id, { name: "Not Mine" });
@@ -389,6 +399,35 @@ describe("Campaigns API", () => {
 
       const res = await api("DELETE", `/api/campaigns/${otherCampaign.id}`, { headers });
       expect(res.status).toBe(404);
+    });
+
+    it("deletes link_campaigns rows but preserves the links themselves", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Cascade Test" });
+      const link1 = await createTestLink(env.DB, { slug: "cascade-link-1", userId });
+      const link2 = await createTestLink(env.DB, { slug: "cascade-link-2", userId });
+      await linkToCampaign(link1.id, campaign.id);
+      await linkToCampaign(link2.id, campaign.id);
+
+      // Verify link_campaigns rows exist before delete
+      const before = await env.DB.prepare(
+        "SELECT COUNT(*) as cnt FROM link_campaigns WHERE campaignId = ?"
+      ).bind(campaign.id).first<{ cnt: number }>();
+      expect(before!.cnt).toBe(2);
+
+      const res = await api("DELETE", `/api/campaigns/${campaign.id}`, { headers });
+      expect(res.status).toBe(200);
+
+      // link_campaigns rows should be gone (ON DELETE CASCADE)
+      const after = await env.DB.prepare(
+        "SELECT COUNT(*) as cnt FROM link_campaigns WHERE campaignId = ?"
+      ).bind(campaign.id).first<{ cnt: number }>();
+      expect(after!.cnt).toBe(0);
+
+      // The links themselves must still exist
+      const l1 = await env.DB.prepare("SELECT id FROM links WHERE id = ?").bind(link1.id).first();
+      const l2 = await env.DB.prepare("SELECT id FROM links WHERE id = ?").bind(link2.id).first();
+      expect(l1).not.toBeNull();
+      expect(l2).not.toBeNull();
     });
   });
 
@@ -445,6 +484,16 @@ describe("Campaigns API", () => {
       const ids = detailJson.data.links.map((l) => l.id);
       expect(ids).toContain(link1.id);
       expect(ids).toContain(link2.id);
+    });
+
+    it("returns 400 when no body is sent", async () => {
+      const campaign = await createTestCampaign(userId, { name: "No Body Add Links" });
+
+      const res = await app.request(`/api/campaigns/${campaign.id}/links`, {
+        method: "POST",
+        headers,
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(400);
     });
 
     it("rejects empty linkIds array with 400", async () => {

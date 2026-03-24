@@ -54,8 +54,8 @@ function buildOgPreview(link) {
         <div class="og-preview">
           ${safeOgImage ? `<img src="${escapeAttr(safeOgImage)}" alt="OG preview">` : ""}
           <div class="og-preview-body">
-            ${link.ogTitle ? `<div style="font-weight:var(--wa-font-weight-bold);">${escapeHtml(link.ogTitle)}</div>` : ""}
-            ${link.ogDescription ? `<div class="wa-body-s text-quiet" style="margin-top:var(--wa-space-3xs);">${escapeHtml(link.ogDescription)}</div>` : ""}
+            ${link.ogTitle ? `<div class="wa-font-weight-bold">${escapeHtml(link.ogTitle)}</div>` : ""}
+            ${link.ogDescription ? `<div class="wa-body-s wa-color-text-quiet" style="margin-top:var(--wa-space-3xs);">${escapeHtml(link.ogDescription)}</div>` : ""}
           </div>
         </div>
       </div>
@@ -83,7 +83,7 @@ function buildTargetingRules(targets) {
               <tr>
                 <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
                 <td>${escapeHtml(t.matchValue)}</td>
-                <td class="truncate">${escapeHtml(t.destinationUrl)}</td>
+                <td class="text-truncate">${escapeHtml(t.destinationUrl)}</td>
                 <td>${t.priority}</td>
               </tr>
             `).join("")}
@@ -94,28 +94,56 @@ function buildTargetingRules(targets) {
   `;
 }
 
+function buildPublicReportCard(report) {
+  if (!report) return "";
+  const reportUrl = `${location.origin}/r/${report.token}`;
+  return `
+    <wa-card>
+      <div class="wa-stack wa-gap-s">
+        <div class="wa-split">
+          <h3>Public Report</h3>
+          <wa-switch id="report-toggle" ${report.isEnabled ? "checked" : ""}></wa-switch>
+        </div>
+        <p class="wa-body-s wa-color-text-quiet">Share your analytics dashboard with others via a public link.</p>
+        <div id="report-link-container" class="wa-cluster wa-gap-2xs" style="display: ${report.isEnabled ? "flex" : "none"};">
+          <wa-input readonly value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
+          <wa-copy-button value="${escapeAttr(reportUrl)}"></wa-copy-button>
+          <wa-button variant="neutral" appearance="outlined" data-href="${escapeAttr(reportUrl)}">
+            <wa-icon name="arrow-up-right-from-square"></wa-icon>
+          </wa-button>
+        </div>
+      </div>
+    </wa-card>
+  `;
+}
+
 export async function renderLinkDetail(container, { id }) {
-  container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
 
   let link;
   let targets = [];
+  let report = null;
   try {
-    const [linkRes, targetsRes] = await Promise.all([
+    const [linkRes, targetsRes, reportRes] = await Promise.all([
       fetch(`/api/links/${id}`),
       fetch(`/api/links/${id}/targets`).catch(() => null),
+      fetch(`/api/reports/${id}`, { method: 'POST' }).catch(() => null),
     ]);
     if (linkRes.status === 401) { window.location.href = "/login"; return; }
     if (!linkRes.ok) {
-      container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><p>Link not found.</p></div>`;
+      container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><p>Link not found.</p></div>`;
       return;
     }
     ({ data: link } = await linkRes.json());
     if (targetsRes && targetsRes.ok) {
       ({ data: targets } = await targetsRes.json());
     }
+    if (reportRes && reportRes.ok) {
+      ({ data: report } = await reportRes.json());
+    }
   } catch {
     showToast("Failed to load link details", "danger");
-    container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><p>Failed to load link. Please try again.</p></div>`;
+    container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><p>Failed to load link. Please try again.</p></div>`;
     return;
   }
 
@@ -168,6 +196,7 @@ export async function renderLinkDetail(container, { id }) {
         </div>
       </wa-card>
 
+      ${buildPublicReportCard(report)}
       ${buildTargetingRules(targets)}
       ${buildOgPreview(link)}
 
@@ -178,10 +207,34 @@ export async function renderLinkDetail(container, { id }) {
       </div>
 
       ${link.totalClicks > 0 ? '<div id="stats-container"></div>' : ''}
+
+      <wa-dialog id="delete-link-dialog" label="Delete Link">
+        <p>Are you sure you want to delete <strong>/${escapeHtml(link.slug)}</strong>? This cannot be undone.</p>
+        <wa-button slot="footer" id="delete-link-cancel-btn" variant="neutral" appearance="outlined">Cancel</wa-button>
+        <wa-button slot="footer" id="delete-link-confirm-btn" variant="danger">Delete</wa-button>
+      </wa-dialog>
     </div>
   `;
 
   renderQrCode(container.querySelector("#qr-container"), shortUrl);
+
+  const reportToggle = container.querySelector("#report-toggle");
+  if (reportToggle) {
+    reportToggle.addEventListener("change", async (e) => {
+      const isEnabled = e.target.checked;
+      try {
+        const res = await fetch(`/api/reports/${id}`, { method: "PUT" });
+        if (!res.ok) throw new Error("Failed");
+        const containerDiv = container.querySelector("#report-link-container");
+        if (containerDiv) {
+          containerDiv.style.display = isEnabled ? "flex" : "none";
+        }
+      } catch {
+        e.target.checked = !isEnabled;
+        showToast("Failed to toggle report", "danger");
+      }
+    });
+  }
 
   const editSection = container.querySelector("#edit-section");
   const editBtn = container.querySelector("#edit-link-btn");
@@ -196,18 +249,34 @@ export async function renderLinkDetail(container, { id }) {
     }
   });
 
-  container.querySelector("#delete-btn").addEventListener("click", async () => {
-    if (!confirm("Delete this link? This cannot be undone.")) return;
+  const deleteLinkDialog = container.querySelector("#delete-link-dialog");
+
+  container.querySelector("#delete-btn").addEventListener("click", () => {
+    deleteLinkDialog.open = true;
+  });
+
+  container.querySelector("#delete-link-cancel-btn").addEventListener("click", () => {
+    deleteLinkDialog.open = false;
+  });
+
+  container.querySelector("#delete-link-confirm-btn").addEventListener("click", async () => {
+    const confirmBtn = container.querySelector("#delete-link-confirm-btn");
+    confirmBtn.loading = true;
+    confirmBtn.disabled = true;
     try {
       const delRes = await fetch(`/api/links/${id}`, { method: "DELETE" });
       if (!delRes.ok) {
         showToast("Failed to delete link", "danger");
         return;
       }
+      deleteLinkDialog.open = false;
       showToast("Link deleted", "success");
       navigate("/links");
     } catch {
       showToast("Network error — could not delete link", "danger");
+    } finally {
+      confirmBtn.loading = false;
+      confirmBtn.disabled = false;
     }
   });
 

@@ -207,11 +207,9 @@ campaignRoutes.post("/:id/links", async (c) => {
     throw badRequest(`Links not found: ${invalidIds.join(", ")}`);
   }
 
-  // Insert associations (ignore duplicates via onConflictDoNothing)
-  for (const linkId of body.linkIds) {
-    await db.insert(linkCampaigns).values({ linkId, campaignId: id })
-      .onConflictDoNothing();
-  }
+  // Insert associations in a single batch (ignore duplicates via onConflictDoNothing)
+  await db.insert(linkCampaigns).values(body.linkIds.map(linkId => ({ linkId, campaignId: id })))
+    .onConflictDoNothing();
 
   return c.json({ success: true });
 });

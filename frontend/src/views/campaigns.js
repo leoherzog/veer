@@ -3,7 +3,7 @@ import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 
 export async function renderCampaignsPanel(container) {
-  container.innerHTML = `<div class="text-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
 
   let campaigns;
   try {
@@ -19,7 +19,7 @@ export async function renderCampaignsPanel(container) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
-        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="regular" class="text-subdued" style="font-size:0.6em;cursor:help;"></wa-icon></h1>
+        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="regular" class="wa-color-text-quiet wa-font-size-s" style="cursor:help;"></wa-icon></h1>
         <wa-button variant="brand" id="new-campaign-btn">
           <wa-icon slot="start" name="plus"></wa-icon>
           New Campaign
@@ -86,8 +86,8 @@ function renderCampaignList(container, campaigns) {
   if (!campaigns.length) {
     container.innerHTML = `
       <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
-        <wa-icon name="bullhorn" style="font-size:var(--wa-font-size-2xl);opacity:0.5;"></wa-icon>
-        <p class="text-subdued">No campaigns yet. Create one to group your links.</p>
+        <wa-icon name="bullhorn" class="wa-font-size-2xl" style="opacity:0.5;"></wa-icon>
+        <p class="wa-color-text-quiet">No campaigns yet. Create one to group your links.</p>
       </div>
     `;
     return;
@@ -99,7 +99,7 @@ function renderCampaignList(container, campaigns) {
           <div class="wa-split">
             <div class="wa-stack wa-gap-2xs">
               <strong>${escapeHtml(c.name)}</strong>
-              ${c.description ? `<span class="wa-body-s text-subdued">${escapeHtml(c.description)}</span>` : ""}
+              ${c.description ? `<span class="wa-body-s wa-color-text-quiet">${escapeHtml(c.description)}</span>` : ""}
             </div>
             <wa-badge variant="neutral" pill>${c.linkCount ?? 0} link${(c.linkCount ?? 0) === 1 ? "" : "s"}</wa-badge>
           </div>

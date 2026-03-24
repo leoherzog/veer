@@ -1,5 +1,5 @@
 import { Hono, type Context } from "hono";
-import { eq, desc, asc, sql, and, or, like } from "drizzle-orm";
+import { eq, desc, asc, sql, and, or, like, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
 import { links, linkStats, linkTargets, linkCampaigns, campaigns, domainConfig, domainAccess } from "../../db/schema";
@@ -97,8 +97,6 @@ function stripPassword<T extends { password?: string | null }>(link: T): Omit<T,
   const { password, ...rest } = link;
   return { ...rest, hasPassword: !!password };
 }
-
-import { checkRateLimit } from "../../services/rate-limit";
 
 /** Validate domain access: checks domain exists in domain_config AND user has access. */
 async function validateDomainAccess(db: Database, hostname: string, userEmail: string, isAdmin: boolean): Promise<void> {
@@ -275,11 +273,13 @@ linkRoutes.post("/", async (c) => {
 
   // Handle campaign associations on create
   const createCampaignIds = body.campaignIds?.length ? body.campaignIds : body.campaignId ? [body.campaignId] : [];
-  for (const cid of createCampaignIds) {
-    const campaign = await db.select({ id: campaigns.id }).from(campaigns)
-      .where(and(eq(campaigns.id, cid), eq(campaigns.userId, user.id))).get();
-    if (campaign) {
-      await db.insert(linkCampaigns).values({ linkId: id, campaignId: cid })
+  if (createCampaignIds.length > 0) {
+    const validCampaigns = await db.select({ id: campaigns.id }).from(campaigns)
+      .where(and(inArray(campaigns.id, createCampaignIds), eq(campaigns.userId, user.id)));
+    const validIds = new Set(validCampaigns.map(c => c.id));
+    const toInsert = createCampaignIds.filter(cid => validIds.has(cid));
+    if (toInsert.length > 0) {
+      await db.insert(linkCampaigns).values(toInsert.map(cid => ({ linkId: id, campaignId: cid })))
         .onConflictDoNothing();
     }
   }
@@ -457,17 +457,19 @@ linkRoutes.put("/:id", async (c) => {
     const updateCampaignIds = hasCampaignIds
       ? (body.campaignIds || [])
       : body.campaignId ? [body.campaignId] : [];
-    // Validate all campaign IDs ownership BEFORE deleting existing associations
-    for (const cid of updateCampaignIds) {
-      const campaign = await db.select({ id: campaigns.id }).from(campaigns)
-        .where(and(eq(campaigns.id, cid), eq(campaigns.userId, user.id))).get();
-      if (!campaign) throw badRequest("Campaign not found or does not belong to you");
+    // Validate all campaign IDs ownership in a single query
+    if (updateCampaignIds.length > 0) {
+      const validCampaigns = await db.select({ id: campaigns.id }).from(campaigns)
+        .where(and(inArray(campaigns.id, updateCampaignIds), eq(campaigns.userId, user.id)));
+      const validIds = new Set(validCampaigns.map(c => c.id));
+      const invalid = updateCampaignIds.filter(cid => !validIds.has(cid));
+      if (invalid.length > 0) throw badRequest("Campaign not found or does not belong to you");
     }
     // Remove existing campaign associations
     await db.delete(linkCampaigns).where(eq(linkCampaigns.linkId, id));
-    // Add new associations
-    for (const cid of updateCampaignIds) {
-      await db.insert(linkCampaigns).values({ linkId: id, campaignId: cid });
+    // Add new associations in a single insert
+    if (updateCampaignIds.length > 0) {
+      await db.insert(linkCampaigns).values(updateCampaignIds.map(cid => ({ linkId: id, campaignId: cid })));
     }
   }
 
@@ -504,12 +506,18 @@ linkRoutes.patch("/:id/active", async (c) => {
   const user = c.var.user;
   const db = getDb(c.env.DB);
   const { id } = c.req.param();
-  const body = await c.req.json<{ isActive: unknown }>();
-  const isActive = body.isActive === true || body.isActive === "true" || body.isActive === 1
-    ? true : false;
 
   const link = await db.select().from(links).where(and(eq(links.id, id), eq(links.userId, user.id))).get();
   if (!link) throw notFound("Link not found");
+
+  // Toggle: if body has explicit isActive use it, otherwise flip current value
+  let isActive: boolean;
+  try {
+    const body = await c.req.json<{ isActive?: unknown }>();
+    isActive = body.isActive === true || body.isActive === "true" || body.isActive === 1;
+  } catch {
+    isActive = !link.isActive;
+  }
 
   await db.update(links).set({ isActive, updatedAt: new Date() }).where(eq(links.id, id));
 
@@ -640,7 +648,15 @@ linkRoutes.put("/:id/targets", async (c) => {
 export async function checkPassword(c: Context<AppEnv, "/api/links/:id/check-password">) {
   const ip = c.req.header("cf-connecting-ip") || "unknown";
   const id = c.req.param("id");
-  await checkRateLimit(c.env.KV, `ratelimit:pw-api:${id}:${ip}`, 5, 900);
+  // Brute-force protection: 5 attempts per 15-minute window per IP+link
+  const windowEpoch = Math.floor(Date.now() / 1000 / 900);
+  const rlKey = `rl:pw:${id}:${ip}:${windowEpoch}`;
+  const stored = await c.env.KV.get(rlKey);
+  const rlCount = stored ? parseInt(stored, 10) : 0;
+  if (rlCount >= 5) {
+    return c.json({ error: "Too many attempts, try again later" }, 429);
+  }
+  c.executionCtx.waitUntil(c.env.KV.put(rlKey, String(rlCount + 1), stored === null ? { expirationTtl: 1800 } : {}));
 
   const db = getDb(c.env.DB);
 

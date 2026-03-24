@@ -28,6 +28,8 @@ import "@awesome.me/webawesome/dist/components/tab-group/tab-group.js";
 import "@awesome.me/webawesome/dist/components/tab/tab.js";
 import "@awesome.me/webawesome/dist/components/tab-panel/tab-panel.js";
 import "@awesome.me/webawesome/dist/components/tooltip/tooltip.js";
+import "@awesome.me/webawesome/dist/components/relative-time/relative-time.js";
+import "@awesome.me/webawesome/dist/components/color-picker/color-picker.js";
 
 import "./styles/app.css";
 
@@ -40,6 +42,7 @@ import { renderDashboard } from "./views/dashboard.js";
 import { renderLinkDetail } from "./views/link-detail.js";
 import { renderCampaignDetail } from "./views/campaign-detail.js";
 import { renderSettings } from "./views/settings.js";
+import { renderReport } from "./views/report.js";
 
 let currentUser = null;
 
@@ -62,7 +65,7 @@ async function init() {
     main.innerHTML = "";
     Promise.resolve(viewFn(main)).catch((err) => {
       console.error(err);
-      main.innerHTML = '<div class="text-center" style="padding:var(--wa-space-3xl);"><h2>Something went wrong</h2><p>Please try again.</p></div>';
+      main.innerHTML = '<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Something went wrong</h2><p>Please try again.</p></div>';
     });
     if (!initialLoad) main.focus();
     initialLoad = false;
@@ -94,10 +97,13 @@ async function init() {
     if (!currentUser) return render((el) => renderLogin(el));
     render((el) => renderSettings(el));
   });
+  addRoute("/r/:token", (params) => {
+    render((el) => renderReport(el, params));
+  });
 
   setNotFound(() => {
     render((el) => {
-      el.innerHTML = `<div role="alert" class="text-center" style="padding:var(--wa-space-3xl);"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
+      el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
     });
   });
 

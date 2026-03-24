@@ -46,7 +46,7 @@ function renderPasskeyButton(container, enabled) {
   section.style.display = "";
   const btn = section.querySelector("#passkey-signin");
   btn.addEventListener("click", async () => {
-    btn.setAttribute("loading", "");
+    btn.loading = true;
     try {
       const result = await authClient.signIn.passkey();
       if (result?.error) {
@@ -57,7 +57,7 @@ function renderPasskeyButton(container, enabled) {
     } catch {
       showToast("Passkey sign-in failed", "danger");
     } finally {
-      btn.removeAttribute("loading");
+      btn.loading = false;
     }
   });
 }

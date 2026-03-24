@@ -21,8 +21,8 @@ export async function renderStatsGeo(container, linkId, days = 30) {
       <wa-card>
         <div class="wa-stack wa-gap-m">
           <h3>Geographic</h3>
-          ${countries.length ? `<canvas id="geo-countries" style="height:200px;"></canvas>` : ""}
-          ${cities.length ? `<canvas id="geo-cities" style="height:200px;"></canvas>` : ""}
+          ${countries.length ? `<div class="wa-frame:landscape"><canvas id="geo-countries"></canvas></div>` : ""}
+          ${cities.length ? `<div class="wa-frame:landscape"><canvas id="geo-cities"></canvas></div>` : ""}
         </div>
       </wa-card>
     `;

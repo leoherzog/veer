@@ -119,7 +119,7 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
                 Add Rule
               </wa-button>
             </div>
-            <p class="wa-body-s text-quiet" style="margin:0;">Redirect visitors to different URLs based on country or device type.</p>
+            <p class="wa-body-s wa-color-text-quiet" style="margin:0;">Redirect visitors to different URLs based on country or device type.</p>
             <div id="targets-list" class="wa-stack wa-gap-s"></div>
           </div>
           <wa-divider></wa-divider>

@@ -1,5 +1,3 @@
-import type { Env } from "./bindings";
-
 /** Authenticated user shape injected by requireAuth middleware. */
 export type AuthUser = {
   id: string;

@@ -1,7 +1,7 @@
 export const SKELETON = `<wa-skeleton effect="pulse" style="height:200px;"></wa-skeleton>`;
 
 export function noData(message = "No data yet") {
-  return `<div class="text-center text-subdued" style="padding:var(--wa-space-2xl);">${message}</div>`;
+  return `<div class="wa-stack wa-align-items-center wa-color-text-quiet" style="padding:var(--wa-space-2xl);">${message}</div>`;
 }
 
 export async function fetchJSON(url) {

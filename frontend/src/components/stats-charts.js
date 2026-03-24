@@ -6,7 +6,7 @@ import { renderStatsGeo } from "./stats-geo.js";
 import { renderStatsReferrers } from "./stats-referrers.js";
 
 function summaryCard(label, value) {
-  return `<wa-card><div class="wa-stack wa-gap-2xs wa-align-items-center"><div class="wa-caption-s text-subdued">${label}</div><div class="wa-heading-xl">${value}</div></div></wa-card>`;
+  return `<wa-card><div class="wa-stack wa-gap-2xs wa-align-items-center"><div class="wa-caption-s wa-color-text-quiet">${label}</div><div class="wa-heading-xl">${value}</div></div></wa-card>`;
 }
 
 async function loadSummary(container, linkId, days) {
@@ -20,7 +20,7 @@ async function loadSummary(container, linkId, days) {
       summaryCard("Top Country", data.topCountry ? escapeHtml(data.topCountry) : "—") +
       summaryCard("Top Referrer", data.topReferrer ? escapeHtml(data.topReferrer) : "—");
   } catch {
-    el.innerHTML = `<div class="wa-span-grid text-center text-subdued">Failed to load summary</div>`;
+    el.innerHTML = `<div class="wa-span-grid wa-stack wa-align-items-center wa-color-text-quiet">Failed to load summary</div>`;
   }
 }
 
@@ -42,7 +42,7 @@ async function loadTimeline(container, linkId, days) {
     }
 
     destroyChart(timelineChart);
-    wrap.innerHTML = `<canvas id="clicks-timeline" style="height:200px;"></canvas>`;
+    wrap.innerHTML = `<div class="wa-frame:landscape"><canvas id="clicks-timeline"></canvas></div>`;
     const canvas = wrap.querySelector("#clicks-timeline");
     timelineChart = createChart(canvas, "line", {
       data: {
@@ -55,7 +55,7 @@ async function loadTimeline(container, linkId, days) {
       },
     });
   } catch {
-    wrap.innerHTML = `<div class="text-center text-subdued" style="padding:var(--wa-space-2xl);">Failed to load timeline</div>`;
+    wrap.innerHTML = `<div class="wa-stack wa-align-items-center wa-color-text-quiet" style="padding:var(--wa-space-2xl);">Failed to load timeline</div>`;
   }
 }
 

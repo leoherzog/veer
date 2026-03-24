@@ -43,7 +43,7 @@ veer/
   drizzle.config.ts            # Drizzle Kit config for D1 migrations
   src/                         # Worker source (TypeScript)
     index.ts                   # Hono app entry point ✅
-    bindings.ts                # Env type definition ✅
+    bindings.ts                # Env type re-exports (types from worker-configuration.d.ts) ✅
     types.ts                   # AppEnv + AuthUser types ✅ (added in M1)
     db/
       schema.ts                # All Drizzle table definitions ✅
@@ -58,14 +58,16 @@ veer/
         stats.ts               # /api/stats/* analytics (M2)
         campaigns.ts           # /api/campaigns (M4)
         domains.ts             # /api/domains sync + config + access (M5) ✅
-        keys.ts                # /api/keys (M6)
-        bulk.ts                # /api/bulk (M6)
+        keys.ts                # /api/keys CRUD ✅
+        bulk.ts                # /api/bulk creation ✅
+        reports.ts             # /api/reports + public report viewer ✅
         teams.ts               # /api/teams (M7)
         admin.ts               # /api/admin (M7)
         setup.ts               # First-run setup (M8)
     middleware/
-      auth.ts                  # Session check, injects user into c.var ✅
+      auth.ts                  # Session + API key auth, injects user into c.var ✅
       cors.ts                  # CORS config for /api/* ✅
+      rate-limit.ts            # KV-based rate limiting for API key requests ✅
     services/
       kv-cache.ts              # KV read/write/invalidate helpers ✅
       analytics.ts             # AE write (binding) + query (REST SQL API) helpers ✅
@@ -74,6 +76,8 @@ veer/
       constants.ts             # SLUG_PATTERN, RESERVED_SLUGS ✅
       errors.ts                # Typed HTTP error helpers (badRequest, notFound, conflict) ✅
       providers.ts             # OAuth provider detection helper ✅ (added in M1)
+      crypto.ts                # HMAC-SHA256 API key hashing + key generation ✅
+      date.ts                  # Date formatting helpers ✅
   frontend/                    # Frontend source (ES modules)
     src/
       app.js                   # Main SPA: router init, auth state, rendering ✅
@@ -88,7 +92,7 @@ veer/
         dashboard.js           # Link list (authenticated) ✅
         link-detail.js         # Single link + stats ✅
         login.js               # OAuth provider buttons (dynamic from /api/auth/providers) ✅
-        settings.js            # Settings: domains (M5) ✅, API keys (M6)
+        settings.js            # Settings: domains (M5) ✅, API keys (M6) ✅, passkeys (M6) ✅
         campaigns.js           # Campaign management (M4)
         admin.js               # Admin panel (M7)
       components/
@@ -97,6 +101,8 @@ veer/
         stats-charts.js        # Chart.js line/bar/doughnut charts (M2)
         nav-bar.js             # Top nav with user avatar, login/logout, theme toggle ✅
         toast.js               # wa-callout-based toast notification helper ✅
+      views/
+        report.js              # Public report viewer (no auth required) ✅
       styles/
         app.css                # Custom styles on top of WA theme ✅
     esbuild.mjs                # Build config: bundles src/ → public/dist/ ✅
@@ -114,11 +120,13 @@ veer/
 1. Global: security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`) on all responses
 2. `/api/*` - CORS middleware
 3. `/api/auth/*` - Better Auth handler (no auth middleware — handles its own)
-4. `/api/me`, `/api/links`, `/api/links/*` - `requireAuth` middleware applied
-5. `/api/me` - Current user profile
-6. `/api/links/*` - Link CRUD routes
-7. `/:slug` - Redirect lookup (KV → D1 fallback) — calls `next()` on miss to fall through
-8. `*` catch-all - `env.ASSETS.fetch(request)` serves SPA shell
+4. `/api/me`, `/api/me/*` - `requireAuth` middleware (session only)
+5. `/api/links`, `/api/links/*`, `/api/stats/*`, `/api/campaigns/*`, `/api/bulk/*`, `/api/reports/*` - `requireAuthOrApiKey` + `rateLimitApiKey` middleware (session or API key)
+6. `/api/domains`, `/api/domains/*` - `requireAuth` (session only, admin routes further gated by `requireAdmin`)
+7. `/api/keys`, `/api/keys/*` - `requireAuth` (session only — can't manage keys via API key)
+8. `/api/public-report/:token` - IP-based rate limiting (no auth), public report viewer
+9. `/:slug` - Redirect lookup (KV → D1 fallback) — calls `next()` on miss to fall through
+10. `*` catch-all - `env.ASSETS.fetch(request)` serves SPA shell
 
 The slug handler checks KV first (sub-ms, `cacheTtl: 30`), falls back to D1 on miss, writes KV on hit (`expirationTtl: 86400`). Inactive links in KV are skipped (fall through). If no slug found, falls through to SPA shell (which shows 404 client-side).
 
@@ -223,7 +231,7 @@ A toggle button in the nav bar swaps the class and saves the preference. This is
 ### Database Schema
 
 **Better Auth tables** (generated via `npx auth@latest generate`):
-- `user` (id, name, email, emailVerified, image, createdAt, updatedAt, role)
+- `user` (id, name, email, emailVerified, image, createdAt, updatedAt)
 - `session` (id, expiresAt, token, ipAddress, userAgent, userId, createdAt, updatedAt)
 - `account` (id, accountId, providerId, userId, accessToken, refreshToken, ...)
 - `verification` (id, identifier, value, expiresAt, createdAt, updatedAt)
@@ -638,7 +646,7 @@ Link create/update validates domain access via `validateDomainAccess()` in `link
 - `drizzle/migrations/0003_custom_domains.sql` — Original per-user domain schema (superseded by 0004)
 - `drizzle/migrations/0004_simplified_domains.sql` — Reworked schema: CREATE TABLE domain_config + domain_access, ADD domainHostname to links, migrate data from 0003 domains table, DROP old tables. Includes partial unique index `idx_links_slug_default` for NULL domainHostname.
 - `src/routes/api/domains.ts` — Domain sync (Cloudflare API), config CRUD, access management (all admin-only except GET list)
-- `src/services/rate-limit.ts` — Shared KV-based rate limiting helper (`checkRateLimit`), used by both redirect password gate and API password check
+- `src/services/rate-limit.ts` — Shared KV-based rate limiting helper (`checkRateLimit`), used by both redirect password gate and API password check (deleted in M6, replaced by `src/middleware/rate-limit.ts`)
 - `frontend/src/views/settings.js` — Settings page with Domains tab (admin-only), sync button, inline edit rows
 
 #### Files modified
@@ -729,7 +737,7 @@ button, icon, button-group, input, card, details, avatar, spinner, callout, copy
 | `/campaigns` | dashboard (Campaigns tab) | Yes |
 | `/links/:id` | link-detail | Yes |
 | `/campaigns/:id` | campaign-detail | Yes |
-| `/settings` | settings (Domains tab) | Yes (admin-only content) |
+| `/settings` | settings (Domains tab) | Yes (admin-only content; expanded in M6 with API Keys + Passkeys tabs) |
 
 ---
 
@@ -737,21 +745,122 @@ button, icon, button-group, input, card, details, avatar, spinner, callout, copy
 
 **Delivers**: API key auth, bulk creation, stats API, rate limiting, public reports.
 
+**Status**: All files implemented. API key auth, bulk creation, public reports, rate limiting, and passkey registration all functional.
+
 ### New Tables
 - `api_keys` (id, userId, name, keyHash UNIQUE, prefix, lastUsedAt?, createdAt, expiresAt?)
+  - Indexes: `idx_api_keys_keyHash` (unique), `idx_api_keys_userId`
 - `public_reports` (id, linkId, token UNIQUE, isEnabled, createdAt)
+  - Indexes: `idx_public_reports_token` (unique), `idx_public_reports_linkId` (unique — one report per link)
+
+### API Endpoints Added
+| Method | Path | Auth | Description |
+|--------|------|------|-------------|
+| GET | `/api/keys` | Session | List user's API keys |
+| POST | `/api/keys` | Session | Create API key `{name, expiresAt?}` (max 10 per user) |
+| DELETE | `/api/keys/:id` | Session | Delete API key |
+| POST | `/api/bulk` | Session/Key | Bulk create links `{links: [{slug, destinationUrl, title?, redirectType?, domainHostname?}]}` (max 50) |
+| POST | `/api/reports/:linkId` | Session/Key | Create or get existing public report for link |
+| PUT | `/api/reports/:linkId` | Session/Key | Toggle report isEnabled |
+| GET | `/api/public-report/:token` | None (IP rate limited) | Public report viewer data (slug, title, totalClicks, 30-day timeseries) |
 
 ### Key Changes
-- `auth.ts` middleware - Support `Authorization: Bearer <api_key>` alongside session cookies
-- New rate limiting middleware (KV-based, per API key)
-- Bulk create endpoint (JSON array input)
-- UI: bulk create via textarea (CSV/line-by-line), API key management in settings
+- `auth.ts` middleware — New `requireAuthOrApiKey` middleware: checks `Authorization: Bearer <key>` header first (HMAC-SHA256 hash lookup), falls back to session auth. Shared `checkSession`/`isAdminUser` helpers extracted from `requireAuth`. API key `lastUsedAt` updated via `waitUntil`.
+- `rate-limit.ts` middleware — KV-based rate limiting (60 req/min) applied only to API key requests (Bearer token auth). Session requests pass through. Returns `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Remaining` headers. Advisory enforcement (KV lacks atomic increment).
+- `crypto.ts` — `hashApiKey()` (HMAC-SHA256 using BETTER_AUTH_SECRET), `generateApiKey()` (`veer_` prefix + 43 base62 chars, ~256 bits entropy, rejection sampling).
+- `bulk.ts` — Validates all inputs first (slug, URL, domain access), then batch-inserts. Domain access checks cached per-request. Max 50 links, 100KB body limit.
+- `reports.ts` — Public report shows slug, title, total clicks, 30-day timeseries from `link_stats`. Deactivated links return 404. Public endpoint IP rate-limited (30 req/min via KV).
+- `auth/index.ts` — WeakMap cache for auth instances (avoids re-creating per middleware call in same request). Added Drizzle schema import. Cookie session cache enabled (5 min).
+- `bindings.ts` — **Deleted**. Env types now come from `worker-configuration.d.ts` (generated by `wrangler types`).
+- `db/schema.ts` — Removed `role` column from `user` table (admin determined by `ADMIN_EMAILS` env var, not DB column).
+- `redirect.ts` — Removed `incrementClickStats` import (stats now handled separately). Removed `checkRateLimit` import.
+- `services/rate-limit.ts` — **Deleted**. Replaced by `middleware/rate-limit.ts`.
+- `services/analytics.ts` — Removed `incrementClickStats` function.
+- UI: Bulk create via textarea in dashboard, API key management and passkey registration in settings, public report toggle on link detail, public report viewer page.
 
 ### Verification
 - Generate API key, use with curl to create links
 - Bulk create 10 links in single request
 - Public report link shows analytics without auth
 - Rate limiting returns 429 after threshold
+- Passkey registration and deletion works in settings
+
+### Implementation Notes
+
+**Implemented 2026-03-25. All M6 files complete.**
+
+#### Files created
+- `drizzle/migrations/0004_api_keys.sql` — Creates `api_keys` and `public_reports` tables
+- `src/routes/api/keys.ts` — API key CRUD: list, create (with 10-key limit), delete (ownership-scoped)
+- `src/routes/api/bulk.ts` — Bulk link creation with per-item validation, domain access caching, batch conflict resolution via `ON CONFLICT DO NOTHING`
+- `src/routes/api/reports.ts` — Public report management (create-or-get, toggle) + `publicReportRoute` handler for unauthenticated access
+- `src/middleware/rate-limit.ts` — KV-based rate limiting middleware for API key requests (60/min, identified by first 16 chars of bearer token)
+- `src/lib/crypto.ts` — HMAC-SHA256 key hashing via Web Crypto API + secure key generation with rejection sampling
+- `src/lib/date.ts` — `MONTHS` array + `formatDate()` helper for timeseries labels
+- `frontend/src/views/report.js` — Public report page: loading state, error handling, Chart.js line chart for 30-day timeseries
+- `test/integration/auth-apikey.test.ts` — API key authentication integration tests
+- `test/integration/bulk.test.ts` — Bulk creation integration tests
+- `test/integration/keys.test.ts` — API key CRUD integration tests
+- `test/integration/reports.test.ts` — Public reports integration tests
+- `test/unit/crypto.test.ts` — HMAC hashing and key generation unit tests
+- `test/unit/date.test.ts` — Date formatting unit tests
+
+#### Files modified
+- `src/db/schema.ts` — Added `apiKeys` and `publicReports` tables. Removed `role` column from `user` table.
+- `src/auth/index.ts` — WeakMap-based instance caching, explicit schema import for Drizzle adapter, cookie session cache (5 min maxAge)
+- `src/bindings.ts` — **Deleted**. Types now sourced from `worker-configuration.d.ts` generated by `wrangler types`.
+- `src/middleware/auth.ts` — Refactored into `checkSession()` + `isAdminUser()` shared helpers. Added `requireAuthOrApiKey` middleware with HMAC key lookup, expiry check, and background `lastUsedAt` update.
+- `src/index.ts` — Mounted `/api/keys`, `/api/bulk`, `/api/reports` routes. Changed `/api/links`, `/api/stats`, `/api/campaigns` from `requireAuth` to `requireAuthOrApiKey` + `rateLimitApiKey`. Added `/api/public-report/:token` with inline IP rate limiting (30/min via KV).
+- `src/routes/redirect.ts` — Removed `incrementClickStats` call and `checkRateLimit` import. AE `writeDataPoint` now asserts non-null binding (`c.env.ANALYTICS!`).
+- `src/services/analytics.ts` — Removed `incrementClickStats` function (16 lines).
+- `src/services/rate-limit.ts` — **Deleted**. Replaced by dedicated middleware in `src/middleware/rate-limit.ts`.
+- `src/routes/api/links.ts` — Minor updates for consistency with new auth model.
+- `frontend/src/app.js` — Added `/r/:token` route, imported `renderReport`, registered `wa-relative-time` and `wa-color-picker` components. Replaced `text-center` with `wa-stack wa-align-items-center`.
+- `frontend/src/views/settings.js` — Major expansion: added API Keys tab (create form, key table with delete confirmation dialog, new-key callout with copy) and Passkeys tab (register via `authClient.passkey.addPasskey()`, list, delete). Three-tab layout: Domains, API Keys, Passkeys.
+- `frontend/src/views/dashboard.js` — Added Bulk Create button and section (textarea CSV input, parse-and-submit to `/api/bulk`, results table with success/failure per slug). Fixed tab activation via `active` attribute.
+- `frontend/src/views/link-detail.js` — Added Public Report card (toggle, copy link, open in new tab). Delete link now uses `wa-dialog` confirmation instead of `confirm()`. Replaced inline style classes with WA utilities.
+- `frontend/src/views/report.js` — New public report viewer with loading/error states and Chart.js line chart.
+- `frontend/src/components/toast.js` — Enhanced toast positioning/styling.
+- `frontend/src/styles/app.css` — Updated styles for new sections.
+- `wrangler.jsonc` — Changed `nodejs_compat` → `nodejs_compat_v2`. Removed placeholder IDs for D1/KV. Added `BETTER_AUTH_URL` to vars. Removed trace sampling. Added `env.staging` configuration (separate D1, KV, AE bindings).
+- `worker-configuration.d.ts` — Regenerated: added `StagingEnv`, union type for `WORKER_NAME`, added `BETTER_AUTH_SECRET` to env types. Removed `StringifyValues` helper.
+- `test/setup.ts` — Added `api_keys` and `public_reports` table DDL.
+- `test/unit/rate-limit.test.ts` — Updated for new middleware-based rate limiter.
+- `test/unit/analytics.test.ts` — Removed `incrementClickStats` tests.
+
+#### Design decisions
+- **API key format**: `veer_` prefix + 43 random base62 characters (~256 bits entropy). Prefix allows easy identification and grep-ability. Rejection sampling ensures uniform distribution.
+- **Key hashing**: HMAC-SHA256 (not plain SHA-256) using `BETTER_AUTH_SECRET` as the HMAC key. Prevents offline brute-force if D1 database is compromised. Key prefix stored separately for display.
+- **Key management via session only**: API key CRUD routes use `requireAuth` (session), not `requireAuthOrApiKey`. You can't create/delete API keys using an API key — prevents key escalation.
+- **Rate limiting scope**: Only applies to API key requests (Bearer token auth). Session-authenticated requests (browser UI) are not rate-limited. 60 requests/min per key, identified by first 16 chars of the token.
+- **Rate limiting is advisory**: KV lacks atomic increment — concurrent requests may read the same counter. Documented as soft limit; for strict enforcement, recommends Cloudflare's native Rate Limiting API binding.
+- **Public report model**: One report per link (unique index on `linkId`). Token format: `rpt_` + 32 base62 chars. Report shows only aggregate data (total clicks, 30-day timeseries from `link_stats`). Deactivated links return 404 even if report exists.
+- **Public report rate limiting**: IP-based (30 req/min via KV), inline in index.ts rather than middleware to avoid applying to other routes.
+- **Bulk create**: Max 50 links per request, 100KB body limit. Two-phase approach: validate all inputs first (caches domain access checks), then batch-insert. Per-item error reporting (success/failure per slug in response). Uses `ON CONFLICT DO NOTHING` with post-insert verification for conflict detection.
+- **`bindings.ts` removed**: Env types now derived from `worker-configuration.d.ts` generated by `wrangler types`. Eliminates manual type maintenance.
+- **`role` column removed from user table**: Admin status was already determined by `ADMIN_EMAILS` env var (since M5). The `role` column was unused dead schema.
+- **`incrementClickStats` removed from redirect path**: Click stats no longer incremented in the redirect handler. AE remains the source of truth for click data; `link_stats` aggregation handled separately.
+- **Auth instance caching**: `getAuth()` uses a `WeakMap` keyed on the `env` object to avoid re-creating the Better Auth instance multiple times within the same request (e.g., when both `requireAuthOrApiKey` and route handler call it).
+- **Cookie session cache**: Better Auth's `cookieCache` enabled (5 min maxAge) to reduce D1 session lookups for session-authenticated requests.
+- **`nodejs_compat_v2`**: Upgraded from `nodejs_compat` in wrangler config — v2 is the current recommended flag.
+- **Staging environment**: `wrangler.jsonc` now includes `env.staging` with separate D1 database, KV namespace, and AE dataset bindings.
+- **Passkey registration**: Implemented in settings view using `authClient.passkey.addPasskey()` (Better Auth client method). Lists existing passkeys with delete option. Deferred from M1 login as originally planned.
+- **Delete confirmation**: Link detail now uses `wa-dialog` for delete confirmation instead of browser `confirm()`, consistent with API key and passkey delete flows.
+
+#### WA components registered in `app.js` (cumulative)
+button, icon, button-group, input, card, details, avatar, spinner, callout, copy-button, radio-group, radio, skeleton, divider, switch, textarea, qr-code, badge, dropdown, dropdown-item, select, option, dialog, tab-group, tab, tab-panel, tooltip, relative-time, color-picker
+
+#### Frontend routes (cumulative)
+| Path | View | Auth required |
+|------|------|---------------|
+| `/` | home | No |
+| `/login` | login | No |
+| `/links` | dashboard (Links tab) | Yes |
+| `/campaigns` | dashboard (Campaigns tab) | Yes |
+| `/links/:id` | link-detail | Yes |
+| `/campaigns/:id` | campaign-detail | Yes |
+| `/settings` | settings (Domains/API Keys/Passkeys tabs) | Yes |
+| `/r/:token` | report (public) | No |
 
 ---
 
@@ -857,7 +966,7 @@ The component also includes a "Copy Link" button using `wa-copy-button` for the 
 | `0002_campaigns_targeting.sql` | M4 | campaigns, link_campaigns, link_targets, ALTER links |
 | `0003_custom_domains.sql` | M5 | domains (original, superseded by 0004) |
 | `0004_simplified_domains.sql` | M5 | domain_config, domain_access, ALTER links (+domainHostname), DROP domains |
-| `0004_api_keys.sql` | M6 | api_keys, public_reports |
+| `0004_api_keys.sql` | M6 ✅ | api_keys, public_reports |
 | `0005_teams.sql` | M7 | teams, team_members, team_invites, ALTER links/user |
 | `0006_ab_testing.sql` | M8 | ab_tests, ab_variants |
 
@@ -930,13 +1039,15 @@ When writing styles, prefer in this order (first available wins):
 // wrangler.jsonc key fields
 {
   "compatibility_date": "2026-03-06",
-  "compatibility_flags": ["nodejs_compat"],  // Required for Better Auth
+  "compatibility_flags": ["nodejs_compat_v2"],  // Required for Better Auth
   "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": true },
   "placement": { "mode": "smart" },  // Route requests to colo nearest D1 to reduce latency
   "observability": {
     "enabled": true,
-    "logs": { "head_sampling_rate": 1 },
-    "traces": { "enabled": true, "head_sampling_rate": 0.01 }
+    "logs": { "head_sampling_rate": 1 }
+  },
+  "env": {
+    "staging": { /* separate D1, KV, AE bindings */ }
   }
 }
 ```
@@ -965,4 +1076,4 @@ When writing styles, prefer in this order (first available wins):
 **Dev**: `wrangler@^4.74.0`, `drizzle-kit@^0.31.9`, `typescript@^5.9.3`, `esbuild@^0.27.3`
 **Frontend (bundled by esbuild)**: `better-auth/client` + `@better-auth/passkey/client` (from runtime deps), `@awesome.me/webawesome` (components + theme CSS), `chart.js` (analytics charts)
 
-Note: `@cloudflare/workers-types` is not a separate dep — `wrangler types` generates `bindings.ts` directly.
+Note: `@cloudflare/workers-types` is not a separate dep — `wrangler types` generates `worker-configuration.d.ts` directly. The original `src/bindings.ts` was deleted in M6; all env types now come from the generated file.

@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "dev": "wrangler types && npm run build:frontend && wrangler d1 migrations apply veer-db --local && node frontend/esbuild.mjs --watch & wrangler dev",
+    "predev": "npm run build && npm run db:migrate:local",
+    "dev": "concurrently \"node frontend/esbuild.mjs --watch\" \"wrangler dev\"",
     "build:frontend": "node frontend/esbuild.mjs --minify",
     "build": "wrangler types && npm run build:frontend",
     "deploy": "npm run build && wrangler deploy",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.13.2",
+    "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.9",
     "esbuild": "^0.27.3",
     "typescript": "^6.0.2",

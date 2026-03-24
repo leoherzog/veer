@@ -9,7 +9,6 @@ export const user = sqliteTable("user", {
   image: text("image"),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
-  role: text("role").default("user"),
 });
 
 export const session = sqliteTable("session", {
@@ -151,4 +150,29 @@ export const linkStats = sqliteTable("link_stats", {
   uniqueClicks: integer("uniqueClicks").notNull().default(0),
 }, (table) => [
   uniqueIndex("idx_link_stats_linkId_date").on(table.linkId, table.date),
+]);
+
+export const apiKeys = sqliteTable("api_keys", {
+  id: text("id").primaryKey(),
+  userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  keyHash: text("keyHash").notNull(),
+  prefix: text("prefix").notNull(),
+  lastUsedAt: integer("lastUsedAt", { mode: "timestamp" }),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
+  expiresAt: integer("expiresAt", { mode: "timestamp" }),
+}, (table) => [
+  uniqueIndex("idx_api_keys_keyHash").on(table.keyHash),
+  index("idx_api_keys_userId").on(table.userId),
+]);
+
+export const publicReports = sqliteTable("public_reports", {
+  id: text("id").primaryKey(),
+  linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
+  token: text("token").notNull(),
+  isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
+}, (table) => [
+  uniqueIndex("idx_public_reports_token").on(table.token),
+  uniqueIndex("idx_public_reports_linkId").on(table.linkId),
 ]);
