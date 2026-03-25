@@ -29,6 +29,12 @@ export function renderNavBar(container, user) {
                 <wa-icon slot="icon" name="gear"></wa-icon>
                 Settings
               </wa-dropdown-item>
+              ${user.isAdmin ? `
+              <wa-dropdown-item id="admin-link">
+                <wa-icon slot="icon" name="shield-halved"></wa-icon>
+                Admin
+              </wa-dropdown-item>
+              ` : ""}
               <wa-dropdown-item id="theme-toggle">
                 <wa-icon slot="icon" name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}"></wa-icon>
                 <span class="theme-label">${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}</span>
@@ -56,6 +62,8 @@ export function renderNavBar(container, user) {
       const item = e.detail.item;
       if (item.id === "settings-link") {
         navigate("/settings");
+      } else if (item.id === "admin-link") {
+        navigate("/admin");
       } else if (item.id === "theme-toggle") {
         toggleTheme(item.querySelector("wa-icon"), item.querySelector(".theme-label"));
       } else if (item.id === "logout-btn") {

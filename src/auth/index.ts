@@ -4,6 +4,7 @@ import { passkey } from "@better-auth/passkey";
 import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { getConfiguredProviders } from "../lib/providers";
+import { cleanupOrphanedTeams } from "../routes/api/teams";
 import type { Env } from "../bindings";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -27,8 +28,10 @@ export function getAuth(env: Env) {
     plugins.push(passkey({ rpID, rpName: "Veer", origin }));
   }
 
+  const db = getDb(env.DB);
+
   const auth = betterAuth({
-    database: drizzleAdapter(getDb(env.DB), { provider: "sqlite", schema }),
+    database: drizzleAdapter(db, { provider: "sqlite", schema }),
     baseURL: origin,
     secret: env.BETTER_AUTH_SECRET,
     session: {
@@ -40,6 +43,18 @@ export function getAuth(env: Env) {
     socialProviders,
     trustedOrigins: [origin],
     plugins,
+    databaseHooks: {
+      user: {
+        delete: {
+          after: async () => {
+            // After a user is deleted, CASCADE removes their team_members rows.
+            // Promote the next member on any team left without an admin, and
+            // delete teams with zero remaining members.
+            await cleanupOrphanedTeams(db);
+          },
+        },
+      },
+    },
   });
 
   authCache.set(env, auth);

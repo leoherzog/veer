@@ -43,6 +43,8 @@ import { renderLinkDetail } from "./views/link-detail.js";
 import { renderCampaignDetail } from "./views/campaign-detail.js";
 import { renderSettings } from "./views/settings.js";
 import { renderReport } from "./views/report.js";
+import { renderAdmin, isImpersonating, getImpersonationBanner, bindImpersonationBanner } from "./views/admin.js";
+import { renderAcceptInvite } from "./views/accept-invite.js";
 
 let currentUser = null;
 
@@ -51,6 +53,16 @@ async function init() {
   try {
     const session = await authClient.getSession();
     currentUser = session?.data?.user || null;
+    // Enrich with server-side user data (isAdmin, etc.)
+    if (currentUser) {
+      try {
+        const meRes = await fetch("/api/me");
+        if (meRes.ok) {
+          const { data: meData } = await meRes.json();
+          if (meData) currentUser = { ...currentUser, ...meData };
+        }
+      } catch { /* use basic session data */ }
+    }
   } catch {
     currentUser = null;
   }
@@ -97,8 +109,29 @@ async function init() {
     if (!currentUser) return render((el) => renderLogin(el));
     render((el) => renderSettings(el));
   });
+  addRoute("/teams", () => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    render((el) => renderDashboard(el, { activeTab: "teams" }));
+  });
+  addRoute("/teams/:id", (params) => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    render((el) => renderDashboard(el, { activeTab: "teams", teamId: params.id }));
+  });
+  addRoute("/admin", () => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    if (!currentUser.isAdmin) {
+      render((el) => { el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Access denied</h2><p>You do not have admin access.</p></div>`; });
+      return;
+    }
+    render((el) => renderAdmin(el));
+  });
   addRoute("/r/:token", (params) => {
     render((el) => renderReport(el, params));
+  });
+
+  addRoute("/invite/:token", (params) => {
+    if (!currentUser) return render((el) => renderLogin(el));
+    render((el) => renderAcceptInvite(el, params));
   });
 
   setNotFound(() => {
@@ -106,6 +139,13 @@ async function init() {
       el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
     });
   });
+
+  // Impersonation banner
+  if (isImpersonating()) {
+    document.body.insertAdjacentHTML("afterbegin", getImpersonationBanner());
+    bindImpersonationBanner();
+    document.body.style.paddingTop = "3rem";
+  }
 
   // Initial resolve
   resolve();

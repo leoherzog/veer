@@ -44,11 +44,22 @@ function collectTargets(container) {
   return targets;
 }
 
-export function renderLinkForm(container, { link = null, onSuccess } = {}) {
+export function renderLinkForm(container, { link = null, onSuccess, teams = [] } = {}) {
   const isEdit = !!link;
   const hasPassword = isEdit && link.hasPassword;
+  const hasTeams = teams.length > 0;
+  const currentTeamId = link?.teamId || "";
+  const currentTeamName = link?.teamName || teams.find(t => t.id === currentTeamId)?.name || "";
   container.innerHTML = `
     <form id="link-form" class="wa-stack wa-gap-m">
+      ${hasTeams ? `
+        <wa-select name="teamId" label="Owner" ${isEdit ? "disabled" : ""}>
+          <wa-icon slot="start" name="${currentTeamId ? "people-group" : "user"}" class="wa-font-size-s"></wa-icon>
+          <wa-option value="" ${!currentTeamId ? "selected" : ""}>Me</wa-option>
+          ${teams.length ? `<wa-divider></wa-divider><small>Teams</small>` : ""}
+          ${teams.map(t => `<wa-option value="${escapeAttr(t.id)}" ${currentTeamId === t.id ? "selected" : ""}>${escapeAttr(t.name)}</wa-option>`).join("")}
+        </wa-select>
+      ` : ""}
       <wa-input
         name="slug"
         label="Slug"
@@ -150,6 +161,15 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
     </form>
   `;
 
+  // Update owner icon when selection changes
+  const ownerSelect = container.querySelector('[name="teamId"]');
+  if (ownerSelect) {
+    ownerSelect.addEventListener("change", () => {
+      const icon = ownerSelect.querySelector('wa-icon[slot="start"]');
+      if (icon) icon.name = ownerSelect.value ? "people-group" : "user";
+    });
+  }
+
   // Populate campaigns dropdown
   const campaignSelect = container.querySelector('[name="campaignIds"]');
   fetch("/api/campaigns")
@@ -250,6 +270,12 @@ export function renderLinkForm(container, { link = null, onSuccess } = {}) {
       ogDescription: form.querySelector('[name="ogDescription"]').value.trim() || null,
       ogImage: form.querySelector('[name="ogImage"]').value.trim() || null,
     };
+
+    // Include teamId on create if an owner select exists and a team is selected
+    if (!isEdit) {
+      const teamIdVal = form.querySelector('[name="teamId"]')?.value;
+      if (teamIdVal) data.teamId = teamIdVal;
+    }
 
     // Only send password if touched (or on create if non-empty)
     if (isEdit) {

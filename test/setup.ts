@@ -64,6 +64,18 @@ beforeAll(async () => {
     `CREATE TABLE IF NOT EXISTS \`public_reports\` (\`id\` text PRIMARY KEY NOT NULL, \`linkId\` text NOT NULL, \`token\` text NOT NULL, \`isEnabled\` integer NOT NULL DEFAULT 1, \`createdAt\` integer NOT NULL, FOREIGN KEY (\`linkId\`) REFERENCES \`links\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_public_reports_token\` ON \`public_reports\` (\`token\`)`,
     `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_public_reports_linkId\` ON \`public_reports\` (\`linkId\`)`,
+    // M7: Teams & Enterprise
+    `CREATE TABLE IF NOT EXISTS \`teams\` (\`id\` text PRIMARY KEY NOT NULL, \`name\` text NOT NULL, \`slug\` text NOT NULL, \`createdAt\` integer NOT NULL, \`updatedAt\` integer NOT NULL)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_teams_slug\` ON \`teams\` (\`slug\`)`,
+    `CREATE TABLE IF NOT EXISTS \`team_members\` (\`teamId\` text NOT NULL REFERENCES \`teams\`(\`id\`) ON DELETE CASCADE, \`userId\` text NOT NULL REFERENCES \`user\`(\`id\`) ON DELETE CASCADE, \`role\` text NOT NULL DEFAULT 'member' CHECK(role IN ('admin', 'member')), \`joinedAt\` integer NOT NULL, PRIMARY KEY (\`teamId\`, \`userId\`))`,
+    `CREATE INDEX IF NOT EXISTS \`idx_team_members_userId\` ON \`team_members\` (\`userId\`)`,
+    `CREATE TABLE IF NOT EXISTS \`team_invites\` (\`id\` text PRIMARY KEY NOT NULL, \`teamId\` text NOT NULL REFERENCES \`teams\`(\`id\`) ON DELETE CASCADE, \`email\` text NOT NULL, \`role\` text NOT NULL DEFAULT 'member' CHECK(role IN ('admin', 'member')), \`token\` text NOT NULL, \`expiresAt\` integer NOT NULL, \`createdAt\` integer NOT NULL)`,
+    `CREATE INDEX IF NOT EXISTS \`idx_team_invites_teamId\` ON \`team_invites\` (\`teamId\`)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_team_invites_token\` ON \`team_invites\` (\`token\`)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS \`idx_team_invites_teamId_email\` ON \`team_invites\` (\`teamId\`, \`email\`)`,
+    `ALTER TABLE \`links\` ADD COLUMN \`teamId\` text REFERENCES \`teams\`(\`id\`) ON DELETE SET NULL`,
+    `CREATE INDEX IF NOT EXISTS \`idx_links_teamId\` ON \`links\` (\`teamId\`)`,
+    `ALTER TABLE \`user\` ADD COLUMN \`maxLinks\` integer`,
   ];
 
   for (const sql of ordered) {

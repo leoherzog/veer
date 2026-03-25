@@ -11,7 +11,7 @@ function isAdminUser(env: AppEnv["Bindings"], email: string): boolean {
   return adminEmails.includes(email.toLowerCase());
 }
 
-async function checkSession(c: any): Promise<AuthUser | null> {
+async function checkSession(c: { env: AppEnv["Bindings"]; req: { raw: Request } }): Promise<AuthUser | null> {
   const auth = getAuth(c.env);
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   if (!session?.user) return null;

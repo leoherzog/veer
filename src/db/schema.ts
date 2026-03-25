@@ -9,6 +9,7 @@ export const user = sqliteTable("user", {
   image: text("image"),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
+  maxLinks: integer("maxLinks"),
 });
 
 export const session = sqliteTable("session", {
@@ -68,6 +69,41 @@ export const passkey = sqliteTable("passkey", {
   index("passkey_userId_idx").on(table.userId),
 ]);
 
+// Team tables
+export const teams = sqliteTable("teams", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  slug: text("slug").notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
+  updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
+}, (table) => [
+  uniqueIndex("idx_teams_slug").on(table.slug),
+]);
+
+export const teamMembers = sqliteTable("team_members", {
+  teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
+  userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
+  role: text("role").notNull().default("member"), // "admin" | "member" — CHECK constraint enforced at DB level (0005 migration) + app validation
+  joinedAt: integer("joinedAt", { mode: "timestamp" }).notNull(),
+}, (table) => [
+  primaryKey({ columns: [table.teamId, table.userId] }),
+  index("idx_team_members_userId").on(table.userId),
+]);
+
+export const teamInvites = sqliteTable("team_invites", {
+  id: text("id").primaryKey(),
+  teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
+  email: text("email").notNull(),
+  role: text("role").notNull().default("member"), // "admin" | "member" — CHECK constraint enforced at DB level (0005 migration) + app validation
+  token: text("token").notNull(),
+  expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
+  createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
+}, (table) => [
+  index("idx_team_invites_teamId").on(table.teamId),
+  uniqueIndex("idx_team_invites_token").on(table.token),
+  uniqueIndex("idx_team_invites_teamId_email").on(table.teamId, table.email),
+]);
+
 // Application tables
 export const domainConfig = sqliteTable("domain_config", {
   hostname: text("hostname").primaryKey(),
@@ -103,6 +139,7 @@ export const links = sqliteTable("links", {
   ogImage: text("ogImage"),
   paramForwarding: integer("paramForwarding", { mode: "boolean" }).notNull().default(false),
   domainHostname: text("domainHostname").references(() => domainConfig.hostname, { onDelete: "set null" }),
+  teamId: text("teamId").references(() => teams.id, { onDelete: "set null" }),
 }, (table) => [
   // NOTE: A partial unique index "idx_links_slug_default" WHERE domainHostname IS NULL
   // also exists (in migration 0004) to enforce slug uniqueness on the default domain.
@@ -110,6 +147,7 @@ export const links = sqliteTable("links", {
   uniqueIndex("idx_links_slug_domain").on(table.slug, table.domainHostname),
   index("idx_links_userId").on(table.userId),
   index("idx_links_domainHostname").on(table.domainHostname),
+  index("idx_links_teamId").on(table.teamId),
 ]);
 
 export const campaigns = sqliteTable("campaigns", {

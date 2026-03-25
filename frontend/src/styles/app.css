@@ -58,11 +58,13 @@ body {
 }
 
 /* Campaign cards */
-.campaign-card {
+.campaign-card,
+.team-card {
   cursor: pointer;
 }
 
-.campaign-card:hover {
+.campaign-card:hover,
+.team-card:hover {
   outline: 2px solid var(--wa-color-brand-fill-loud);
   outline-offset: -2px;
 }
@@ -113,10 +115,19 @@ body {
   margin: var(--wa-space-2xl) auto;
 }
 
-.campaign-detail-view {
+.campaign-detail-view,
+.teams-view,
+.team-detail-view,
+.admin-view {
   max-width: 960px;
   margin: var(--wa-space-2xl) auto;
 }
+
+/* Reusable layout helpers */
+.centered-state { padding: var(--wa-space-3xl); }
+.centered-state-sm { padding: var(--wa-space-l); }
+.tab-panel-content { padding-top: var(--wa-space-m); }
+.pagination-row { margin-top: var(--wa-space-m); }
 
 /* OG social preview */
 .og-preview {

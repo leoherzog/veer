@@ -2,10 +2,11 @@ import { Hono, type Context } from "hono";
 import { eq, desc, asc, sql, and, or, like, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
-import { links, linkStats, linkTargets, linkCampaigns, campaigns, domainConfig, domainAccess } from "../../db/schema";
+import { links, linkStats, linkTargets, linkCampaigns, campaigns, domainConfig, domainAccess, teamMembers, teams, user as userTable } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect, deleteCachedRedirect } from "../../services/kv-cache";
-import { badRequest, notFound, conflict, checkBodySize } from "../../lib/errors";
+import { badRequest, notFound, conflict } from "../../lib/errors";
+import { parseJsonBody } from "../../lib/request";
 import { hashPassword, verifyPassword } from "../../services/password";
 import type { AppEnv } from "../../types";
 import type { CachedRedirect, CachedTarget } from "../../services/kv-cache";
@@ -111,16 +112,38 @@ async function validateDomainAccess(db: Database, hostname: string, userEmail: s
   if (!access) throw badRequest("You do not have access to this domain");
 }
 
+/** Check whether a user can access a link: either they own it, or they're a member of the link's team. */
+async function canAccessLink(db: Database, link: { userId: string; teamId: string | null }, userId: string): Promise<boolean> {
+  if (link.userId === userId) return true;
+  if (!link.teamId) return false;
+  const member = await db.select({ role: teamMembers.role })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.teamId, link.teamId), eq(teamMembers.userId, userId)))
+    .get();
+  return !!member;
+}
+
 const linkRoutes = new Hono<AppEnv>();
 
-// List user's links
+// List user's links (or team links if teamId query param provided)
 linkRoutes.get("/", async (c) => {
   const user = c.var.user;
   const db = getDb(c.env.DB);
   const page = Math.max(1, Number(c.req.query("page")) || 1);
   const limit = Math.min(100, Math.max(1, Number(c.req.query("limit")) || 20));
   const q = c.req.query("q")?.trim();
+  const teamId = c.req.query("teamId")?.trim() || null;
+  const scope = c.req.query("scope")?.trim() || null;
   const offset = (page - 1) * limit;
+
+  // If teamId provided, validate membership
+  if (teamId) {
+    const member = await db.select({ role: teamMembers.role })
+      .from(teamMembers)
+      .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id)))
+      .get();
+    if (!member) throw notFound("Team not found");
+  }
 
   const sortParam = c.req.query("sort");
   const dirParam = c.req.query("dir");
@@ -129,24 +152,50 @@ linkRoutes.get("/", async (c) => {
   const sortDir = dirParam === "asc" ? asc : desc;
 
   const escaped = q ? q.replace(/%/g, "\\%").replace(/_/g, "\\_") : "";
+
+  // Build owner filter based on teamId or scope
+  let ownerFilter;
+  if (teamId) {
+    ownerFilter = eq(links.teamId, teamId);
+  } else if (scope === "all") {
+    // Fetch user's team IDs
+    const userTeams = await db.select({ teamId: teamMembers.teamId })
+      .from(teamMembers)
+      .where(eq(teamMembers.userId, user.id));
+    const teamIds = userTeams.map(t => t.teamId);
+    if (teamIds.length > 0) {
+      ownerFilter = or(eq(links.userId, user.id), inArray(links.teamId, teamIds))!;
+    } else {
+      ownerFilter = eq(links.userId, user.id);
+    }
+  } else {
+    ownerFilter = eq(links.userId, user.id);
+  }
+
   const where = q
     ? and(
-        eq(links.userId, user.id),
+        ownerFilter,
         or(
           like(links.slug, `%${escaped}%`),
           like(links.title, `%${escaped}%`),
           like(links.destinationUrl, `%${escaped}%`)
         )
       )
-    : eq(links.userId, user.id);
+    : ownerFilter;
 
   const [items, countResult] = await Promise.all([
-    db.select().from(links).where(where).orderBy(sortDir(sortCol)).limit(limit).offset(offset),
+    db.select({ links, teamName: teams.name })
+      .from(links)
+      .leftJoin(teams, eq(links.teamId, teams.id))
+      .where(where)
+      .orderBy(sortDir(sortCol))
+      .limit(limit)
+      .offset(offset),
     db.select({ count: sql<number>`count(*)` }).from(links).where(where),
   ]);
 
   return c.json({
-    data: items.map(stripPassword),
+    data: items.map(row => ({ ...stripPassword(row.links), teamName: row.teamName ?? null })),
     pagination: {
       page,
       limit,
@@ -160,9 +209,7 @@ linkRoutes.post("/", async (c) => {
   const user = c.var.user;
   const db = getDb(c.env.DB);
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: {
+  const body = await parseJsonBody<{
     slug: string;
     destinationUrl: string;
     redirectType?: number;
@@ -178,14 +225,31 @@ linkRoutes.post("/", async (c) => {
     campaignId?: string | null;
     campaignIds?: string[];
     domainHostname?: string | null;
-  };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+    teamId?: string | null;
+  }>(c);
 
   validateDestinationUrl(body.destinationUrl);
+
+  // Validate team membership if teamId provided
+  if (body.teamId) {
+    const member = await db.select({ role: teamMembers.role })
+      .from(teamMembers)
+      .where(and(eq(teamMembers.teamId, body.teamId), eq(teamMembers.userId, user.id)))
+      .get();
+    if (!member) throw badRequest("Team not found or you are not a member");
+  }
+
+  // Enforce maxLinks quota (soft cap — concurrent requests may slightly exceed the limit.
+  // D1 does not support SELECT...FOR UPDATE, so this is check-then-act without a transaction.)
+  // Note: team-scoped links count against the creator's personal quota intentionally,
+  // since the creator (userId) owns the link regardless of team association.
+  const userRow = await db.select({ maxLinks: userTable.maxLinks }).from(userTable).where(eq(userTable.id, user.id)).get();
+  if (userRow?.maxLinks != null) {
+    const [linkCountResult] = await db.select({ count: sql<number>`count(*)` }).from(links).where(eq(links.userId, user.id));
+    if ((linkCountResult?.count ?? 0) >= userRow.maxLinks) {
+      throw badRequest(`You have reached your link limit (${userRow.maxLinks})`);
+    }
+  }
 
   // Validate domain access if provided
   if (body.domainHostname) {
@@ -236,6 +300,8 @@ linkRoutes.post("/", async (c) => {
   const existing = await db.select({ id: links.id }).from(links).where(slugWhereClause).get();
   if (existing) throw conflict("Slug already taken");
 
+  const teamId = body.teamId || null;
+
   try {
     await db.insert(links).values({
       id,
@@ -253,6 +319,7 @@ linkRoutes.post("/", async (c) => {
       ogDescription,
       ogImage,
       domainHostname: body.domainHostname || null,
+      teamId,
       createdAt: now,
       updatedAt: now,
     });
@@ -301,6 +368,7 @@ linkRoutes.post("/", async (c) => {
       ogDescription,
       ogImage,
       domainHostname: body.domainHostname || null,
+      teamId,
       createdAt: now,
       updatedAt: now,
       isActive: true,
@@ -315,7 +383,7 @@ linkRoutes.get("/:id", async (c) => {
   const id = c.req.param("id");
 
   const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || link.userId !== user.id) throw notFound("Link not found");
+  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
 
   const [statsResult, targets, linkedCampaigns] = await Promise.all([
     db.select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
@@ -349,11 +417,9 @@ linkRoutes.put("/:id", async (c) => {
   const id = c.req.param("id");
 
   const existing = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!existing || existing.userId !== user.id) throw notFound("Link not found");
+  if (!existing || !(await canAccessLink(db, existing, user.id))) throw notFound("Link not found");
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: {
+  const body = await parseJsonBody<{
     destinationUrl?: string;
     redirectType?: number;
     title?: string;
@@ -368,12 +434,7 @@ linkRoutes.put("/:id", async (c) => {
     campaignId?: string | null;
     campaignIds?: string[];
     domainHostname?: string | null;
-  };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  }>(c);
 
   const updates: Partial<typeof links.$inferInsert> = { updatedAt: new Date() };
 
@@ -507,13 +568,13 @@ linkRoutes.patch("/:id/active", async (c) => {
   const db = getDb(c.env.DB);
   const { id } = c.req.param();
 
-  const link = await db.select().from(links).where(and(eq(links.id, id), eq(links.userId, user.id))).get();
-  if (!link) throw notFound("Link not found");
+  const link = await db.select().from(links).where(eq(links.id, id)).get();
+  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
 
   // Toggle: if body has explicit isActive use it, otherwise flip current value
   let isActive: boolean;
   try {
-    const body = await c.req.json<{ isActive?: unknown }>();
+    const body = await parseJsonBody<{ isActive?: unknown }>(c);
     isActive = body.isActive === true || body.isActive === "true" || body.isActive === 1;
   } catch {
     isActive = !link.isActive;
@@ -539,7 +600,7 @@ linkRoutes.delete("/:id", async (c) => {
   const id = c.req.param("id");
 
   const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || link.userId !== user.id) throw notFound("Link not found");
+  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
 
   await db.delete(links).where(eq(links.id, id));
   await deleteCachedRedirect(c.env.KV, link.slug, link.domainHostname);
@@ -553,8 +614,8 @@ linkRoutes.get("/:id/targets", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
-  const link = await db.select({ id: links.id, userId: links.userId }).from(links).where(eq(links.id, id)).get();
-  if (!link || link.userId !== user.id) throw notFound("Link not found");
+  const link = await db.select({ id: links.id, userId: links.userId, teamId: links.teamId }).from(links).where(eq(links.id, id)).get();
+  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
 
   const targets = await db.select().from(linkTargets).where(eq(linkTargets.linkId, id));
   return c.json({ data: targets });
@@ -567,16 +628,9 @@ linkRoutes.put("/:id/targets", async (c) => {
   const id = c.req.param("id");
 
   const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || link.userId !== user.id) throw notFound("Link not found");
+  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { targets: { type: string; matchValue: string; destinationUrl: string; priority?: number }[] };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ targets: { type: string; matchValue: string; destinationUrl: string; priority?: number }[] }>(c);
 
   if (!Array.isArray(body.targets)) {
     throw badRequest("targets must be an array");

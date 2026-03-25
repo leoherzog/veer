@@ -51,3 +51,40 @@ export const rateLimitApiKey = createMiddleware<AppEnv>(async (c, next) => {
 
   await next();
 });
+
+/**
+ * KV-based rate limiting middleware for session-authenticated requests.
+ * Keys on the authenticated user's ID. Must be placed AFTER requireAuth
+ * so that c.var.user is available.
+ */
+export const rateLimitSession = createMiddleware<AppEnv>(async (c, next) => {
+  const userId = c.var.user?.id;
+  if (!userId) {
+    // No user set yet — auth middleware will reject, just pass through
+    await next();
+    return;
+  }
+
+  const windowEpoch = Math.floor(Date.now() / 1000 / WINDOW_SECONDS);
+  const kvKey = `rl:session:${userId}:${windowEpoch}`;
+
+  const stored = await c.env.KV.get(kvKey);
+  const count = stored ? parseInt(stored, 10) : 0;
+
+  const secondsRemaining = WINDOW_SECONDS - (Math.floor(Date.now() / 1000) % WINDOW_SECONDS);
+
+  if (count >= RATE_LIMIT) {
+    c.header("Retry-After", String(secondsRemaining));
+    c.header("X-RateLimit-Limit", String(RATE_LIMIT));
+    c.header("X-RateLimit-Remaining", "0");
+    return c.json({ error: "Rate limit exceeded", retryAfter: secondsRemaining }, 429);
+  }
+
+  await c.env.KV.put(kvKey, String(count + 1), stored === null ? { expirationTtl: WINDOW_SECONDS * 2 } : {});
+
+  const remaining = RATE_LIMIT - (count + 1);
+  c.header("X-RateLimit-Limit", String(RATE_LIMIT));
+  c.header("X-RateLimit-Remaining", String(remaining));
+
+  await next();
+});

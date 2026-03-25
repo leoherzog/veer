@@ -3,9 +3,23 @@ import { renderLinkTable } from "../components/link-table.js";
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { renderCampaignsPanel } from "./campaigns.js";
+import { renderTeamsPanel } from "./teams.js";
+import { renderTeamDetail } from "./team-detail.js";
 import { escapeHtml } from "../lib/escape.js";
 
-export function renderDashboard(container, { activeTab = "links" } = {}) {
+export function renderDashboard(container, { activeTab = "links", teamId = null } = {}) {
+  let userTeams = [];
+  async function fetchTeams() {
+    try {
+      const res = await fetch("/api/teams");
+      if (res.ok) {
+        const { data } = await res.json();
+        userTeams = data || [];
+      }
+    } catch {}
+  }
+  const teamsReady = fetchTeams();
+
   container.innerHTML = `
     <div class="dashboard-view">
       <wa-tab-group id="dashboard-tabs" active="${activeTab}">
@@ -17,11 +31,15 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
           <wa-icon name="bullhorn"></wa-icon>
           Campaigns
         </wa-tab>
+        <wa-tab panel="teams">
+          <wa-icon name="people-group"></wa-icon>
+          Teams
+        </wa-tab>
 
         <wa-tab-panel name="links">
           <div class="wa-stack wa-gap-l">
             <div class="wa-split">
-              <h1>Your Links</h1>
+              <h1>Links</h1>
               <div class="wa-cluster wa-gap-xs">
                 <wa-button variant="brand" id="new-link-btn">
                   <wa-icon slot="start" name="plus"></wa-icon>
@@ -42,6 +60,10 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
               <wa-card>
                 <div class="wa-stack wa-gap-m">
                   <h3>Bulk Create Links</h3>
+                  <wa-select id="bulk-owner" label="Owner" size="small">
+                    <wa-option value="" selected>Me</wa-option>
+                  </wa-select>
+
                   <p class="wa-body-s wa-color-text-quiet">Enter one link per line: <code>slug, destination_url</code> (optionally: <code>slug, destination_url, title</code>)</p>
                   <wa-textarea id="bulk-input" rows="8" placeholder="my-slug, https://example.com&#10;another-slug, https://example.org, My Title"></wa-textarea>
                   <div class="wa-cluster wa-gap-s">
@@ -55,15 +77,25 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
                 </div>
               </wa-card>
             </div>
-            <wa-input id="search-input" placeholder="Search links..." with-clear>
-              <wa-icon slot="start" name="magnifying-glass"></wa-icon>
-            </wa-input>
+            <div class="wa-cluster wa-gap-s">
+              <wa-select id="scope-filter" size="small" style="min-width:160px;">
+                <wa-option value="all" selected>All Links</wa-option>
+                <wa-option value="personal">Me</wa-option>
+              </wa-select>
+              <wa-input id="search-input" placeholder="Search links..." with-clear style="flex:1;">
+                <wa-icon slot="start" name="magnifying-glass"></wa-icon>
+              </wa-input>
+            </div>
             <div id="links-table"></div>
           </div>
         </wa-tab-panel>
 
         <wa-tab-panel name="campaigns">
           <div id="campaigns-panel"></div>
+        </wa-tab-panel>
+
+        <wa-tab-panel name="teams">
+          <div id="teams-panel"></div>
         </wa-tab-panel>
       </wa-tab-group>
     </div>
@@ -74,10 +106,35 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
   let searchQuery = "";
   let sortBy = "createdAt";
   let sortDir = "desc";
+  let scopeFilter = "all"; // "all", "personal", or "team:<id>"
 
   const createSection = container.querySelector("#create-section");
   const newLinkBtn = container.querySelector("#new-link-btn");
   const searchInput = container.querySelector("#search-input");
+  const scopeSelect = container.querySelector("#scope-filter");
+
+  // Populate scope filter with teams once fetched
+  function populateScopeFilter() {
+    // Remove existing team options
+    scopeSelect.querySelectorAll('wa-option[value^="team:"], wa-divider.scope-div, small.scope-label').forEach(el => el.remove());
+    if (userTeams.length) {
+      scopeSelect.insertAdjacentHTML("beforeend", `<wa-divider class="scope-div"></wa-divider><small class="scope-label">Teams</small>`);
+      for (const t of userTeams) {
+        const opt = document.createElement("wa-option");
+        opt.value = `team:${t.id}`;
+        opt.textContent = t.name;
+        scopeSelect.appendChild(opt);
+      }
+    }
+  }
+  // Populate after initial teams fetch completes
+  teamsReady.then(() => populateScopeFilter());
+
+  scopeSelect.addEventListener("change", () => {
+    scopeFilter = scopeSelect.value;
+    currentPage = 1;
+    loadLinks();
+  });
 
   const bulkSection = container.querySelector("#bulk-section");
   const bulkBtn = container.querySelector("#bulk-create-btn");
@@ -92,6 +149,7 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
           createSection.style.display = "none";
           loadLinks();
         },
+        teams: userTeams,
       });
     }
   });
@@ -100,6 +158,22 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
     createSection.style.display = "none";
     const visible = bulkSection.style.display !== "none";
     bulkSection.style.display = visible ? "none" : "block";
+    if (!visible) {
+      // Populate bulk owner select with teams
+      const bulkOwner = container.querySelector("#bulk-owner");
+      const existingTeamOpts = bulkOwner.querySelectorAll("wa-option:not([value=''])"), divs = bulkOwner.querySelectorAll("wa-divider, small");
+      existingTeamOpts.forEach(o => o.remove());
+      divs.forEach(o => o.remove());
+      if (userTeams.length) {
+        bulkOwner.insertAdjacentHTML("beforeend", `<wa-divider></wa-divider><small>Teams</small>`);
+        for (const t of userTeams) {
+          const opt = document.createElement("wa-option");
+          opt.value = t.id;
+          opt.textContent = t.name;
+          bulkOwner.appendChild(opt);
+        }
+      }
+    }
   });
 
   container.querySelector("#bulk-cancel-btn").addEventListener("click", () => {
@@ -127,10 +201,11 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
     submitBtn.disabled = true;
 
     try {
+      const bulkTeamId = container.querySelector("#bulk-owner")?.value || null;
       const res = await fetch("/api/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ links }),
+        body: JSON.stringify({ links, ...(bulkTeamId && { teamId: bulkTeamId }) }),
       });
       const { results } = await res.json();
       if (!res.ok && !results) {
@@ -195,6 +270,13 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
   async function loadLinks() {
     const params = new URLSearchParams({ page: currentPage, limit: 20, sort: sortBy, dir: sortDir });
     if (searchQuery) params.set("q", searchQuery);
+    if (scopeFilter === "all") {
+      params.set("scope", "all");
+    } else if (scopeFilter === "personal") {
+      // default backend behavior, no extra param needed
+    } else if (scopeFilter.startsWith("team:")) {
+      params.set("teamId", scopeFilter.slice(5));
+    }
 
     try {
       const res = await fetch(`/api/links?${params}`);
@@ -226,17 +308,55 @@ export function renderDashboard(container, { activeTab = "links" } = {}) {
 
   // --- Campaigns tab (lazy load) ---
   let campaignsLoaded = false;
+
+  // --- Teams tab (lazy load) ---
+  let teamsLoaded = false;
+
+  async function loadTeamsPanel(selectTeamId = null) {
+    await fetchTeams();
+    const panel = container.querySelector("#teams-panel");
+
+    if (selectTeamId) {
+      renderTeamDetail(panel, { id: selectTeamId }, null, {
+        onBack: () => loadTeamsPanel(),
+        onTeamsChanged: () => fetchTeams(),
+      });
+      history.replaceState(null, "", "/teams/" + selectTeamId);
+    } else {
+      renderTeamsPanel(panel, {
+        teams: userTeams,
+        onTeamSelect: (id) => {
+          loadTeamsPanel(id);
+        },
+        onTeamsChanged: () => fetchTeams(),
+      });
+      history.replaceState(null, "", "/teams");
+    }
+  }
+
   const tabGroup = container.querySelector("#dashboard-tabs");
   tabGroup.addEventListener("wa-tab-show", (e) => {
     if (e.detail.name === "campaigns" && !campaignsLoaded) {
       campaignsLoaded = true;
       renderCampaignsPanel(container.querySelector("#campaigns-panel"));
     }
+    if (e.detail.name === "teams" && !teamsLoaded) {
+      teamsLoaded = true;
+      loadTeamsPanel();
+    }
     // Sync URL with active tab
-    const newPath = e.detail.name === "campaigns" ? "/campaigns" : "/links";
+    const newPath = e.detail.name === "campaigns" ? "/campaigns"
+      : e.detail.name === "teams" ? "/teams"
+      : "/links";
     if (location.pathname !== newPath) {
       history.replaceState(null, "", newPath);
     }
   });
+
+  // If teams tab is active on init, load immediately
+  if (activeTab === "teams") {
+    teamsLoaded = true;
+    loadTeamsPanel(teamId || null);
+  }
 
 }

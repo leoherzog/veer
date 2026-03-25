@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { eq, and, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
-import { links, domainConfig, domainAccess } from "../../db/schema";
+import { links, domainConfig, domainAccess, teamMembers } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect } from "../../services/kv-cache";
 import { badRequest } from "../../lib/errors";
@@ -95,11 +95,23 @@ bulkRoutes.post("/", async (c) => {
     throw new HTTPException(413, { message: "Request body too large (max 100KB)" });
   }
 
-  let body: { links: BulkLinkInput[] };
+  let body: { links: BulkLinkInput[]; teamId?: string };
   try {
     body = await c.req.json();
   } catch {
     throw badRequest("Invalid JSON body");
+  }
+
+  const teamId = body.teamId?.trim() || null;
+
+  // Validate team membership if teamId provided
+  if (teamId) {
+    const db = getDb(c.env.DB);
+    const member = await db.select({ role: teamMembers.role })
+      .from(teamMembers)
+      .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id)))
+      .get();
+    if (!member) throw badRequest("Team not found or you are not a member");
   }
 
   if (!Array.isArray(body.links)) {
@@ -236,6 +248,7 @@ bulkRoutes.post("/", async (c) => {
         ogDescription: null,
         ogImage: null,
         domainHostname: v.domainHostname,
+        teamId: teamId || null,
         createdAt: now,
         updatedAt: now,
       })
