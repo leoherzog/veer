@@ -1,25 +1,19 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { SPINNER, apiFetch, withLoadingBtn, emptyState } from "../lib/ui.js";
 
 export async function renderCampaignsPanel(container) {
-  container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = SPINNER;
 
-  let campaigns;
-  try {
-    const res = await fetch("/api/campaigns");
-    if (res.status === 401) { window.location.href = "/login"; return; }
-    if (!res.ok) { showToast("Failed to load campaigns", "danger"); return; }
-    ({ data: campaigns } = await res.json());
-  } catch {
-    showToast("Failed to load campaigns", "danger");
-    return;
-  }
+  const result = await apiFetch("/api/campaigns");
+  if (!result) return;
+  const { data: campaigns } = result;
 
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
-        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="regular" class="wa-color-text-quiet wa-font-size-s" style="cursor:help;"></wa-icon></h1>
+        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="solid" class="wa-color-text-quiet wa-font-size-s" style="cursor:help;"></wa-icon></h1>
         <wa-button variant="brand" id="new-campaign-btn">
           <wa-icon slot="start" name="plus"></wa-icon>
           New Campaign
@@ -55,10 +49,8 @@ export async function renderCampaignsPanel(container) {
   container.querySelector("#campaign-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const btn = e.target.querySelector('wa-button[type="submit"]');
-    btn.loading = true;
-    btn.disabled = true;
-    try {
-      const res = await fetch("/api/campaigns", {
+    await withLoadingBtn(btn, async () => {
+      const res = await apiFetch("/api/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -66,30 +58,16 @@ export async function renderCampaignsPanel(container) {
           description: e.target.querySelector('[name="description"]').value.trim() || null,
         }),
       });
-      if (!res.ok) {
-        const err = await res.json();
-        showToast(err.error || "Failed to create campaign", "danger");
-        return;
-      }
+      if (!res) return;
       showToast("Campaign created", "success");
       renderCampaignsPanel(container);
-    } catch {
-      showToast("Network error", "danger");
-    } finally {
-      btn.loading = false;
-      btn.disabled = false;
-    }
+    });
   });
 }
 
 function renderCampaignList(container, campaigns) {
   if (!campaigns.length) {
-    container.innerHTML = `
-      <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
-        <wa-icon name="bullhorn" class="wa-font-size-2xl" style="opacity:0.5;"></wa-icon>
-        <p class="wa-color-text-quiet">No campaigns yet. Create one to group your links.</p>
-      </div>
-    `;
+    container.innerHTML = emptyState("bullhorn", "No campaigns yet. Create one to group your links.");
     return;
   }
   container.innerHTML = `

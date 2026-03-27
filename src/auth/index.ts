@@ -5,7 +5,7 @@ import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { getConfiguredProviders } from "../lib/providers";
 import { cleanupOrphanedTeams } from "../routes/api/teams";
-import type { Env } from "../bindings";
+
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const authCache = new WeakMap<object, any>();
@@ -14,11 +14,7 @@ export function getAuth(env: Env) {
   const existing = authCache.get(env);
   if (existing) return existing;
 
-  const providers = getConfiguredProviders(env);
-  const socialProviders: Record<string, { clientId: string; clientSecret: string }> = {};
-  for (const [id, creds] of providers) {
-    socialProviders[id] = creds;
-  }
+  const socialProviders = getConfiguredProviders(env);
 
   const origin = env.BETTER_AUTH_URL;
   const rpID = new URL(origin).hostname;
@@ -60,5 +56,3 @@ export function getAuth(env: Env) {
   authCache.set(env, auth);
   return auth;
 }
-
-export type Auth = ReturnType<typeof getAuth>;

@@ -1,6 +1,7 @@
 import { showToast } from "./toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr } from "../lib/escape.js";
+import { apiFetch, withLoadingBtn } from "../lib/ui.js";
 
 function toLocalDatetime(isoStr) {
   if (!isoStr) return "";
@@ -21,7 +22,7 @@ function createTargetRow(target = {}) {
     <wa-input name="targetMatch" label="Match" placeholder="US" hint="Country code or device type" value="${escapeAttr(target.matchValue || "")}" style="min-width:120px;"></wa-input>
     <wa-input name="targetUrl" label="Destination" type="url" placeholder="https://..." value="${escapeAttr(target.destinationUrl || "")}" style="flex:1;"></wa-input>
     <wa-input name="targetPriority" label="Priority" type="number" value="${escapeAttr(target.priority != null ? String(target.priority) : "0")}" style="max-width:80px;"></wa-input>
-    <wa-button variant="danger" appearance="plain" circle class="remove-target-btn" aria-label="Remove rule">
+    <wa-button variant="danger" appearance="plain" pill class="remove-target-btn" aria-label="Remove rule">
       <wa-icon name="xmark"></wa-icon>
     </wa-button>
   `;
@@ -57,7 +58,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
           <wa-icon slot="start" name="${currentTeamId ? "people-group" : "user"}" class="wa-font-size-s"></wa-icon>
           <wa-option value="" ${!currentTeamId ? "selected" : ""}>Me</wa-option>
           ${teams.length ? `<wa-divider></wa-divider><small>Teams</small>` : ""}
-          ${teams.map(t => `<wa-option value="${escapeAttr(t.id)}" ${currentTeamId === t.id ? "selected" : ""}>${escapeAttr(t.name)}</wa-option>`).join("")}
+          ${teams.map(t => `<wa-option value="${escapeAttr(t.id)}" ${t.id === currentTeamId ? "selected" : ""}>${escapeAttr(t.name)}</wa-option>`).join("")}
         </wa-select>
       ` : ""}
       <wa-input
@@ -172,37 +173,35 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
 
   // Populate campaigns dropdown
   const campaignSelect = container.querySelector('[name="campaignIds"]');
-  fetch("/api/campaigns")
-    .then(res => res.ok ? res.json() : { data: [] })
-    .then(({ data }) => {
-      const selectedIds = new Set((link?.campaigns || []).map(c => c.id));
-      for (const c of data) {
-        const opt = document.createElement("wa-option");
-        opt.value = c.id;
-        opt.textContent = c.name;
-        if (selectedIds.has(c.id)) opt.selected = true;
-        campaignSelect.appendChild(opt);
-      }
-    })
-    .catch(() => {}); // silently ignore
+  apiFetch("/api/campaigns").then(result => {
+    if (!result) return;
+    const { data } = result;
+    const selectedIds = new Set((link?.campaigns || []).map(c => c.id));
+    for (const c of data) {
+      const opt = document.createElement("wa-option");
+      opt.value = c.id;
+      opt.textContent = c.name;
+      if (selectedIds.has(c.id)) opt.selected = true;
+      campaignSelect.appendChild(opt);
+    }
+  }).catch(() => {});
 
   // Populate domains dropdown
   const domainSelect = container.querySelector('[name="domainHostname"]');
-  fetch("/api/domains")
-    .then(res => res.ok ? res.json() : { data: [] })
-    .then(({ data }) => {
-      for (const d of data) {
-        const opt = document.createElement("wa-option");
-        opt.value = d.hostname;
-        opt.textContent = d.hostname;
-        domainSelect.appendChild(opt);
-      }
-      if (link?.domainHostname) {
-        const match = domainSelect.querySelector(`wa-option[value="${CSS.escape(link.domainHostname)}"]`);
-        if (match) match.selected = true;
-      }
-    })
-    .catch(() => {});
+  apiFetch("/api/domains").then(result => {
+    if (!result) return;
+    const { data } = result;
+    for (const d of data) {
+      const opt = document.createElement("wa-option");
+      opt.value = d.hostname;
+      opt.textContent = d.hostname;
+      domainSelect.appendChild(opt);
+    }
+    if (link?.domainHostname) {
+      const match = domainSelect.querySelector(`wa-option[value="${CSS.escape(link.domainHostname)}"]`);
+      if (match) match.selected = true;
+    }
+  }).catch(() => {});
 
   // Populate existing targeting rules
   const targetsList = container.querySelector("#targets-list");
@@ -247,74 +246,63 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     }
 
     const submitBtn = form.querySelector('wa-button[type="submit"]');
-    submitBtn.loading = true;
-    submitBtn.disabled = true;
+    await withLoadingBtn(submitBtn, async () => {
+      const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
+      const passwordVal = passwordInput.value;
+      const campaignIdsVal = form.querySelector('[name="campaignIds"]').value || [];
+      const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;
 
-    const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
-    const passwordVal = passwordInput.value;
-    const campaignIdsVal = form.querySelector('[name="campaignIds"]').value || [];
-    const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;
+      const data = {
+        ...(!isEdit && { slug: form.querySelector('[name="slug"]').value.trim() }),
+        destinationUrl: form.querySelector('[name="destinationUrl"]').value.trim(),
+        title: form.querySelector('[name="title"]').value.trim() || null,
+        redirectType: Number(form.querySelector('[name="redirectType"]').value),
+        expiresAt: expiresAtVal ? new Date(expiresAtVal).toISOString() : null,
+        maxClicks: maxClicksVal ? Number(maxClicksVal) : null,
+        isInternal: form.querySelector('[name="isInternal"]').checked,
+        paramForwarding: form.querySelector('[name="paramForwarding"]').checked,
+        campaignIds: Array.isArray(campaignIdsVal) ? campaignIdsVal : campaignIdsVal ? [campaignIdsVal] : [],
+        domainHostname: domainHostnameVal || null,
+        ogTitle: form.querySelector('[name="ogTitle"]').value.trim() || null,
+        ogDescription: form.querySelector('[name="ogDescription"]').value.trim() || null,
+        ogImage: form.querySelector('[name="ogImage"]').value.trim() || null,
+      };
 
-    const data = {
-      ...(!isEdit && { slug: form.querySelector('[name="slug"]').value.trim() }),
-      destinationUrl: form.querySelector('[name="destinationUrl"]').value.trim(),
-      title: form.querySelector('[name="title"]').value.trim() || null,
-      redirectType: Number(form.querySelector('[name="redirectType"]').value),
-      expiresAt: expiresAtVal ? new Date(expiresAtVal).toISOString() : null,
-      maxClicks: maxClicksVal ? Number(maxClicksVal) : null,
-      isInternal: form.querySelector('[name="isInternal"]').checked,
-      paramForwarding: form.querySelector('[name="paramForwarding"]').checked,
-      campaignIds: Array.isArray(campaignIdsVal) ? campaignIdsVal : campaignIdsVal ? [campaignIdsVal] : [],
-      domainHostname: domainHostnameVal || null,
-      ogTitle: form.querySelector('[name="ogTitle"]').value.trim() || null,
-      ogDescription: form.querySelector('[name="ogDescription"]').value.trim() || null,
-      ogImage: form.querySelector('[name="ogImage"]').value.trim() || null,
-    };
-
-    // Include teamId on create if an owner select exists and a team is selected
-    if (!isEdit) {
-      const teamIdVal = form.querySelector('[name="teamId"]')?.value;
-      if (teamIdVal) data.teamId = teamIdVal;
-    }
-
-    // Only send password if touched (or on create if non-empty)
-    if (isEdit) {
-      if (passwordTouched) {
-        data.password = passwordVal || null;
+      // Include teamId on create if an owner select exists and a team is selected
+      if (!isEdit) {
+        const teamIdVal = form.querySelector('[name="teamId"]')?.value;
+        if (teamIdVal) data.teamId = teamIdVal;
       }
-    } else {
-      if (passwordVal) {
-        data.password = passwordVal;
-      }
-    }
 
-    try {
+      // Only send password if touched (or on create if non-empty)
+      if (isEdit) {
+        if (passwordTouched) {
+          data.password = passwordVal || null;
+        }
+      } else {
+        if (passwordVal) {
+          data.password = passwordVal;
+        }
+      }
+
       const url = isEdit ? `/api/links/${link.id}` : "/api/links";
       const method = isEdit ? "PUT" : "POST";
-      const res = await fetch(url, {
+      const result = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
       });
-      const result = await res.json();
-      if (!res.ok) {
-        showToast(result.message || result.error || "Error", "danger");
-        return;
-      }
+      if (!result) return;
 
       // Save targeting rules
       const linkId = result.data.id;
       if (targets.length > 0 || (isEdit && link?.targets?.length)) {
-        try {
-          const targetRes = await fetch(`/api/links/${linkId}/targets`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ targets }),
-          });
-          if (!targetRes.ok) {
-            showToast("Link saved, but targeting rules failed to save", "warning");
-          }
-        } catch {
+        const targetRes = await apiFetch(`/api/links/${linkId}/targets`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ targets }),
+        });
+        if (!targetRes) {
           showToast("Link saved, but targeting rules failed to save", "warning");
         }
       }
@@ -322,11 +310,6 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
       showToast(isEdit ? "Link updated" : "Link created", "success");
       if (onSuccess) onSuccess(result.data);
       else navigate(`/links/${result.data.id}`);
-    } catch (err) {
-      showToast("Network error", "danger");
-    } finally {
-      submitBtn.loading = false;
-      submitBtn.disabled = false;
-    }
+    });
   });
 }

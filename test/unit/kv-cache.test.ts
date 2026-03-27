@@ -1,10 +1,9 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   getCachedRedirect,
   setCachedRedirect,
   deleteCachedRedirect,
-  kvKey,
 } from "../../src/services/kv-cache";
 
 describe("KV cache service", () => {
@@ -91,12 +90,6 @@ describe("KV cache service", () => {
   });
 
   describe("domain-scoped keys", () => {
-    it("kvKey returns hostname:slug for custom domains, bare slug for default", () => {
-      expect(kvKey("my-slug")).toBe("my-slug");
-      expect(kvKey("my-slug", null)).toBe("my-slug");
-      expect(kvKey("my-slug", "brand.co")).toBe("brand.co:my-slug");
-    });
-
     it("stores and retrieves with domain-scoped key", async () => {
       const data = { ...sampleRedirect, domainHostname: "brand.co" };
       await setCachedRedirect(kv, "scoped-slug", data, "brand.co");

@@ -1,9 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
-
-type JsonBody = Record<string, unknown>;
+import { setupAuth, createTestLink, mockExecutionCtx, createTestDomain, type JsonBody } from "../helpers";
 
 async function postBulk(body: JsonBody, headers: Record<string, string>) {
   return app.request("/api/bulk", {
@@ -146,10 +144,7 @@ describe("Bulk Links API", () => {
     });
 
     it("bulk with valid domainHostname succeeds", async () => {
-      // Set up domain_config row
-      await env.DB.prepare(
-        "INSERT OR IGNORE INTO domain_config (hostname, accessMode, updatedAt) VALUES (?, ?, ?)"
-      ).bind("bulk-domain.example.com", "all", Math.floor(Date.now() / 1000)).run();
+      await createTestDomain(env.DB, "bulk-domain.example.com", { accessMode: "all" });
 
       const res = await postBulk({
         links: [
@@ -174,9 +169,7 @@ describe("Bulk Links API", () => {
     });
 
     it("bulk with restricted domain without access returns per-item error", async () => {
-      await env.DB.prepare(
-        "INSERT OR IGNORE INTO domain_config (hostname, accessMode, updatedAt) VALUES (?, ?, ?)"
-      ).bind("bulk-restricted.example.com", "restricted", Math.floor(Date.now() / 1000)).run();
+      await createTestDomain(env.DB, "bulk-restricted.example.com", { accessMode: "restricted" });
 
       const res = await postBulk({
         links: [
@@ -190,9 +183,7 @@ describe("Bulk Links API", () => {
     });
 
     it("multiple items with same denied domain all fail (cached short-circuit)", async () => {
-      await env.DB.prepare(
-        "INSERT OR IGNORE INTO domain_config (hostname, accessMode, updatedAt) VALUES (?, ?, ?)"
-      ).bind("bulk-denied-cache.example.com", "restricted", Math.floor(Date.now() / 1000)).run();
+      await createTestDomain(env.DB, "bulk-denied-cache.example.com", { accessMode: "restricted" });
 
       const res = await postBulk({
         links: [

@@ -1,13 +1,11 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth } from "../helpers";
+import { setupAuth, createTestDomain as sharedCreateTestDomain, mockExecutionCtx, type JsonBody } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-type JsonBody = Record<string, unknown>;
 
 /** Env with ADMIN_EMAILS set so a given email is treated as admin. */
 function adminEnv(email: string) {
@@ -20,15 +18,17 @@ async function api(
   opts: { headers?: Record<string, string>; body?: JsonBody; env?: typeof env } = {}
 ) {
   const e = opts.env ?? env;
-  const init: RequestInit = { method, headers: opts.headers };
+  const init: RequestInit = { method, headers: { ...(opts.headers ?? {}) } };
   if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body);
+    (init.headers as Record<string, string>)["Content-Type"] =
+      (init.headers as Record<string, string>)["Content-Type"] || "application/json";
   }
-  return app.request(path, init, e);
+  return app.request(path, init, e, mockExecutionCtx());
 }
 
 /** Insert a domain_config row directly into D1. */
-async function createTestDomain(
+function createTestDomain(
   hostname: string,
   overrides: Partial<{
     rootRedirect: string | null;
@@ -36,19 +36,7 @@ async function createTestDomain(
     accessMode: string;
   }> = {}
 ) {
-  const rootRedirect = overrides.rootRedirect ?? null;
-  const notFoundRedirect = overrides.notFoundRedirect ?? null;
-  const accessMode = overrides.accessMode ?? "all";
-  const now = Math.floor(Date.now() / 1000);
-
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO domain_config (hostname, rootRedirect, notFoundRedirect, accessMode, updatedAt)
-     VALUES (?, ?, ?, ?, ?)`
-  )
-    .bind(hostname, rootRedirect, notFoundRedirect, accessMode, now)
-    .run();
-
-  return { hostname, rootRedirect, notFoundRedirect, accessMode, updatedAt: now };
+  return sharedCreateTestDomain(env.DB, hostname, overrides);
 }
 
 /** Insert a domain_access row. */
@@ -311,7 +299,7 @@ describe("Domains API", () => {
       const res = await app.request(`/api/domains/${hostname}`, {
         method: "PUT",
         headers: adminHeaders,
-      }, adminEnvObj);
+      }, adminEnvObj, mockExecutionCtx());
       expect(res.status).toBe(400);
     });
 

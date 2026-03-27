@@ -8,10 +8,7 @@
     "strict": true,
     "noEmit": true,
     "skipLibCheck": true,
-    "isolatedModules": true,
-    "paths": {
-      "@/*": ["./src/*"]
-    }
+    "isolatedModules": true
   },
   "include": ["src/**/*.ts", "test/**/*.ts", "worker-configuration.d.ts"],
   "exclude": ["node_modules"]

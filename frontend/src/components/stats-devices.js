@@ -1,4 +1,4 @@
-import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
+import { SKELETON, noData, fetchJSON, cardError } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 
 export async function renderStatsDevices(container, linkId, days = 30) {
@@ -44,6 +44,6 @@ export async function renderStatsDevices(container, linkId, days = 30) {
     makeDoughnut("device-chart", devices);
     container._charts = charts;
   } catch {
-    container.innerHTML = `<wa-card>${noData("Failed to load device data")}</wa-card>`;
+    container.innerHTML = cardError("Failed to load device data");
   }
 }

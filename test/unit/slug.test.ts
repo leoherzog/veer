@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateSlug } from "../../src/services/slug";
-import { RESERVED_SLUGS } from "../../src/lib/constants";
+import { validateSlug, RESERVED_SLUGS } from "../../src/services/slug";
 
 describe("validateSlug", () => {
   describe("valid slugs", () => {

@@ -1,20 +1,10 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, mockExecutionCtx } from "../helpers";
+import { setupAuth, apiRequest, type JsonBody } from "../helpers";
 
-type JsonBody = Record<string, unknown>;
-
-async function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string>; body?: JsonBody } = {}
-) {
-  const init: RequestInit = { method, headers: opts.headers };
-  if (opts.body) {
-    init.body = JSON.stringify(opts.body);
-  }
-  return app.request(path, init, env, mockExecutionCtx());
+function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
+  return apiRequest(app, method, path, opts);
 }
 
 /** Create an API key via the API, returns { id, key, prefix }. */

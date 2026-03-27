@@ -1,30 +1,14 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-type JsonBody = Record<string, unknown>;
-
-async function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string>; body?: JsonBody } = {}
-) {
-  const init: RequestInit = { method, headers: opts.headers };
-  if (opts.body) {
-    init.body = JSON.stringify(opts.body);
-  }
-  return app.request(path, init, env, mockExecutionCtx());
-}
-
-async function insertClickStat(linkId: string, clicks: number, date = "2026-03-17") {
-  await env.DB.prepare(
-    "INSERT INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, ?)"
-  ).bind(linkId, date, clicks, clicks).run();
+function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
+  return apiRequest(app, method, path, opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -149,8 +133,8 @@ describe("Reports API", () => {
         userId,
         title: "Public Test Link",
       });
-      await insertClickStat(link.id, 10, "2026-03-20");
-      await insertClickStat(link.id, 5, "2026-03-21");
+      await insertClickStat(env.DB, link.id, 10, "2026-03-20");
+      await insertClickStat(env.DB, link.id, 5, "2026-03-21");
 
       const createRes = await api("POST", `/api/reports/${link.id}`, { headers });
       const createJson = await createRes.json() as { data: { token: string } };
@@ -184,7 +168,7 @@ describe("Reports API", () => {
         userId,
         title: "Deactivated Link",
       });
-      await insertClickStat(link.id, 7, "2026-03-22");
+      await insertClickStat(env.DB, link.id, 7, "2026-03-22");
 
       const createRes = await api("POST", `/api/reports/${link.id}`, { headers });
       expect(createRes.status).toBe(201);
@@ -226,7 +210,7 @@ describe("Reports API", () => {
         slug: `rpt-rl-${crypto.randomUUID().slice(0, 8)}`,
         userId,
       });
-      await insertClickStat(link.id, 1, "2026-03-22");
+      await insertClickStat(env.DB, link.id, 1, "2026-03-22");
       const createRes = await api("POST", `/api/reports/${link.id}`, { headers });
       const createJson = await createRes.json() as { data: { token: string } };
       const token = createJson.data.token;
@@ -259,7 +243,7 @@ describe("Reports API", () => {
         slug: `rpt-noip-${crypto.randomUUID().slice(0, 8)}`,
         userId,
       });
-      await insertClickStat(link.id, 1, "2026-03-22");
+      await insertClickStat(env.DB, link.id, 1, "2026-03-22");
       const createRes = await api("POST", `/api/reports/${link.id}`, { headers });
       const createJson = await createRes.json() as { data: { token: string } };
       const token = createJson.data.token;

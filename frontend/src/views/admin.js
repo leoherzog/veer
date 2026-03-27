@@ -1,5 +1,6 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { apiFetch, withLoadingBtn, bindSearchInput } from "../lib/ui.js";
 
 const IMPERSONATION_KEY = "veer_impersonating_from";
 
@@ -26,24 +27,12 @@ export function bindImpersonationBanner() {
   const btn = document.querySelector("#stop-impersonate-btn");
   if (btn) {
     btn.addEventListener("click", async () => {
-      btn.loading = true;
-      btn.disabled = true;
-      try {
-        const res = await fetch("/api/admin/stop-impersonate", {
-          method: "POST",
-        });
-        if (res.ok) {
-          sessionStorage.removeItem(IMPERSONATION_KEY);
-          location.reload();
-        } else {
-          showToast("Failed to stop impersonation", "danger");
-        }
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        btn.loading = false;
-        btn.disabled = false;
-      }
+      await withLoadingBtn(btn, async () => {
+        const res = await apiFetch("/api/admin/stop-impersonate", { method: "POST" });
+        if (!res) return;
+        sessionStorage.removeItem(IMPERSONATION_KEY);
+        location.reload();
+      });
     });
   }
 }
@@ -106,9 +95,9 @@ export async function renderAdmin(container) {
     if (usersSearch) params.set("q", usersSearch);
 
     try {
-      const res = await fetch(`/api/admin/users?${params}`);
-      if (!res.ok) { usersContainer.innerHTML = `<wa-callout variant="danger">Failed to load users.</wa-callout>`; return; }
-      const { data: users, pagination } = await res.json();
+      const result = await apiFetch(`/api/admin/users?${params}`);
+      if (!result) { usersContainer.innerHTML = `<wa-callout variant="danger">Failed to load users.</wa-callout>`; return; }
+      const { data: users, pagination } = result;
 
       if (!users.length) {
         usersContainer.innerHTML = `<p class="wa-color-text-quiet centered-state-sm">No users found.</p>`;
@@ -182,24 +171,12 @@ export async function renderAdmin(container) {
       // Impersonate
       usersContainer.querySelectorAll(".admin-impersonate-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {
-          btn.loading = true;
-          btn.disabled = true;
-          try {
-            const res = await fetch(`/api/admin/impersonate/${encodeURIComponent(btn.dataset.userId)}`, { method: "POST" });
-            if (!res.ok) {
-              const result = await res.json().catch(() => ({}));
-              showToast(result.message || result.error || "Failed to impersonate", "danger");
-              return;
-            }
-            const result = await res.json();
+          await withLoadingBtn(btn, async () => {
+            const result = await apiFetch(`/api/admin/impersonate/${encodeURIComponent(btn.dataset.userId)}`, { method: "POST" });
+            if (!result) return;
             sessionStorage.setItem(IMPERSONATION_KEY, result.adminUserId);
             location.href = "/links";
-          } catch {
-            showToast("Network error", "danger");
-          } finally {
-            btn.loading = false;
-            btn.disabled = false;
-          }
+          });
         });
       });
     } catch {
@@ -209,17 +186,8 @@ export async function renderAdmin(container) {
 
   // User search
   const searchInput = container.querySelector("#admin-user-search");
-  let debounceTimer;
-  searchInput.addEventListener("input", (e) => {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      usersSearch = e.target.value;
-      usersPage = 1;
-      loadUsers();
-    }, 300);
-  });
-  searchInput.addEventListener("wa-clear", () => {
-    usersSearch = "";
+  bindSearchInput(searchInput, (q) => {
+    usersSearch = q;
     usersPage = 1;
     loadUsers();
   });
@@ -232,28 +200,17 @@ export async function renderAdmin(container) {
     const maxLinks = maxLinksInput.value === "" ? null : parseInt(maxLinksInput.value, 10);
 
     const confirmBtn = container.querySelector("#confirm-edit-user");
-    confirmBtn.loading = true;
-    confirmBtn.disabled = true;
-    try {
-      const res = await fetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
+    await withLoadingBtn(confirmBtn, async () => {
+      const res = await apiFetch(`/api/admin/users/${encodeURIComponent(userId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ maxLinks }),
       });
-      if (!res.ok) {
-        const result = await res.json().catch(() => ({}));
-        showToast(result.message || result.error || "Failed to update user", "danger");
-        return;
-      }
+      if (!res) return;
       editDialog.open = false;
       showToast("User updated", "success");
       loadUsers();
-    } catch {
-      showToast("Network error", "danger");
-    } finally {
-      confirmBtn.loading = false;
-      confirmBtn.disabled = false;
-    }
+    });
   });
 
   // Load users immediately
@@ -269,9 +226,9 @@ export async function renderAdmin(container) {
 
     const params = new URLSearchParams({ page: teamsPage, limit: 20 });
     try {
-      const res = await fetch(`/api/admin/teams?${params}`);
-      if (!res.ok) { teamsContainer.innerHTML = `<wa-callout variant="danger">Failed to load teams.</wa-callout>`; return; }
-      const { data: teams, pagination } = await res.json();
+      const result = await apiFetch(`/api/admin/teams?${params}`);
+      if (!result) { teamsContainer.innerHTML = `<wa-callout variant="danger">Failed to load teams.</wa-callout>`; return; }
+      const { data: teams, pagination } = result;
 
       if (!teams.length) {
         teamsContainer.innerHTML = `<p class="wa-color-text-quiet centered-state-sm">No teams found.</p>`;
@@ -323,23 +280,12 @@ export async function renderAdmin(container) {
       teamsContainer.querySelectorAll(".admin-delete-team-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {
           if (!confirm(`Delete team "${btn.dataset.name}"? This cannot be undone.`)) return;
-          btn.loading = true;
-          btn.disabled = true;
-          try {
-            const res = await fetch(`/api/admin/teams/${encodeURIComponent(btn.dataset.teamId)}`, { method: "DELETE" });
-            if (!res.ok) {
-              const result = await res.json().catch(() => ({}));
-              showToast(result.message || result.error || "Failed to delete team", "danger");
-              return;
-            }
+          await withLoadingBtn(btn, async () => {
+            const res = await apiFetch(`/api/admin/teams/${encodeURIComponent(btn.dataset.teamId)}`, { method: "DELETE" });
+            if (!res) return;
             showToast("Team deleted", "success");
             loadAdminTeams();
-          } catch {
-            showToast("Network error", "danger");
-          } finally {
-            btn.loading = false;
-            btn.disabled = false;
-          }
+          });
         });
       });
     } catch {

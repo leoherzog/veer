@@ -1,4 +1,4 @@
-import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
+import { SKELETON, noData, fetchJSON, cardError } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 
 export async function renderStatsGeo(container, linkId, days = 30) {
@@ -43,6 +43,6 @@ export async function renderStatsGeo(container, linkId, days = 30) {
     makeBar("geo-cities", cities, "name");
     container._charts = charts;
   } catch {
-    container.innerHTML = `<wa-card>${noData("Failed to load geographic data")}</wa-card>`;
+    container.innerHTML = cardError("Failed to load geographic data");
   }
 }

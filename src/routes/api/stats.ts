@@ -4,9 +4,10 @@ import { eq, and, gte } from "drizzle-orm";
 import { getDb } from "../../db";
 import { links, linkStats } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
+import { requireTeamMember } from "../../lib/team";
 import { queryAnalyticsEngine } from "../../services/analytics";
 import { parseUserAgent } from "../../services/useragent";
-import { formatDate, MONTHS } from "../../lib/date";
+import { formatDate, formatHour, formatWeek } from "../../lib/date";
 import type { AppEnv } from "../../types";
 
 type StatsEnv = AppEnv & { Variables: AppEnv["Variables"] & { aeAvailable: boolean } };
@@ -26,23 +27,21 @@ statsRoutes.use("/:linkId/*", async (c, next) => {
   const linkId = c.req.param("linkId");
   if (!LINK_ID_RE.test(linkId)) throw badRequest("Invalid link ID");
   const db = getDb(c.env.DB);
-  const link = await db.query.links.findFirst({ where: eq(links.id, linkId) });
-  if (!link || link.userId !== c.var.user.id) throw notFound("Link not found");
+  const link = await db.select({ userId: links.userId, teamId: links.teamId }).from(links).where(eq(links.id, linkId)).get();
+  if (!link) throw notFound("Link not found");
+  const userId = c.var.user!.id;
+  if (link.userId !== userId) {
+    // Allow team members to view stats for team-owned links
+    if (!link.teamId) throw notFound("Link not found");
+    try {
+      await requireTeamMember(db, link.teamId, userId);
+    } catch {
+      throw notFound("Link not found");
+    }
+  }
   c.set("aeAvailable", !!(c.env.CF_ACCOUNT_ID && c.env.CF_API_TOKEN));
   await next();
 });
-
-function formatHour(iso: string): string {
-  const d = new Date(iso);
-  const hh = String(d.getUTCHours()).padStart(2, "0");
-  const mm = String(d.getUTCMinutes()).padStart(2, "0");
-  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${hh}:${mm}`;
-}
-
-function formatWeek(iso: string): string {
-  const d = new Date(iso);
-  return `Week of ${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
-}
 
 function logAEError(endpoint: string, e: unknown): void {
   console.error(JSON.stringify({ message: "AE query failed", endpoint, error: e instanceof Error ? e.message : String(e) }));

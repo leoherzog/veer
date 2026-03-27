@@ -6,7 +6,7 @@ function getThemeColors() {
   const isDark = document.documentElement.classList.contains("wa-dark");
   return {
     text: style.getPropertyValue("--wa-color-text-normal").trim() || (isDark ? "#e5e5e5" : "#333"),
-    subdued: style.getPropertyValue("--wa-color-wa-color-text-quiet").trim() || (isDark ? "#999" : "#666"),
+    subdued: style.getPropertyValue("--wa-color-text-quiet").trim() || (isDark ? "#999" : "#666"),
     border: style.getPropertyValue("--wa-color-neutral-border-normal").trim() || (isDark ? "#444" : "#ddd"),
     brand: style.getPropertyValue("--wa-color-brand-fill-loud").trim() || "#7c3aed",
   };

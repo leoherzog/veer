@@ -23,7 +23,7 @@ export interface CachedRedirect {
 }
 
 /** Build a KV key: `hostname:slug` for custom domains, bare `slug` for default. */
-export function kvKey(slug: string, hostname?: string | null): string {
+function kvKey(slug: string, hostname?: string | null): string {
   return hostname ? `${hostname}:${slug}` : slug;
 }
 

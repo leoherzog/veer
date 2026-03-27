@@ -2,11 +2,13 @@ import { Hono, type Context } from "hono";
 import { eq, desc, asc, sql, and, or, like, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
-import { links, linkStats, linkTargets, linkCampaigns, campaigns, domainConfig, domainAccess, teamMembers, teams, user as userTable } from "../../db/schema";
+import { links, linkStats, linkTargets, linkCampaigns, campaigns, teamMembers, teams, user as userTable } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect, deleteCachedRedirect } from "../../services/kv-cache";
 import { badRequest, notFound, conflict } from "../../lib/errors";
-import { parseJsonBody } from "../../lib/request";
+import { requireTeamMember } from "../../lib/team";
+import { validateHttpUrl, validateDomainAccess } from "../../lib/validators";
+import { parseJsonBody, parsePagination, stripPassword } from "../../lib/request";
 import { hashPassword, verifyPassword } from "../../services/password";
 import type { AppEnv } from "../../types";
 import type { CachedRedirect, CachedTarget } from "../../services/kv-cache";
@@ -55,24 +57,6 @@ async function buildCachedRedirect(
   };
 }
 
-/** Validate that a URL is parseable and uses http(s) scheme. */
-function validateHttpUrl(url: string, fieldName: string): void {
-  if (!url) throw badRequest(`${fieldName} is required`);
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw badRequest(`Invalid ${fieldName}`);
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw badRequest(`${fieldName} must use http or https`);
-  }
-}
-
-function validateDestinationUrl(url: string): void {
-  validateHttpUrl(url, "destinationUrl");
-}
-
 function parseExpiresAt(value: string | number): Date {
   const d = typeof value === "number"
     ? new Date(value < 1e12 ? value * 1000 : value)
@@ -88,30 +72,7 @@ function parseMaxClicks(value: number): number {
   return mc;
 }
 
-function validateOgImageUrl(url: string): string {
-  validateHttpUrl(url, "ogImage");
-  return url;
-}
-
 /** Strip the password hash from a link record, replacing with hasPassword boolean. */
-function stripPassword<T extends { password?: string | null }>(link: T): Omit<T, "password"> & { hasPassword: boolean } {
-  const { password, ...rest } = link;
-  return { ...rest, hasPassword: !!password };
-}
-
-/** Validate domain access: checks domain exists in domain_config AND user has access. */
-async function validateDomainAccess(db: Database, hostname: string, userEmail: string, isAdmin: boolean): Promise<void> {
-  const domain = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
-  if (!domain) throw badRequest("Domain not found");
-  if (isAdmin) return;
-  if (domain.accessMode === "all") return;
-  // Restricted mode: check domain_access table
-  const access = await db.select().from(domainAccess)
-    .where(and(eq(domainAccess.hostname, hostname), eq(domainAccess.email, userEmail.toLowerCase())))
-    .get();
-  if (!access) throw badRequest("You do not have access to this domain");
-}
-
 /** Check whether a user can access a link: either they own it, or they're a member of the link's team. */
 async function canAccessLink(db: Database, link: { userId: string; teamId: string | null }, userId: string): Promise<boolean> {
   if (link.userId === userId) return true;
@@ -127,22 +88,16 @@ const linkRoutes = new Hono<AppEnv>();
 
 // List user's links (or team links if teamId query param provided)
 linkRoutes.get("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
-  const page = Math.max(1, Number(c.req.query("page")) || 1);
-  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit")) || 20));
+  const { page, limit, offset } = parsePagination(c);
   const q = c.req.query("q")?.trim();
   const teamId = c.req.query("teamId")?.trim() || null;
   const scope = c.req.query("scope")?.trim() || null;
-  const offset = (page - 1) * limit;
 
   // If teamId provided, validate membership
   if (teamId) {
-    const member = await db.select({ role: teamMembers.role })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id)))
-      .get();
-    if (!member) throw notFound("Team not found");
+    await requireTeamMember(db, teamId, user.id);
   }
 
   const sortParam = c.req.query("sort");
@@ -206,7 +161,7 @@ linkRoutes.get("/", async (c) => {
 
 // Create link
 linkRoutes.post("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   const body = await parseJsonBody<{
@@ -228,15 +183,11 @@ linkRoutes.post("/", async (c) => {
     teamId?: string | null;
   }>(c);
 
-  validateDestinationUrl(body.destinationUrl);
+  validateHttpUrl(body.destinationUrl, "destinationUrl");
 
   // Validate team membership if teamId provided
   if (body.teamId) {
-    const member = await db.select({ role: teamMembers.role })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.teamId, body.teamId), eq(teamMembers.userId, user.id)))
-      .get();
-    if (!member) throw badRequest("Team not found or you are not a member");
+    await requireTeamMember(db, body.teamId, user.id);
   }
 
   // Enforce maxLinks quota (soft cap — concurrent requests may slightly exceed the limit.
@@ -285,7 +236,8 @@ linkRoutes.post("/", async (c) => {
   const ogDescription = body.ogDescription || null;
   let ogImage: string | null = null;
   if (body.ogImage) {
-    ogImage = validateOgImageUrl(body.ogImage);
+    validateHttpUrl(body.ogImage, "ogImage");
+    ogImage = body.ogImage;
   }
 
   const id = crypto.randomUUID();
@@ -378,7 +330,7 @@ linkRoutes.post("/", async (c) => {
 
 // Get link by ID (with total clicks)
 linkRoutes.get("/:id", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -412,7 +364,7 @@ linkRoutes.get("/:id", async (c) => {
 
 // Update link
 linkRoutes.put("/:id", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -456,7 +408,7 @@ linkRoutes.put("/:id", async (c) => {
   }
 
   if (body.destinationUrl !== undefined) {
-    validateDestinationUrl(body.destinationUrl);
+    validateHttpUrl(body.destinationUrl, "destinationUrl");
     updates.destinationUrl = body.destinationUrl;
   }
 
@@ -497,7 +449,10 @@ linkRoutes.put("/:id", async (c) => {
     updates.ogDescription = body.ogDescription || null;
   }
   if (body.ogImage !== undefined) {
-    updates.ogImage = (body.ogImage === null || body.ogImage === "") ? null : validateOgImageUrl(body.ogImage);
+    if (body.ogImage !== null && body.ogImage !== "") {
+      validateHttpUrl(body.ogImage, "ogImage");
+    }
+    updates.ogImage = (body.ogImage === null || body.ogImage === "") ? null : body.ogImage;
   }
 
   if (body.paramForwarding !== undefined) {
@@ -564,7 +519,7 @@ linkRoutes.put("/:id", async (c) => {
 
 // Toggle isActive
 linkRoutes.patch("/:id/active", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const { id } = c.req.param();
 
@@ -595,7 +550,7 @@ linkRoutes.patch("/:id/active", async (c) => {
 
 // Delete link
 linkRoutes.delete("/:id", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -610,7 +565,7 @@ linkRoutes.delete("/:id", async (c) => {
 
 // GET /api/links/:id/targets - list targeting rules
 linkRoutes.get("/:id/targets", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -623,7 +578,7 @@ linkRoutes.get("/:id/targets", async (c) => {
 
 // PUT /api/links/:id/targets - replace all targeting rules
 linkRoutes.put("/:id/targets", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -659,7 +614,7 @@ linkRoutes.put("/:id/targets", async (c) => {
       }
       t.matchValue = device;
     }
-    validateDestinationUrl(t.destinationUrl);
+    validateHttpUrl(t.destinationUrl, "destinationUrl");
   }
 
   // Replace all targets atomically via db.batch()

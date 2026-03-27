@@ -39,6 +39,14 @@ app.use("*", async (c, next) => {
   c.header("X-Content-Type-Options", "nosniff");
   c.header("X-Frame-Options", "DENY");
   c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  c.header("Content-Security-Policy", [
+    "default-src 'self'",
+    "script-src 'self' 'sha256-6lEELWNMgHrMCgR7XoJHO/mczPvz9siUa+la3S+ZogI=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='",
+    "style-src 'self' 'unsafe-inline' https://fonts.bunny.net",
+    "img-src 'self' data: https:",
+    "connect-src 'self' https://ka-f.fontawesome.com",
+    "font-src 'self' https://cdn.jsdelivr.net https://fonts.bunny.net",
+  ].join("; "));
 });
 
 // CORS for API routes
@@ -62,7 +70,6 @@ app.route("/api/admin", adminRoutes);
 
 // Auth middleware for protected API routes (excludes /api/auth/*)
 app.use("/api/me", requireAuth);
-app.use("/api/me/*", requireAuth);
 app.use("/api/links", requireAuthOrApiKey, rateLimitApiKey);
 app.use("/api/links/*", requireAuthOrApiKey, rateLimitApiKey);
 app.use("/api/stats/*", requireAuthOrApiKey, rateLimitApiKey);
@@ -86,7 +93,7 @@ app.put("/api/domains/:hostname/access", requireAdmin);
 
 // Current user profile
 app.get("/api/me", async (c) => {
-  return c.json({ data: c.var.user });
+  return c.json({ data: c.var.user! });
 });
 
 // Protected API routes
@@ -98,19 +105,27 @@ app.route("/api/keys", keyRoutes);
 app.route("/api/bulk", bulkRoutes);
 app.route("/api/reports", reportRoutes);
 
-// Public report viewer API (no auth, IP rate limited)
+// Public report viewer API (no auth, IP rate limited — 30 req/min per IP)
 app.get("/api/public-report/:token", async (c, next) => {
   const ip = c.req.header("cf-connecting-ip") || "unknown";
   const windowEpoch = Math.floor(Date.now() / 1000 / 60);
   const rlKey = `rl:pub:${ip}:${windowEpoch}`;
+
   const stored = await c.env.KV.get(rlKey);
   const count = stored ? parseInt(stored, 10) : 0;
   if (count >= 30) {
-    return c.json({ error: "Rate limit exceeded" }, 429);
+    const secondsRemaining = 60 - (Math.floor(Date.now() / 1000) % 60);
+    return Response.json(
+      { error: "Rate limit exceeded", retryAfter: secondsRemaining },
+      { status: 429, headers: { "Retry-After": String(secondsRemaining) } }
+    );
   }
+
+  // Increment asynchronously — non-blocking, advisory enforcement
   c.executionCtx.waitUntil(
     c.env.KV.put(rlKey, String(count + 1), stored === null ? { expirationTtl: 120 } : {})
   );
+
   await next();
 }, publicReportRoute);
 

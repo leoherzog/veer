@@ -4,6 +4,7 @@ import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
+import { SPINNER, apiFetch, withLoadingBtn, shortUrl } from "../lib/ui.js";
 
 function buildBadges(link) {
   const badges = [];
@@ -33,8 +34,6 @@ function buildBadges(link) {
     for (const c of link.campaigns) {
       badges.push(`<wa-badge variant="brand" pill>${escapeHtml(c.name)}</wa-badge>`);
     }
-  } else if (link.campaignName) {
-    badges.push(`<wa-badge variant="brand" pill>${escapeHtml(link.campaignName)}</wa-badge>`);
   }
 
   if (link.domainHostname) {
@@ -118,43 +117,26 @@ function buildPublicReportCard(report) {
 }
 
 export async function renderLinkDetail(container, { id }) {
-  container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = SPINNER;
 
-  let link;
+  const linkResult = await apiFetch(`/api/links/${id}`);
+  if (!linkResult) return;
+  const { data: link } = linkResult;
+
   let targets = [];
   let report = null;
-  try {
-    const [linkRes, targetsRes, reportRes] = await Promise.all([
-      fetch(`/api/links/${id}`),
-      fetch(`/api/links/${id}/targets`).catch(() => null),
-      fetch(`/api/reports/${id}`, { method: 'POST' }).catch(() => null),
-    ]);
-    if (linkRes.status === 401) { window.location.href = "/login"; return; }
-    if (!linkRes.ok) {
-      container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><p>Link not found.</p></div>`;
-      return;
-    }
-    ({ data: link } = await linkRes.json());
-    if (targetsRes && targetsRes.ok) {
-      ({ data: targets } = await targetsRes.json());
-    }
-    if (reportRes && reportRes.ok) {
-      ({ data: report } = await reportRes.json());
-    }
-  } catch {
-    showToast("Failed to load link details", "danger");
-    container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><p>Failed to load link. Please try again.</p></div>`;
-    return;
-  }
+  const [targetsResult, reportResult] = await Promise.all([
+    apiFetch(`/api/links/${id}/targets`).catch(() => null),
+    apiFetch(`/api/reports/${id}`, { method: "POST" }).catch(() => null),
+  ]);
+  if (targetsResult?.data) targets = targetsResult.data;
+  if (reportResult?.data) report = reportResult.data;
 
   // Attach targets to link for edit form
   link.targets = targets;
 
   // Use domainHostname from API response (returned by GET /api/links/:id)
-  const domainHostname = link.domainHostname;
-  const shortUrl = domainHostname
-    ? `https://${domainHostname}/${link.slug}`
-    : `${location.origin}/${link.slug}`;
+  const linkShortUrl = shortUrl(link);
   const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
   const badges = buildBadges(link);
   const maxClicksInfo = link.maxClicks != null
@@ -178,12 +160,12 @@ export async function renderLinkDetail(container, { id }) {
       </div>
 
       <wa-card>
-        <div class="wa-flank:end wa-gap-l wa-align-items-start">
+        <div class="wa-flank wa-gap-l wa-align-items-start">
           <div class="wa-stack wa-gap-s">
             <div class="wa-cluster wa-gap-2xs">
               <strong>Short URL:</strong>
-              <a href="${escapeAttr(shortUrl)}" target="_blank" rel="noopener">${escapeHtml(shortUrl)}</a>
-              <wa-copy-button value="${escapeAttr(shortUrl)}"></wa-copy-button>
+              <a href="${escapeAttr(linkShortUrl)}" target="_blank" rel="noopener">${escapeHtml(linkShortUrl)}</a>
+              <wa-copy-button value="${escapeAttr(linkShortUrl)}"></wa-copy-button>
             </div>
             <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
             <div><strong>Lifetime Clicks:</strong> ${link.totalClicks}</div>
@@ -216,22 +198,24 @@ export async function renderLinkDetail(container, { id }) {
     </div>
   `;
 
-  renderQrCode(container.querySelector("#qr-container"), shortUrl);
+  renderQrCode(container.querySelector("#qr-container"), linkShortUrl);
 
   const reportToggle = container.querySelector("#report-toggle");
   if (reportToggle) {
     reportToggle.addEventListener("change", async (e) => {
       const isEnabled = e.target.checked;
-      try {
-        const res = await fetch(`/api/reports/${id}`, { method: "PUT" });
-        if (!res.ok) throw new Error("Failed");
-        const containerDiv = container.querySelector("#report-link-container");
-        if (containerDiv) {
-          containerDiv.style.display = isEnabled ? "flex" : "none";
-        }
-      } catch {
+      const result = await apiFetch(`/api/reports/${id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isEnabled }),
+      });
+      if (!result) {
         e.target.checked = !isEnabled;
-        showToast("Failed to toggle report", "danger");
+        return;
+      }
+      const containerDiv = container.querySelector("#report-link-container");
+      if (containerDiv) {
+        containerDiv.style.display = isEnabled ? "flex" : "none";
       }
     });
   }
@@ -259,25 +243,15 @@ export async function renderLinkDetail(container, { id }) {
     deleteLinkDialog.open = false;
   });
 
-  container.querySelector("#delete-link-confirm-btn").addEventListener("click", async () => {
-    const confirmBtn = container.querySelector("#delete-link-confirm-btn");
-    confirmBtn.loading = true;
-    confirmBtn.disabled = true;
-    try {
-      const delRes = await fetch(`/api/links/${id}`, { method: "DELETE" });
-      if (!delRes.ok) {
-        showToast("Failed to delete link", "danger");
-        return;
-      }
+  container.querySelector("#delete-link-confirm-btn").addEventListener("click", async (e) => {
+    const confirmBtn = e.currentTarget;
+    await withLoadingBtn(confirmBtn, async () => {
+      const delRes = await apiFetch(`/api/links/${id}`, { method: "DELETE" });
+      if (!delRes) return;
       deleteLinkDialog.open = false;
       showToast("Link deleted", "success");
       navigate("/links");
-    } catch {
-      showToast("Network error — could not delete link", "danger");
-    } finally {
-      confirmBtn.loading = false;
-      confirmBtn.disabled = false;
-    }
+    });
   });
 
   // Render analytics charts (only if link has clicks)

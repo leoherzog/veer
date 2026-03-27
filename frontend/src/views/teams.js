@@ -1,20 +1,15 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { SPINNER, apiFetch, withLoadingBtn } from "../lib/ui.js";
 
 export async function renderTeamsPanel(container, { teams = null, currentUser = null, onTeamSelect, onTeamsChanged } = {}) {
-  container.innerHTML = `<div class="wa-stack wa-align-items-center centered-state"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = SPINNER;
 
   if (teams === null) {
-    try {
-      const res = await fetch("/api/teams");
-      if (res.status === 401) { window.location.href = "/login"; return; }
-      if (!res.ok) { showToast("Failed to load teams", "danger"); return; }
-      ({ data: teams } = await res.json());
-    } catch {
-      showToast("Failed to load teams", "danger");
-      return;
-    }
+    const result = await apiFetch("/api/teams");
+    if (!result) return;
+    ({ data: teams } = result);
   }
 
   container.innerHTML = `
@@ -61,9 +56,7 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
       <wa-dialog id="create-team-dialog" label="Create Team">
         <div class="wa-stack wa-gap-m">
           <wa-input id="team-name-input" label="Team Name" placeholder="My Team" required></wa-input>
-          <wa-input id="team-slug-input" label="Team Slug" placeholder="my-team" required>
-            <span slot="hint">Used in URLs. Lowercase letters, numbers, and hyphens only.</span>
-          </wa-input>
+          <wa-input id="team-slug-input" label="Team Slug" placeholder="my-team" required hint="Used in URLs. Lowercase letters, numbers, and hyphens only."></wa-input>
         </div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" id="confirm-create-team">Create</wa-button>
@@ -74,11 +67,7 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
   // Navigate to team detail on card click
   container.querySelectorAll(".team-card").forEach((card) => {
     card.addEventListener("click", () => {
-      if (onTeamSelect) {
-        onTeamSelect(card.dataset.id);
-      } else {
-        navigate(`/teams/${card.dataset.id}`);
-      }
+      onTeamSelect(card.dataset.id);
     });
   });
 
@@ -102,19 +91,13 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
     const slug = slugInput.value.trim();
     if (!name || !slug) { showToast("Name and slug are required", "warning"); return; }
 
-    confirmBtn.loading = true;
-    confirmBtn.disabled = true;
-    try {
-      const res = await fetch("/api/teams", {
+    await withLoadingBtn(confirmBtn, async () => {
+      const result = await apiFetch("/api/teams", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name, slug }),
       });
-      const result = await res.json();
-      if (!res.ok) {
-        showToast(result.message || result.error || "Failed to create team", "danger");
-        return;
-      }
+      if (!result) return;
       dialog.open = false;
       showToast("Team created", "success");
       onTeamsChanged?.();
@@ -123,18 +106,6 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
       } else {
         navigate(`/teams/${result.data.id}`);
       }
-    } catch {
-      showToast("Network error", "danger");
-    } finally {
-      confirmBtn.loading = false;
-      confirmBtn.disabled = false;
-    }
-  });
-}
-
-// Backward-compat wrapper
-export async function renderTeams(container) {
-  return renderTeamsPanel(container, {
-    onTeamSelect: (id) => navigate(`/teams/${id}`),
+    });
   });
 }

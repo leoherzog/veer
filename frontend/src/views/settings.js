@@ -1,6 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { authClient } from "../auth-client.js";
+import { SPINNER, apiFetch, withLoadingBtn } from "../lib/ui.js";
 
 /* ── API Keys helpers ─────────────────────────────────────────────── */
 
@@ -95,24 +96,13 @@ function bindDeleteKeyDialog(container) {
     cancelBtn.addEventListener("click", () => { dialog.open = false; });
     confirmBtn.addEventListener("click", async () => {
       const keyId = dialog.dataset.keyId;
-      confirmBtn.loading = true;
-      confirmBtn.disabled = true;
-      try {
-        const res = await fetch(`/api/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
-        if (res.ok || res.status === 204) {
-          showToast("API key deleted", "success");
-          dialog.open = false;
-          renderSettings(container);
-        } else {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.message || result.error || "Failed to delete key", "danger");
-        }
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        confirmBtn.loading = false;
-        confirmBtn.disabled = false;
-      }
+      await withLoadingBtn(confirmBtn, async () => {
+        const result = await apiFetch(`/api/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
+        if (!result) return;
+        showToast("API key deleted", "success");
+        dialog.open = false;
+        renderSettings(container);
+      });
     });
   }
 }
@@ -199,28 +189,24 @@ function bindPasskeyRegister(container) {
     const name = nameInput.value.trim();
     if (!name) { showToast("Name is required", "warning"); return; }
 
-    submitBtn.loading = true;
-    submitBtn.disabled = true;
-
-    try {
-      const result = await authClient.passkey.addPasskey({ name });
-      if (result.error) {
-        showToast(result.error.message || "Failed to register passkey", "danger");
-        return;
+    await withLoadingBtn(submitBtn, async () => {
+      try {
+        const result = await authClient.passkey.addPasskey({ name });
+        if (result.error) {
+          showToast(result.error.message || "Failed to register passkey", "danger");
+          return;
+        }
+        showToast("Passkey registered", "success");
+        renderSettings(container);
+      } catch (err) {
+        // User may have cancelled the WebAuthn prompt
+        if (err?.name === "NotAllowedError") {
+          showToast("Passkey registration cancelled", "warning");
+        } else {
+          showToast("Failed to register passkey", "danger");
+        }
       }
-      showToast("Passkey registered", "success");
-      renderSettings(container);
-    } catch (err) {
-      // User may have cancelled the WebAuthn prompt
-      if (err?.name === "NotAllowedError") {
-        showToast("Passkey registration cancelled", "warning");
-      } else {
-        showToast("Failed to register passkey", "danger");
-      }
-    } finally {
-      submitBtn.loading = false;
-      submitBtn.disabled = false;
-    }
+    });
   });
 }
 
@@ -243,28 +229,20 @@ function bindPasskeyDelete(container) {
   cancelBtn.addEventListener("click", () => { dialog.open = false; });
   confirmBtn.addEventListener("click", async () => {
     const passkeyId = dialog.dataset.passkeyId;
-    confirmBtn.loading = true;
-    confirmBtn.disabled = true;
-    try {
-      const res = await fetch("/api/auth/passkey/delete-passkey", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id: passkeyId }),
-      });
-      if (res.ok) {
-        showToast("Passkey deleted", "success");
-        dialog.open = false;
-        renderSettings(container);
-      } else {
-        const result = await res.json().catch(() => ({}));
-        showToast(result.message || result.error || "Failed to delete passkey", "danger");
+    await withLoadingBtn(confirmBtn, async () => {
+      try {
+        const result = await authClient.passkey.deletePasskey({ id: passkeyId });
+        if (result?.error) {
+          showToast(result.error.message || "Failed to delete passkey", "danger");
+        } else {
+          showToast("Passkey deleted", "success");
+          dialog.open = false;
+          renderSettings(container);
+        }
+      } catch {
+        showToast("Network error", "danger");
       }
-    } catch {
-      showToast("Network error", "danger");
-    } finally {
-      confirmBtn.loading = false;
-      confirmBtn.disabled = false;
-    }
+    });
   });
 }
 
@@ -307,7 +285,7 @@ function renderEditRow(domain) {
             </wa-select>
           </div>
           <div class="access-emails-section" style="display:${domain.accessMode === "restricted" ? "block" : "none"};">
-            <wa-textarea name="accessEmails" label="Allowed Emails (one per line)" rows="3" placeholder="user@example.com" value="${escapeAttr((domain.accessEmails || []).join("\n"))}"></wa-textarea>
+            <wa-textarea name="accessEmails" label="Allowed Emails (one per line)" rows="3" placeholder="user@example.com"></wa-textarea>
           </div>
           <div class="wa-cluster wa-gap-s">
             <wa-button type="submit" variant="brand" size="small">Save</wa-button>
@@ -320,65 +298,35 @@ function renderEditRow(domain) {
 }
 
 export async function renderSettings(container) {
-  container.innerHTML = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = SPINNER;
 
-  let user;
-  try {
-    const meRes = await fetch("/api/me");
-    if (meRes.status === 401) { window.location.href = "/login"; return; }
-    if (meRes.ok) {
-      ({ data: user } = await meRes.json());
-    }
-  } catch {
-    showToast("Failed to load user info", "danger");
-    return;
-  }
+  const meResult = await apiFetch("/api/me");
+  if (!meResult) return;
+  const { data: user } = meResult;
 
   const isAdmin = user?.isAdmin ?? false;
 
   let domains = [];
   if (isAdmin) {
-    try {
-      const res = await fetch("/api/domains");
-      if (res.ok) {
-        ({ data: domains } = await res.json());
-      }
-    } catch {
-      showToast("Failed to load domains", "danger");
-    }
+    const domainsResult = await apiFetch("/api/domains").catch(() => null);
+    if (domainsResult?.data) domains = domainsResult.data;
   }
 
   // Fetch API keys for all users
   let apiKeys = [];
-  try {
-    const keysRes = await fetch("/api/keys");
-    if (keysRes.ok) {
-      ({ data: apiKeys } = await keysRes.json());
-    }
-  } catch {
-    showToast("Failed to load API keys", "danger");
-  }
+  const keysResult = await apiFetch("/api/keys").catch(() => null);
+  if (keysResult?.data) apiKeys = keysResult.data;
 
   // Check if passkeys are enabled and fetch user's passkeys
   let passkeyEnabled = false;
   let passkeys = [];
-  try {
-    const provRes = await fetch("/api/auth/providers");
-    if (provRes.ok) {
-      const provData = await provRes.json();
-      passkeyEnabled = provData.passkey === true;
-    }
-  } catch { /* ignore */ }
+  const provResult = await apiFetch("/api/auth/providers").catch(() => null);
+  if (provResult) passkeyEnabled = provResult.passkey === true;
 
   if (passkeyEnabled) {
-    try {
-      const pkRes = await fetch("/api/auth/passkey/list-user-passkeys");
-      if (pkRes.ok) {
-        const pkData = await pkRes.json();
-        passkeys = Array.isArray(pkData) ? pkData : (pkData.data ?? []);
-      }
-    } catch {
-      showToast("Failed to load passkeys", "danger");
+    const pkResult = await apiFetch("/api/auth/passkey/list-user-passkeys").catch(() => null);
+    if (pkResult) {
+      passkeys = Array.isArray(pkResult) ? pkResult : (pkResult.data ?? []);
     }
   }
 
@@ -460,24 +408,17 @@ export async function renderSettings(container) {
       const name = nameInput.value.trim();
       if (!name) { showToast("Name is required", "warning"); return; }
 
-      submitBtn.loading = true;
-      submitBtn.disabled = true;
-
       const body = { name };
       const expiresVal = expiresInput.value;
       if (expiresVal) body.expiresAt = new Date(expiresVal).toISOString();
 
-      try {
-        const res = await fetch("/api/keys", {
+      await withLoadingBtn(submitBtn, async () => {
+        const result = await apiFetch("/api/keys", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body),
         });
-        const result = await res.json();
-        if (!res.ok) {
-          showToast(result.message || result.error || "Failed to create key", "danger");
-          return;
-        }
+        if (!result) return;
 
         // Show the newly created key
         const callout = container.querySelector("#new-key-callout");
@@ -498,9 +439,9 @@ export async function renderSettings(container) {
         expiresInput.value = "";
 
         // Re-fetch and update the keys table
-        const keysRes = await fetch("/api/keys");
-        if (keysRes.ok) {
-          const { data: updatedKeys } = await keysRes.json();
+        const keysResult = await apiFetch("/api/keys").catch(() => null);
+        if (keysResult?.data) {
+          const updatedKeys = keysResult.data;
           const keysCard = container.querySelectorAll("wa-tab-panel[name='api-keys'] wa-card")[1];
           if (keysCard) {
             const inner = keysCard.querySelector(".wa-stack");
@@ -532,12 +473,7 @@ export async function renderSettings(container) {
         }
 
         showToast("API key created", "success");
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        submitBtn.loading = false;
-        submitBtn.disabled = false;
-      }
+      });
     });
   }
 
@@ -554,24 +490,13 @@ export async function renderSettings(container) {
   const syncBtn = container.querySelector("#sync-domains-btn");
   if (syncBtn) {
     syncBtn.addEventListener("click", async () => {
-      syncBtn.loading = true;
-      syncBtn.disabled = true;
       let success = false;
-      try {
-        const res = await fetch("/api/domains/sync", { method: "POST" });
-        const result = await res.json();
-        if (!res.ok) {
-          showToast(result.message || result.error || "Failed to sync domains", "danger");
-          return;
-        }
+      await withLoadingBtn(syncBtn, async () => {
+        const res = await apiFetch("/api/domains/sync", { method: "POST" });
+        if (!res) return;
         showToast("Domains synced from Cloudflare", "success");
         success = true;
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        syncBtn.loading = false;
-        syncBtn.disabled = false;
-      }
+      });
       if (success) renderSettings(container);
     });
   }
@@ -585,23 +510,18 @@ export async function renderSettings(container) {
       container.querySelectorAll(".domain-edit-row").forEach(r => r.remove());
 
       // Fetch domain details with access list
-      let domainDetail;
-      try {
-        const res = await fetch(`/api/domains/${encodeURIComponent(hostname)}`);
-        if (!res.ok) {
-          showToast("Failed to load domain details", "danger");
-          return;
-        }
-        ({ data: domainDetail } = await res.json());
-      } catch {
-        showToast("Network error", "danger");
-        return;
-      }
+      const detailResult = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}`);
+      if (!detailResult) return;
+      const domainDetail = detailResult.data;
 
       const row = btn.closest("tr");
       row.insertAdjacentHTML("afterend", renderEditRow(domainDetail));
 
       const editForm = container.querySelector(`.edit-domain-form[data-hostname="${CSS.escape(hostname)}"]`);
+
+      // Set textarea value programmatically (HTML attribute doesn't work for wa-textarea)
+      const emailsTextarea = editForm.querySelector('[name="accessEmails"]');
+      if (emailsTextarea) emailsTextarea.value = (domainDetail.accessEmails || []).join("\n");
 
       // Toggle email section visibility based on access mode
       const accessSelect = editForm.querySelector('[name="accessMode"]');
@@ -613,35 +533,29 @@ export async function renderSettings(container) {
       editForm.addEventListener("submit", async (e) => {
         e.preventDefault();
         const submitBtn = editForm.querySelector('wa-button[type="submit"]');
-        submitBtn.loading = true;
-        submitBtn.disabled = true;
 
         const rootRedirect = editForm.querySelector('[name="rootRedirect"]').value.trim() || null;
         const notFoundRedirect = editForm.querySelector('[name="notFoundRedirect"]').value.trim() || null;
         const accessMode = editForm.querySelector('[name="accessMode"]').value;
         let success = false;
 
-        try {
-          const configRes = await fetch(`/api/domains/${encodeURIComponent(hostname)}`, {
+        await withLoadingBtn(submitBtn, async () => {
+          const configRes = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ rootRedirect, notFoundRedirect, accessMode }),
           });
-          if (!configRes.ok) {
-            const result = await configRes.json();
-            showToast(result.message || result.error || "Failed to update domain", "danger");
-            return;
-          }
+          if (!configRes) return;
 
           if (accessMode === "restricted") {
             const emailsText = editForm.querySelector('[name="accessEmails"]').value;
             const emails = emailsText.split("\n").map(e => e.trim()).filter(Boolean);
-            const accessRes = await fetch(`/api/domains/${encodeURIComponent(hostname)}/access`, {
+            const accessRes = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}/access`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ emails }),
             });
-            if (!accessRes.ok) {
+            if (!accessRes) {
               showToast("Domain updated but access list failed to save", "warning");
               return;
             }
@@ -649,12 +563,7 @@ export async function renderSettings(container) {
 
           showToast("Domain updated", "success");
           success = true;
-        } catch {
-          showToast("Network error", "danger");
-        } finally {
-          submitBtn.loading = false;
-          submitBtn.disabled = false;
-        }
+        });
         if (success) renderSettings(container);
       });
 

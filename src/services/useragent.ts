@@ -1,4 +1,4 @@
-export interface UAInfo {
+interface UAInfo {
   browser: string;
   os: string;
   device: "desktop" | "mobile" | "tablet";

@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { writeClickEvent } from "../../src/services/analytics";
 describe("writeClickEvent", () => {
   it("does not throw with a well-formed request", () => {

@@ -1,74 +1,10 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, mockExecutionCtx } from "../helpers";
+import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat } from "../helpers";
 import { hashPassword } from "../../src/services/password";
 
 const now = Math.floor(Date.now() / 1000);
-
-/** Insert a link with all fields directly into D1. */
-async function insertLink(
-  db: D1Database,
-  opts: {
-    id?: string;
-    userId: string;
-    slug: string;
-    destinationUrl: string;
-    redirectType?: number;
-    isActive?: boolean;
-    expiresAt?: number | null;
-    maxClicks?: number | null;
-    password?: string | null;
-    isInternal?: boolean;
-    ogTitle?: string | null;
-    ogDescription?: string | null;
-    ogImage?: string | null;
-    paramForwarding?: boolean;
-    domainHostname?: string | null;
-  }
-) {
-  const id = opts.id ?? crypto.randomUUID();
-  await db
-    .prepare(
-      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, createdAt, updatedAt, isActive, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, paramForwarding, domainHostname)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
-      id,
-      opts.userId,
-      opts.slug,
-      opts.destinationUrl,
-      opts.redirectType ?? 302,
-      now,
-      now,
-      opts.isActive !== false ? 1 : 0,
-      opts.expiresAt ?? null,
-      opts.maxClicks ?? null,
-      opts.password ?? null,
-      opts.isInternal ? 1 : 0,
-      opts.ogTitle ?? null,
-      opts.ogDescription ?? null,
-      opts.ogImage ?? null,
-      opts.paramForwarding ? 1 : 0,
-      opts.domainHostname ?? null
-    )
-    .run();
-  return id;
-}
-
-/** Insert a domain_config row. */
-async function insertDomain(
-  db: D1Database,
-  opts: { hostname: string; rootRedirect?: string | null; notFoundRedirect?: string | null }
-) {
-  await db
-    .prepare(
-      `INSERT OR IGNORE INTO domain_config (hostname, rootRedirect, notFoundRedirect, accessMode, updatedAt)
-       VALUES (?, ?, ?, 'all', ?)`
-    )
-    .bind(opts.hostname, opts.rootRedirect ?? null, opts.notFoundRedirect ?? null, now)
-    .run();
-}
 
 /** Insert a link_targets row. */
 async function insertTarget(
@@ -81,16 +17,6 @@ async function insertTarget(
        VALUES (?, ?, ?, ?, ?, ?)`
     )
     .bind(crypto.randomUUID(), opts.linkId, opts.type, opts.matchValue, opts.destinationUrl, opts.priority ?? 0)
-    .run();
-}
-
-/** Insert a link_stats row. */
-async function insertStats(db: D1Database, linkId: string, date: string, clicks: number) {
-  await db
-    .prepare(
-      `INSERT INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, 0)`
-    )
-    .bind(linkId, date, clicks)
     .run();
 }
 
@@ -111,13 +37,13 @@ describe("Redirect engine – advanced", () => {
 
     beforeAll(async () => {
       passwordHash = await hashPassword(PASSWORD);
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "pw-post",
         destinationUrl: "https://example.com/pw-dest",
         password: passwordHash,
         userId: auth.user.id,
       });
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "no-pw-post",
         destinationUrl: "https://example.com/nopw",
         userId: auth.user.id,
@@ -187,7 +113,7 @@ describe("Redirect engine – advanced", () => {
 
     it("POST re-checks constraints (expired link)", async () => {
       const pastTs = now - 3600; // 1 hour ago
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "pw-expired-post",
         destinationUrl: "https://example.com/expired",
         password: passwordHash,
@@ -208,14 +134,14 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("POST re-checks constraints (maxClicks exceeded)", async () => {
-      const linkId = await insertLink(env.DB, {
+      const { id: linkId } = await createTestLink(env.DB, {
         slug: "pw-maxclicks-post",
         destinationUrl: "https://example.com/maxed",
         password: passwordHash,
         maxClicks: 5,
         userId: auth.user.id,
       });
-      await insertStats(env.DB, linkId, "2026-03-20", 5);
+      await insertClickStat(env.DB, linkId, 5, "2026-03-20");
 
       const body = new URLSearchParams({ password: PASSWORD });
       const res = await app.request("/pw-maxclicks-post", {
@@ -235,7 +161,7 @@ describe("Redirect engine – advanced", () => {
   describe("checkConstraints – expired / maxClicks / internal", () => {
     it("GET with expiresAt in the past returns 410", async () => {
       const pastTs = now - 7200;
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "expired-link",
         destinationUrl: "https://example.com/expired",
         expiresAt: pastTs,
@@ -250,14 +176,14 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET with maxClicks exceeded returns 410", async () => {
-      const linkId = await insertLink(env.DB, {
+      const { id: linkId } = await createTestLink(env.DB, {
         slug: "maxclicks-link",
         destinationUrl: "https://example.com/maxed",
         maxClicks: 10,
         userId: auth.user.id,
       });
-      await insertStats(env.DB, linkId, "2026-03-20", 7);
-      await insertStats(env.DB, linkId, "2026-03-21", 5);
+      await insertClickStat(env.DB, linkId, 7, "2026-03-20");
+      await insertClickStat(env.DB, linkId, 5, "2026-03-21");
 
       const res = await app.request("/maxclicks-link", {}, env, mockExecutionCtx());
 
@@ -267,7 +193,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET with isInternal and no session returns 403", async () => {
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "internal-link",
         destinationUrl: "https://example.com/internal",
         isInternal: true,
@@ -283,7 +209,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET with isInternal and valid session redirects normally", async () => {
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "internal-authed",
         destinationUrl: "https://example.com/internal-ok",
         isInternal: true,
@@ -303,7 +229,7 @@ describe("Redirect engine – advanced", () => {
 
   describe("Bot OG meta page", () => {
     beforeAll(async () => {
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "og-link",
         destinationUrl: "https://example.com/og-dest",
         ogTitle: "My Link Title",
@@ -311,7 +237,7 @@ describe("Redirect engine – advanced", () => {
         ogImage: "https://example.com/og-image.png",
         userId: auth.user.id,
       });
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "og-pw-link",
         destinationUrl: "https://example.com/og-pw-dest",
         ogTitle: "Protected Link",
@@ -360,12 +286,10 @@ describe("Redirect engine – advanced", () => {
 
   describe("handleCustomDomainRoot", () => {
     beforeAll(async () => {
-      await insertDomain(env.DB, {
-        hostname: "custom-root.example.com",
+      await createTestDomain(env.DB, "custom-root.example.com", {
         rootRedirect: "https://example.com/root-dest",
       });
-      await insertDomain(env.DB, {
-        hostname: "custom-noroot.example.com",
+      await createTestDomain(env.DB, "custom-noroot.example.com", {
         rootRedirect: null,
       });
     });
@@ -412,12 +336,10 @@ describe("Redirect engine – advanced", () => {
 
   describe("Custom domain notFoundRedirect", () => {
     beforeAll(async () => {
-      await insertDomain(env.DB, {
-        hostname: "custom-nf.example.com",
+      await createTestDomain(env.DB, "custom-nf.example.com", {
         notFoundRedirect: "https://example.com/not-found-page",
       });
-      await insertDomain(env.DB, {
-        hostname: "custom-nonf.example.com",
+      await createTestDomain(env.DB, "custom-nonf.example.com", {
         notFoundRedirect: null,
       });
     });
@@ -445,16 +367,16 @@ describe("Redirect engine – advanced", () => {
 
   describe("Domain-scoped slug lookup", () => {
     beforeAll(async () => {
-      await insertDomain(env.DB, { hostname: "scope.example.com" });
+      await createTestDomain(env.DB, "scope.example.com");
       // Same slug on custom domain → different destination
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "shared-slug",
         destinationUrl: "https://example.com/custom-domain-dest",
         domainHostname: "scope.example.com",
         userId: auth.user.id,
       });
       // Same slug on default domain (domainHostname NULL)
-      await insertLink(env.DB, {
+      await createTestLink(env.DB, {
         slug: "shared-slug",
         destinationUrl: "https://example.com/default-domain-dest",
         domainHostname: null,
@@ -482,7 +404,7 @@ describe("Redirect engine – advanced", () => {
 
     it("GET /:slug with wrong Host does not find domain-scoped slug", async () => {
       // A slug that only exists on scope.example.com — try from a different custom domain
-      await insertDomain(env.DB, { hostname: "other.example.com" });
+      await createTestDomain(env.DB, "other.example.com");
 
       const res = await app.request("/shared-slug", {
         headers: { Host: "other.example.com" },
@@ -498,7 +420,7 @@ describe("Redirect engine – advanced", () => {
 
   describe("D1-path targeting resolution", () => {
     it("geo targeting: request with matching country redirects to target URL", async () => {
-      const linkId = await insertLink(env.DB, {
+      const { id: linkId } = await createTestLink(env.DB, {
         slug: "geo-target",
         destinationUrl: "https://example.com/default-geo",
         userId: auth.user.id,
@@ -524,7 +446,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("device targeting: mobile UA redirects to mobile target URL", async () => {
-      const linkId = await insertLink(env.DB, {
+      const { id: linkId } = await createTestLink(env.DB, {
         slug: "device-target",
         destinationUrl: "https://example.com/default-device",
         userId: auth.user.id,

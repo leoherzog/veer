@@ -6,17 +6,13 @@ import { renderCampaignsPanel } from "./campaigns.js";
 import { renderTeamsPanel } from "./teams.js";
 import { renderTeamDetail } from "./team-detail.js";
 import { escapeHtml } from "../lib/escape.js";
+import { apiFetch, withLoadingBtn, bindSearchInput } from "../lib/ui.js";
 
 export function renderDashboard(container, { activeTab = "links", teamId = null } = {}) {
   let userTeams = [];
   async function fetchTeams() {
-    try {
-      const res = await fetch("/api/teams");
-      if (res.ok) {
-        const { data } = await res.json();
-        userTeams = data || [];
-      }
-    } catch {}
+    const result = await apiFetch("/api/teams").catch(() => null);
+    if (result?.data) userTeams = result.data;
   }
   const teamsReady = fetchTeams();
 
@@ -41,14 +37,21 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
             <div class="wa-split">
               <h1>Links</h1>
               <div class="wa-cluster wa-gap-xs">
-                <wa-button variant="brand" id="new-link-btn">
-                  <wa-icon slot="start" name="plus"></wa-icon>
-                  New Link
-                </wa-button>
-                <wa-button variant="neutral" appearance="outlined" id="bulk-create-btn">
-                  <wa-icon slot="start" name="layer-group"></wa-icon>
-                  Bulk Create
-                </wa-button>
+                <wa-button-group label="Create links">
+                  <wa-button variant="brand" id="new-link-btn">
+                    <wa-icon slot="start" name="plus"></wa-icon>
+                    New Link
+                  </wa-button>
+                  <wa-dropdown placement="bottom-end">
+                    <wa-button variant="brand" slot="trigger" id="new-link-dropdown">
+                      <wa-icon name="chevron-down" label="More options"></wa-icon>
+                    </wa-button>
+                    <wa-dropdown-item id="bulk-create-btn">
+                      <wa-icon slot="icon" name="layer-group"></wa-icon>
+                      Bulk Create
+                    </wa-dropdown-item>
+                  </wa-dropdown>
+                </wa-button-group>
               </div>
             </div>
             <div id="create-section" style="display:none;">
@@ -197,21 +200,16 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     }
 
     const submitBtn = container.querySelector("#bulk-submit-btn");
-    submitBtn.loading = true;
-    submitBtn.disabled = true;
 
-    try {
+    await withLoadingBtn(submitBtn, async () => {
       const bulkTeamId = container.querySelector("#bulk-owner")?.value || null;
-      const res = await fetch("/api/bulk", {
+      const result = await apiFetch("/api/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ links, ...(bulkTeamId && { teamId: bulkTeamId }) }),
       });
-      const { results } = await res.json();
-      if (!res.ok && !results) {
-        showToast("Bulk create failed", "danger");
-        return;
-      }
+      if (!result) return;
+      const { results } = result;
 
       const succeeded = results.filter(r => r.success).length;
       const failed = results.filter(r => !r.success).length;
@@ -243,26 +241,11 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
         loadLinks();
         showToast(`${succeeded} link${succeeded > 1 ? "s" : ""} created`, "success");
       }
-    } catch {
-      showToast("Network error", "danger");
-    } finally {
-      submitBtn.loading = false;
-      submitBtn.disabled = false;
-    }
+    });
   });
 
-  let debounceTimer;
-  searchInput.addEventListener("input", (e) => {
-    clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      searchQuery = e.target.value;
-      currentPage = 1;
-      loadLinks();
-    }, 300);
-  });
-
-  searchInput.addEventListener("wa-clear", () => {
-    searchQuery = "";
+  bindSearchInput(searchInput, (q) => {
+    searchQuery = q;
     currentPage = 1;
     loadLinks();
   });
@@ -278,30 +261,25 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
       params.set("teamId", scopeFilter.slice(5));
     }
 
-    try {
-      const res = await fetch(`/api/links?${params}`);
-      if (res.status === 401) { window.location.href = "/login"; return; }
-      if (!res.ok) { showToast("Failed to load links", "danger"); return; }
-      const { data, pagination } = await res.json();
+    const result = await apiFetch(`/api/links?${params}`);
+    if (!result) return;
+    const { data, pagination } = result;
 
-      renderLinkTable(container.querySelector("#links-table"), {
-        links: data,
-        pagination,
-        sort: { by: sortBy, dir: sortDir },
-        onPageChange: (page) => {
-          currentPage = page;
-          loadLinks();
-        },
-        onSort: (col, dir) => {
-          sortBy = col;
-          sortDir = dir;
-          currentPage = 1;
-          loadLinks();
-        },
-      });
-    } catch {
-      showToast("Failed to load links", "danger");
-    }
+    renderLinkTable(container.querySelector("#links-table"), {
+      links: data,
+      pagination,
+      sort: { by: sortBy, dir: sortDir },
+      onPageChange: (page) => {
+        currentPage = page;
+        loadLinks();
+      },
+      onSort: (col, dir) => {
+        sortBy = col;
+        sortDir = dir;
+        currentPage = 1;
+        loadLinks();
+      },
+    });
   }
 
   loadLinks();
@@ -337,8 +315,9 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
   const tabGroup = container.querySelector("#dashboard-tabs");
   tabGroup.addEventListener("wa-tab-show", (e) => {
     if (e.detail.name === "campaigns" && !campaignsLoaded) {
-      campaignsLoaded = true;
-      renderCampaignsPanel(container.querySelector("#campaigns-panel"));
+      renderCampaignsPanel(container.querySelector("#campaigns-panel"))
+        .then(() => { campaignsLoaded = true; })
+        .catch(() => {});
     }
     if (e.detail.name === "teams" && !teamsLoaded) {
       teamsLoaded = true;

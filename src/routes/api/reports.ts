@@ -7,36 +7,13 @@ import { badRequest, notFound } from "../../lib/errors";
 import { formatDate } from "../../lib/date";
 import type { AppEnv } from "../../types";
 
-/** Generate a report token: `rpt_` + 32 random base62 chars. */
-function generateReportToken(): string {
-  const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
-  const limit = 256 - (256 % chars.length);
-  const bytes = new Uint8Array(48);
-  let token = "rpt_";
-  crypto.getRandomValues(bytes);
-  for (const b of bytes) {
-    if (b < limit && token.length < 36) {
-      token += chars[b % chars.length];
-    }
-  }
-  // In the unlikely event we didn't get 32 chars, fill the rest
-  while (token.length < 36) {
-    const extra = new Uint8Array(16);
-    crypto.getRandomValues(extra);
-    for (const b of extra) {
-      if (b < limit && token.length < 36) {
-        token += chars[b % chars.length];
-      }
-    }
-  }
-  return token;
-}
+function generateReportToken(): string { return "rpt_" + crypto.randomUUID().replace(/-/g, ""); }
 
 const reportRoutes = new Hono<AppEnv>();
 
 // POST /api/reports/:linkId — Create report if none exists, or return existing
 reportRoutes.post("/:linkId", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const linkId = c.req.param("linkId");
   const db = getDb(c.env.DB);
 
@@ -80,7 +57,7 @@ reportRoutes.post("/:linkId", async (c) => {
 
 // PUT /api/reports/:linkId — Toggle isEnabled on existing report
 reportRoutes.put("/:linkId", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const linkId = c.req.param("linkId");
   const db = getDb(c.env.DB);
 
@@ -101,14 +78,7 @@ reportRoutes.put("/:linkId", async (c) => {
     .set({ isEnabled: newEnabled })
     .where(eq(publicReports.id, report.id));
 
-  // Re-fetch to return fresh data
-  const updated = await db.select({
-    token: publicReports.token,
-    isEnabled: publicReports.isEnabled,
-    createdAt: publicReports.createdAt,
-    linkId: publicReports.linkId,
-  }).from(publicReports).where(eq(publicReports.id, report.id)).get();
-  return c.json({ data: updated });
+  return c.json({ data: { token: report.token, isEnabled: newEnabled, createdAt: report.createdAt, linkId: report.linkId } });
 });
 
 /** Public handler for GET /api/public-report/:token — no auth required. */

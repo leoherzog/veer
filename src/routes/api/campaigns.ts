@@ -2,7 +2,8 @@ import { Hono, type MiddlewareHandler } from "hono";
 import { eq, sql, and, gte, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { campaigns, linkCampaigns, links, linkStats } from "../../db/schema";
-import { badRequest, notFound, checkBodySize } from "../../lib/errors";
+import { badRequest, notFound } from "../../lib/errors";
+import { parseJsonBody } from "../../lib/request";
 import type { AppEnv } from "../../types";
 
 type Campaign = typeof campaigns.$inferSelect;
@@ -15,7 +16,7 @@ const campaignRoutes = new Hono<CampaignEnv>();
 
 const loadCampaign: MiddlewareHandler<CampaignEnv> = async (c, next) => {
   if (c.var.campaign) return next();
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id")!;
   const campaign = await db.select().from(campaigns).where(eq(campaigns.id, id)).get();
@@ -29,7 +30,7 @@ campaignRoutes.use("/:id", loadCampaign);
 
 // List user's campaigns (with link count)
 campaignRoutes.get("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   const rows = await db
@@ -52,17 +53,10 @@ campaignRoutes.get("/", async (c) => {
 
 // Create campaign
 campaignRoutes.post("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { name: string; description?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ name: string; description?: string }>(c);
 
   if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
     throw badRequest("name is required");
@@ -130,14 +124,7 @@ campaignRoutes.put("/:id", async (c) => {
   const id = c.req.param("id");
   const existing = c.var.campaign;
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { name?: string; description?: string | null };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ name?: string; description?: string | null }>(c);
 
   const updates: Partial<typeof campaigns.$inferInsert> = { updatedAt: new Date() };
 
@@ -176,18 +163,11 @@ campaignRoutes.delete("/:id", async (c) => {
 
 // Add links to campaign
 campaignRoutes.post("/:id/links", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { linkIds: string[] };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ linkIds: string[] }>(c);
 
   if (!Array.isArray(body.linkIds) || body.linkIds.length === 0) {
     throw badRequest("linkIds must be a non-empty array");

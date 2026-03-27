@@ -8,7 +8,7 @@ const authRoutes = new Hono<AppEnv>();
 authRoutes.get("/providers", (c) => {
   const providers = getConfiguredProviders(c.env);
   return c.json({
-    providers: [...providers.keys()],
+    providers: Object.keys(providers),
     passkey: c.env.PASSKEY_ENABLED === "true",
   });
 });

@@ -1,24 +1,14 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-type JsonBody = Record<string, unknown>;
-
-async function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string>; body?: JsonBody } = {}
-) {
-  const init: RequestInit = { method, headers: opts.headers };
-  if (opts.body !== undefined) {
-    init.body = JSON.stringify(opts.body);
-  }
-  return app.request(path, init, env, mockExecutionCtx());
+function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
+  return apiRequest(app, method, path, opts);
 }
 
 /** Insert a campaign directly into D1. */
@@ -219,11 +209,7 @@ describe("Campaigns API", () => {
       await linkToCampaign(link.id, campaign.id);
 
       // Insert click stats for the link
-      await env.DB.prepare(
-        "INSERT INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, ?)"
-      )
-        .bind(link.id, "2026-03-20", 42, 30)
-        .run();
+      await insertClickStat(env.DB, link.id, 42, "2026-03-20", 30);
 
       const res = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
       expect(res.status).toBe(200);
@@ -624,16 +610,8 @@ describe("Campaigns API", () => {
       await linkToCampaign(link1.id, campaign.id);
       await linkToCampaign(link2.id, campaign.id);
 
-      await env.DB.prepare(
-        "INSERT INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, ?)"
-      )
-        .bind(link1.id, "2026-03-20", 10, 8)
-        .run();
-      await env.DB.prepare(
-        "INSERT INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, ?)"
-      )
-        .bind(link2.id, "2026-03-20", 20, 15)
-        .run();
+      await insertClickStat(env.DB, link1.id, 10, "2026-03-20", 8);
+      await insertClickStat(env.DB, link2.id, 20, "2026-03-20", 15);
 
       const res = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
       expect(res.status).toBe(200);

@@ -39,11 +39,7 @@ export async function verifyPassword(plain: string, stored: string): Promise<boo
   const [saltHex, hashHex] = stored.split(":");
   const salt = fromHex(saltHex);
   const expected = fromHex(hashHex);
-  const derived = new Uint8Array(await deriveKey(plain, salt));
-  if (derived.length !== expected.length) return false;
-  let match = 0;
-  for (let i = 0; i < derived.length; i++) {
-    match |= derived[i] ^ expected[i];
-  }
-  return match === 0;
+  const derived = await deriveKey(plain, salt);
+  if (derived.byteLength !== expected.byteLength) return false;
+  return crypto.subtle.timingSafeEqual(new Uint8Array(derived), expected);
 }

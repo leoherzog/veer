@@ -7,7 +7,7 @@ const options = {
   format: "esm",
   splitting: true,
   minify: process.argv.includes("--minify"),
-  sourcemap: true,
+  sourcemap: process.argv.includes("--watch"),
   target: "esnext",
   loader: {
     ".css": "css",

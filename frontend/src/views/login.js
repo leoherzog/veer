@@ -88,13 +88,17 @@ export function renderLogin(container) {
 
       // Single provider, no passkey — skip login page and redirect immediately
       if (providers.length === 1 && !passkey) {
-        authClient.signIn.social({
-          provider: providers[0].id,
-          callbackURL: "/links",
-        });
         container.querySelector("#login-help").textContent =
           `Redirecting to ${providers[0].name}…`;
         container.querySelector("#provider-buttons").innerHTML = "";
+        authClient.signIn.social({
+          provider: providers[0].id,
+          callbackURL: "/links",
+        }).catch(() => {
+          showToast(`Sign in with ${providers[0].name} failed`, "danger");
+          renderButtons(container, providers);
+          container.querySelector("#login-help").textContent = "Choose a provider to continue";
+        });
         return;
       }
 
@@ -106,6 +110,8 @@ export function renderLogin(container) {
       }
     })
     .catch(() => {
-      renderButtons(container, allProviders);
+      container.querySelector("#provider-buttons").innerHTML = "";
+      container.querySelector("#login-help").textContent =
+        "Failed to load login providers. Please refresh to try again.";
     });
 }

@@ -6,6 +6,7 @@ import { teams, teamMembers, teamInvites, links, user as userTable } from "../..
 import { validateSlug } from "../../services/slug";
 import { badRequest, notFound, forbidden, conflict } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
+import { requireTeamMember } from "../../lib/team";
 import type { AppEnv } from "../../types";
 
 // --- Helpers ---
@@ -35,19 +36,19 @@ export async function cleanupOrphanedTeams(db: Database) {
   await db.run(sql`DELETE FROM ${teams} WHERE ${teams.id} NOT IN (SELECT DISTINCT ${teamMembers.teamId} FROM ${teamMembers})`);
 }
 
-async function requireTeamMember(db: Database, teamId: string, userId: string) {
-  const member = await db.select({ role: teamMembers.role })
-    .from(teamMembers)
-    .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)))
-    .get();
-  if (!member) throw notFound("Team not found");
-  return member;
-}
-
 async function requireTeamAdmin(db: Database, teamId: string, userId: string) {
   const member = await requireTeamMember(db, teamId, userId);
   if (member.role !== "admin") throw forbidden("Admin access required");
   return member;
+}
+
+async function requireNotLastAdmin(db: Database, teamId: string, message = "Cannot remove or demote the last admin"): Promise<void> {
+  const [adminCount] = await db.select({ count: sql<number>`count(*)` })
+    .from(teamMembers)
+    .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.role, "admin")));
+  if ((adminCount?.count ?? 0) <= 1) {
+    throw badRequest(message);
+  }
 }
 
 
@@ -57,7 +58,7 @@ const teamRoutes = new Hono<AppEnv>();
 
 // Create team
 teamRoutes.post("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   const body = await parseJsonBody<{ name: string; slug: string }>(c);
@@ -104,7 +105,7 @@ teamRoutes.post("/", async (c) => {
 
 // List user's teams
 teamRoutes.get("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   const rows = await db
@@ -128,7 +129,7 @@ teamRoutes.get("/", async (c) => {
 
 // Accept invite (no team ID in path - uses token)
 teamRoutes.post("/accept-invite", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   const body = await parseJsonBody<{ token: string }>(c);
@@ -173,7 +174,7 @@ teamRoutes.post("/accept-invite", async (c) => {
 
 // Get team details
 teamRoutes.get("/:id", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -209,7 +210,7 @@ teamRoutes.get("/:id", async (c) => {
 
 // Update team name
 teamRoutes.put("/:id", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -232,7 +233,7 @@ teamRoutes.put("/:id", async (c) => {
 
 // Delete team
 teamRoutes.delete("/:id", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -251,7 +252,7 @@ teamRoutes.delete("/:id", async (c) => {
 
 // Invite by email
 teamRoutes.post("/:id/invite", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -310,7 +311,7 @@ teamRoutes.post("/:id/invite", async (c) => {
 
 // List pending invites
 teamRoutes.get("/:id/invites", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -329,7 +330,7 @@ teamRoutes.get("/:id/invites", async (c) => {
 
 // Cancel invite
 teamRoutes.delete("/:id/invites/:inviteId", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
   const inviteId = c.req.param("inviteId");
@@ -349,7 +350,7 @@ teamRoutes.delete("/:id/invites/:inviteId", async (c) => {
 
 // Leave team (self-removal)
 teamRoutes.post("/:id/leave", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
@@ -361,12 +362,7 @@ teamRoutes.post("/:id/leave", async (c) => {
 
   // Prevent last admin from leaving
   if (member.role === "admin") {
-    const [adminCount] = await db.select({ count: sql<number>`count(*)` })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.teamId, id), eq(teamMembers.role, "admin")));
-    if ((adminCount?.count ?? 0) <= 1) {
-      throw badRequest("You are the last admin. Promote another member or delete the team.");
-    }
+    await requireNotLastAdmin(db, id, "You are the last admin. Promote another member or delete the team.");
   }
 
   await db.delete(teamMembers)
@@ -377,7 +373,7 @@ teamRoutes.post("/:id/leave", async (c) => {
 
 // Remove member
 teamRoutes.delete("/:id/members/:userId", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
   const targetUserId = c.req.param("userId");
@@ -391,12 +387,9 @@ teamRoutes.delete("/:id/members/:userId", async (c) => {
     .get();
   if (!target) throw notFound("Member not found");
 
-  // Batch admin count check + delete in one round-trip to reduce TOCTOU window
+  // Prevent removing the last admin
   if (target.role === "admin") {
-    const [adminCount] = await db.select({ count: sql<number>`count(*)` })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.teamId, id), eq(teamMembers.role, "admin")));
-    if ((adminCount?.count ?? 0) <= 1) throw badRequest("Cannot remove or demote the last admin");
+    await requireNotLastAdmin(db, id);
   }
 
   await db.delete(teamMembers)
@@ -413,7 +406,7 @@ teamRoutes.delete("/:id/members/:userId", async (c) => {
 
 // Change member role
 teamRoutes.patch("/:id/members/:userId", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
   const targetUserId = c.req.param("userId");
@@ -435,10 +428,7 @@ teamRoutes.patch("/:id/members/:userId", async (c) => {
 
   // If demoting from admin, ensure not last admin
   if (target.role === "admin" && body.role === "member") {
-    const [adminCount] = await db.select({ count: sql<number>`count(*)` })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.teamId, id), eq(teamMembers.role, "admin")));
-    if ((adminCount?.count ?? 0) <= 1) throw badRequest("Cannot remove or demote the last admin");
+    await requireNotLastAdmin(db, id);
   }
 
   await db.update(teamMembers)

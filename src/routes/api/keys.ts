@@ -2,7 +2,8 @@ import { Hono } from "hono";
 import { eq, and, sql } from "drizzle-orm";
 import { getDb } from "../../db";
 import { apiKeys } from "../../db/schema";
-import { badRequest, notFound, checkBodySize } from "../../lib/errors";
+import { badRequest, notFound } from "../../lib/errors";
+import { parseJsonBody } from "../../lib/request";
 import { hashApiKey, generateApiKey } from "../../lib/crypto";
 import type { AppEnv } from "../../types";
 
@@ -11,7 +12,7 @@ const app = new Hono<AppEnv>();
 // GET / - List user's API keys
 app.get("/", async (c) => {
   const db = getDb(c.env.DB);
-  const userId = c.var.user.id;
+  const userId = c.var.user!.id;
 
   const rows = await db
     .select({
@@ -30,14 +31,7 @@ app.get("/", async (c) => {
 
 // POST / - Generate a new API key
 app.post("/", async (c) => {
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { name?: string; expiresAt?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ name?: string; expiresAt?: string }>(c);
 
   const name = body.name?.trim();
   if (!name) throw badRequest("name is required");
@@ -47,7 +41,7 @@ app.post("/", async (c) => {
   // Enforce per-user key limit
   const existingCount = await db.select({ count: sql<number>`count(*)` })
     .from(apiKeys)
-    .where(eq(apiKeys.userId, c.var.user.id));
+    .where(eq(apiKeys.userId, c.var.user!.id));
   if ((existingCount[0]?.count ?? 0) >= 10) {
     throw badRequest("Maximum 10 API keys per user");
   }
@@ -67,7 +61,7 @@ app.post("/", async (c) => {
 
   await db.insert(apiKeys).values({
     id,
-    userId: c.var.user.id,
+    userId: c.var.user!.id,
     name,
     keyHash,
     prefix,
@@ -81,7 +75,7 @@ app.post("/", async (c) => {
 // DELETE /:id - Delete an API key belonging to the user
 app.delete("/:id", async (c) => {
   const db = getDb(c.env.DB);
-  const userId = c.var.user.id;
+  const userId = c.var.user!.id;
   const keyId = c.req.param("id");
 
   const result = await db

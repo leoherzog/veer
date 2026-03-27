@@ -2,7 +2,6 @@ import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { corsMiddleware } from "../../src/middleware/cors";
-import type { Env } from "../../src/bindings";
 
 /**
  * Build a minimal Hono app with corsMiddleware applied globally, plus a

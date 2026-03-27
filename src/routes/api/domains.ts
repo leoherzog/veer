@@ -5,7 +5,8 @@ import { getDb } from "../../db";
 import { domainConfig, domainAccess, links } from "../../db/schema";
 import { deleteCachedRedirect } from "../../services/kv-cache";
 import { HTTPException } from "hono/http-exception";
-import { badRequest, notFound, checkBodySize } from "../../lib/errors";
+import { badRequest, notFound } from "../../lib/errors";
+import { parseJsonBody } from "../../lib/request";
 import type { AppEnv } from "../../types";
 
 function validateRedirectUrl(url: string | undefined | null): string | null {
@@ -26,7 +27,7 @@ const domainRoutes = new Hono<AppEnv>();
 
 // List domains user has access to (admin sees all)
 domainRoutes.get("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   if (user.isAdmin) {
@@ -157,14 +158,7 @@ domainRoutes.put("/:hostname", async (c) => {
   const existing = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
   if (!existing) throw notFound("Domain not found");
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { rootRedirect?: string | null; notFoundRedirect?: string | null; accessMode?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ rootRedirect?: string | null; notFoundRedirect?: string | null; accessMode?: string }>(c);
 
   const updates: Partial<typeof domainConfig.$inferInsert> = { updatedAt: new Date() };
 
@@ -208,14 +202,7 @@ domainRoutes.put("/:hostname/access", async (c) => {
   const config = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
   if (!config) throw notFound("Domain not found");
 
-  checkBodySize(c.req.header("content-length"));
-
-  let body: { emails: string[] };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ emails: string[] }>(c);
 
   if (!Array.isArray(body.emails)) {
     throw badRequest("emails must be an array");

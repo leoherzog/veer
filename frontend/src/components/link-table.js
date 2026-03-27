@@ -1,5 +1,6 @@
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { shortUrl } from "../lib/ui.js";
 
 const COLUMNS = [
   { key: "slug", label: "Short URL" },
@@ -23,7 +24,6 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
     return;
   }
 
-  const shortUrl = (link) => link.domainHostname ? `https://${link.domainHostname}/${link.slug}` : `${location.origin}/${link.slug}`;
   container.innerHTML = `
     <table class="link-table" aria-label="Your links">
       <thead>
@@ -39,7 +39,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
               <div class="wa-cluster wa-gap-2xs">
                 <span>/${escapeHtml(link.slug)}</span>
                 <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
-                ${link.teamId && link.teamName ? `<wa-tooltip content="${escapeAttr(link.teamName)}"><wa-icon name="people-group" class="wa-font-size-xs wa-color-text-quiet"></wa-icon></wa-tooltip>` : ""}
+                ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
               </div>
             </td>
             <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>

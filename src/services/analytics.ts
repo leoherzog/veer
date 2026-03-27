@@ -32,14 +32,14 @@ export function writeClickEvent(analytics: AnalyticsEngineDataset, event: ClickE
 }
 
 // AE SQL API response types
-export type AERow = Record<string, string | number>;
+type AERow = Record<string, string | number>;
 
-export interface AEMeta {
+interface AEMeta {
   name: string;
   type: string;
 }
 
-export interface AEResult {
+interface AEResult {
   data: AERow[];
   meta: AEMeta[];
 }

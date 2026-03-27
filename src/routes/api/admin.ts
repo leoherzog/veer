@@ -3,7 +3,7 @@ import { eq, sql, like, or, desc } from "drizzle-orm";
 import { getDb } from "../../db";
 import { user as userTable, teams, teamMembers, links } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
-import { parseJsonBody } from "../../lib/request";
+import { parseJsonBody, parsePagination, stripPassword } from "../../lib/request";
 import type { AppEnv } from "../../types";
 
 const adminRoutes = new Hono<AppEnv>();
@@ -11,10 +11,8 @@ const adminRoutes = new Hono<AppEnv>();
 // GET /users - List all users (paginated, searchable)
 adminRoutes.get("/users", async (c) => {
   const db = getDb(c.env.DB);
-  const page = Math.max(1, Number(c.req.query("page")) || 1);
-  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit")) || 20));
+  const { page, limit, offset } = parsePagination(c);
   const q = c.req.query("q")?.trim();
-  const offset = (page - 1) * limit;
 
   const escaped = q ? q.replace(/%/g, "\\%").replace(/_/g, "\\_") : "";
   const where = q
@@ -103,12 +101,11 @@ adminRoutes.patch("/users/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
-  const existing = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.id, id)).get();
-  if (!existing) throw notFound("User not found");
-
   const body = await parseJsonBody<{ maxLinks?: number | null }>(c);
 
   if (body.maxLinks === undefined) {
+    const exists = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.id, id)).get();
+    if (!exists) throw notFound("User not found");
     return c.json({ success: true });
   }
 
@@ -122,6 +119,9 @@ adminRoutes.patch("/users/:id", async (c) => {
     updates.maxLinks = ml;
   }
 
+  const exists = await db.select({ id: userTable.id }).from(userTable).where(eq(userTable.id, id)).get();
+  if (!exists) throw notFound("User not found");
+
   await db.update(userTable).set(updates).where(eq(userTable.id, id));
 
   const updated = await db.select({
@@ -130,6 +130,7 @@ adminRoutes.patch("/users/:id", async (c) => {
     email: userTable.email,
     image: userTable.image,
     maxLinks: userTable.maxLinks,
+    updatedAt: userTable.updatedAt,
   }).from(userTable).where(eq(userTable.id, id)).get();
 
   return c.json({ data: updated });
@@ -143,7 +144,7 @@ adminRoutes.patch("/users/:id", async (c) => {
 // was considered but rejected to minimize security surface in a self-hosted tool.
 adminRoutes.post("/impersonate/:userId", async (c) => {
   const db = getDb(c.env.DB);
-  const adminUser = c.var.user;
+  const adminUser = c.var.user!;
   const targetId = c.req.param("userId");
 
   const target = await db
@@ -177,7 +178,7 @@ adminRoutes.post("/impersonate/:userId", async (c) => {
 // POST /stop-impersonate - Stop impersonation (client-side only)
 adminRoutes.post("/stop-impersonate", async (c) => {
   // Use the actual authenticated admin from the session, not a client-supplied ID
-  const admin = c.var.user;
+  const admin = c.var.user!;
 
   return c.json({
     user: { id: admin.id, name: admin.name, email: admin.email, image: admin.image },
@@ -188,9 +189,7 @@ adminRoutes.post("/stop-impersonate", async (c) => {
 // GET /teams - List all teams (paginated)
 adminRoutes.get("/teams", async (c) => {
   const db = getDb(c.env.DB);
-  const page = Math.max(1, Number(c.req.query("page")) || 1);
-  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit")) || 20));
-  const offset = (page - 1) * limit;
+  const { page, limit, offset } = parsePagination(c);
 
   const [items, countResult] = await Promise.all([
     db
@@ -251,9 +250,7 @@ adminRoutes.get("/teams/:id", async (c) => {
 adminRoutes.get("/teams/:id/links", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-  const page = Math.max(1, Number(c.req.query("page")) || 1);
-  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit")) || 20));
-  const offset = (page - 1) * limit;
+  const { page, limit, offset } = parsePagination(c);
 
   const team = await db.select({ id: teams.id }).from(teams).where(eq(teams.id, id)).get();
   if (!team) throw notFound("Team not found");
@@ -264,7 +261,7 @@ adminRoutes.get("/teams/:id/links", async (c) => {
   ]);
 
   return c.json({
-    data: items.map(l => { const { password, ...rest } = l; return { ...rest, hasPassword: !!password }; }),
+    data: items.map(l => stripPassword(l)),
     pagination: { page, limit, total: countResult[0]?.count ?? 0 },
   });
 });

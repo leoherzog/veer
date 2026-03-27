@@ -1,6 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { SPINNER, apiFetch, withLoadingBtn } from "../lib/ui.js";
 
 function renderMemberRow(member, isAdmin) {
   return `
@@ -48,33 +49,17 @@ function renderInviteRow(invite) {
 }
 
 export async function renderTeamDetail(container, { id }, currentUser = null, { onBack, onTeamsChanged } = {}) {
-  container.innerHTML = `<div class="wa-stack wa-align-items-center centered-state"><wa-spinner></wa-spinner></div>`;
+  container.innerHTML = SPINNER;
 
   let currentUserId = currentUser?.id;
   if (!currentUserId) {
-    try {
-      const meRes = await fetch("/api/me");
-      if (meRes.ok) {
-        const meData = await meRes.json();
-        currentUserId = meData.data?.id;
-      }
-    } catch { /* ignore */ }
+    const meResult = await apiFetch("/api/me").catch(() => null);
+    if (meResult?.data) currentUserId = meResult.data.id;
   }
 
-  let team;
-  try {
-    const res = await fetch(`/api/teams/${encodeURIComponent(id)}`);
-    if (res.status === 401) { window.location.href = "/login"; return; }
-    if (res.status === 404) {
-      container.innerHTML = `<div class="wa-stack wa-align-items-center centered-state"><p>Team not found.</p></div>`;
-      return;
-    }
-    if (!res.ok) { showToast("Failed to load team", "danger"); return; }
-    ({ data: team } = await res.json());
-  } catch {
-    showToast("Failed to load team", "danger");
-    return;
-  }
+  const teamResult = await apiFetch(`/api/teams/${encodeURIComponent(id)}`);
+  if (!teamResult) return;
+  const { data: team } = teamResult;
 
   // Determine current user's role from members list
   const members = team.members || [];
@@ -84,12 +69,8 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
   // Fetch invites if admin
   let invites = [];
   if (isAdmin) {
-    try {
-      const invRes = await fetch(`/api/teams/${encodeURIComponent(id)}/invites`);
-      if (invRes.ok) {
-        ({ data: invites } = await invRes.json());
-      }
-    } catch { /* ignore */ }
+    const invResult = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites`).catch(() => null);
+    if (invResult?.data) invites = invResult.data;
   }
 
   function goBack() {
@@ -98,7 +79,6 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     } else {
       navigate("/teams");
     }
-    history.replaceState(null, "", "/teams");
   }
 
   container.innerHTML = `
@@ -150,10 +130,10 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
               <wa-card>
                 <div class="wa-stack wa-gap-m">
                   <h3>Invite Member</h3>
-                  <form id="invite-form" class="wa-flank wa-gap-s wa-align-items-end">
+                  <form id="invite-form" class="wa-cluster wa-gap-s wa-align-items-end">
                     <wa-input id="invite-email" label="Email" type="email" placeholder="user@example.com" required></wa-input>
-                    <wa-select id="invite-role" label="Role" value="member">
-                      <wa-option value="member">Member</wa-option>
+                    <wa-select id="invite-role" label="Role">
+                      <wa-option value="member" selected>Member</wa-option>
                       <wa-option value="admin">Admin</wa-option>
                     </wa-select>
                     <wa-button type="submit" variant="brand" size="small">
@@ -262,19 +242,13 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
 
       if (!email) { showToast("Email is required", "warning"); return; }
 
-      submitBtn.loading = true;
-      submitBtn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}/invite`, {
+      await withLoadingBtn(submitBtn, async () => {
+        const result = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invite`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, role }),
         });
-        const result = await res.json();
-        if (!res.ok) {
-          showToast(result.message || result.error || "Failed to send invite", "danger");
-          return;
-        }
+        if (!result) return;
         const inviteUrl = `${location.origin}/invite/${result.data.token}`;
         showToast("Invite created! Share the link with the invitee.", "success");
         // Show a small inline result with the invite URL and copy button
@@ -294,12 +268,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
         const existingResult = inviteForm.parentElement.querySelector(".invite-result");
         if (existingResult) existingResult.remove();
         inviteForm.after(inviteResult);
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        submitBtn.loading = false;
-        submitBtn.disabled = false;
-      }
+      });
     });
   }
 
@@ -308,27 +277,16 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     btn.addEventListener("click", async () => {
       const userId = btn.dataset.userId;
       const newRole = btn.dataset.currentRole === "admin" ? "member" : "admin";
-      btn.loading = true;
-      btn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, {
+      await withLoadingBtn(btn, async () => {
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ role: newRole }),
         });
-        if (!res.ok) {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.message || result.error || "Failed to change role", "danger");
-          return;
-        }
+        if (!res) return;
         showToast("Role updated", "success");
         reloadPreservingTab();
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        btn.loading = false;
-        btn.disabled = false;
-      }
+      });
     });
   });
 
@@ -338,25 +296,14 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
       const userId = btn.dataset.userId;
       const name = btn.dataset.name;
       if (!confirm(`Remove ${name} from this team?`)) return;
-      btn.loading = true;
-      btn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, {
+      await withLoadingBtn(btn, async () => {
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, {
           method: "DELETE",
         });
-        if (!res.ok) {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.message || result.error || "Failed to remove member", "danger");
-          return;
-        }
+        if (!res) return;
         showToast("Member removed", "success");
         reloadPreservingTab();
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        btn.loading = false;
-        btn.disabled = false;
-      }
+      });
     });
   });
 
@@ -364,25 +311,14 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
   container.querySelectorAll(".cancel-invite-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const inviteId = btn.dataset.inviteId;
-      btn.loading = true;
-      btn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}/invites/${encodeURIComponent(inviteId)}`, {
+      await withLoadingBtn(btn, async () => {
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites/${encodeURIComponent(inviteId)}`, {
           method: "DELETE",
         });
-        if (!res.ok) {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.message || result.error || "Failed to cancel invite", "danger");
-          return;
-        }
+        if (!res) return;
         showToast("Invite cancelled", "success");
         reloadPreservingTab();
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        btn.loading = false;
-        btn.disabled = false;
-      }
+      });
     });
   });
 
@@ -396,28 +332,17 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
       if (!name) { showToast("Name is required", "warning"); return; }
 
       const confirmBtn = container.querySelector("#confirm-edit-team");
-      confirmBtn.loading = true;
-      confirmBtn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}`, {
+      await withLoadingBtn(confirmBtn, async () => {
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ name }),
         });
-        if (!res.ok) {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.message || result.error || "Failed to update team", "danger");
-          return;
-        }
+        if (!res) return;
         editDialog.open = false;
         showToast("Team updated", "success");
         reloadPreservingTab();
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        confirmBtn.loading = false;
-        confirmBtn.disabled = false;
-      }
+      });
     });
 
     // Delete team dialog
@@ -425,24 +350,13 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     container.querySelector("#delete-team-btn").addEventListener("click", () => { deleteDialog.open = true; });
     container.querySelector("#confirm-delete-team").addEventListener("click", async () => {
       const confirmBtn = container.querySelector("#confirm-delete-team");
-      confirmBtn.loading = true;
-      confirmBtn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" });
-        if (!res.ok) {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.message || result.error || "Failed to delete team", "danger");
-          return;
-        }
+      await withLoadingBtn(confirmBtn, async () => {
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" });
+        if (!res) return;
         deleteDialog.open = false;
         showToast("Team deleted", "success");
         goBack();
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        confirmBtn.loading = false;
-        confirmBtn.disabled = false;
-      }
+      });
     });
   }
 
@@ -451,23 +365,12 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
   if (leaveBtn) {
     leaveBtn.addEventListener("click", async () => {
       if (!confirm("Are you sure you want to leave this team?")) return;
-      leaveBtn.loading = true;
-      leaveBtn.disabled = true;
-      try {
-        const res = await fetch(`/api/teams/${encodeURIComponent(id)}/leave`, { method: "POST" });
-        if (!res.ok) {
-          const result = await res.json().catch(() => ({}));
-          showToast(result.error || "Failed to leave team", "danger");
-          return;
-        }
+      await withLoadingBtn(leaveBtn, async () => {
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/leave`, { method: "POST" });
+        if (!res) return;
         showToast("You have left the team", "success");
         goBack();
-      } catch {
-        showToast("Network error", "danger");
-      } finally {
-        leaveBtn.loading = false;
-        leaveBtn.disabled = false;
-      }
+      });
     });
   }
 }

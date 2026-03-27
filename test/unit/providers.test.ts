@@ -1,8 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { getConfiguredProviders } from "../../src/lib/providers";
-import type { Env } from "../../src/bindings";
 
-const BASE_ENV: Env = {
+const BASE_ENV = {
   BETTER_AUTH_URL: "http://localhost:8787",
   BETTER_AUTH_SECRET: "test-secret",
   CF_ACCOUNT_ID: "test",
@@ -11,16 +10,18 @@ const BASE_ENV: Env = {
   KV: {} as KVNamespace,
   ANALYTICS: {} as AnalyticsEngineDataset,
   ASSETS: {} as Fetcher,
-};
+  WORKER_NAME: "veer" as const,
+  PASSKEY_ENABLED: "false",
+} satisfies Env;
 
-function envWith(extra: Partial<Env>): Env {
-  return { ...BASE_ENV, ...extra };
+function envWith(extra: Record<string, string>): Env {
+  return { ...BASE_ENV, ...extra } as unknown as Env;
 }
 
 describe("getConfiguredProviders", () => {
-  it("returns an empty map when no providers are configured", () => {
+  it("returns an empty object when no providers are configured", () => {
     const result = getConfiguredProviders(BASE_ENV);
-    expect(result.size).toBe(0);
+    expect(Object.keys(result)).toHaveLength(0);
   });
 
   it("detects a single provider (GitHub)", () => {
@@ -29,8 +30,8 @@ describe("getConfiguredProviders", () => {
       GITHUB_CLIENT_SECRET: "gh-secret",
     });
     const result = getConfiguredProviders(env);
-    expect(result.size).toBe(1);
-    expect(result.get("github")).toEqual({
+    expect(Object.keys(result)).toHaveLength(1);
+    expect(result["github"]).toEqual({
       clientId: "gh-id",
       clientSecret: "gh-secret",
     });
@@ -48,8 +49,8 @@ describe("getConfiguredProviders", () => {
       DISCORD_CLIENT_SECRET: "dc-secret",
     });
     const result = getConfiguredProviders(env);
-    expect(result.size).toBe(4);
-    expect([...result.keys()].sort()).toEqual(
+    expect(Object.keys(result)).toHaveLength(4);
+    expect(Object.keys(result).sort()).toEqual(
       ["discord", "github", "google", "microsoft"],
     );
   });
@@ -60,7 +61,7 @@ describe("getConfiguredProviders", () => {
       // no GITHUB_CLIENT_SECRET
     });
     const result = getConfiguredProviders(env);
-    expect(result.size).toBe(0);
+    expect(Object.keys(result)).toHaveLength(0);
   });
 
   it("excludes a provider when only the client secret is set", () => {
@@ -69,7 +70,7 @@ describe("getConfiguredProviders", () => {
       // no GITHUB_CLIENT_ID
     });
     const result = getConfiguredProviders(env);
-    expect(result.size).toBe(0);
+    expect(Object.keys(result)).toHaveLength(0);
   });
 
   it("includes only fully configured providers in a mixed set", () => {
@@ -82,7 +83,7 @@ describe("getConfiguredProviders", () => {
       // missing DISCORD_CLIENT_ID
     });
     const result = getConfiguredProviders(env);
-    expect(result.size).toBe(1);
-    expect(result.has("google")).toBe(true);
+    expect(Object.keys(result)).toHaveLength(1);
+    expect("google" in result).toBe(true);
   });
 });

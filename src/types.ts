@@ -10,5 +10,5 @@ export type AuthUser = {
 /** Shared Hono environment type used across the app. */
 export type AppEnv = {
   Bindings: Env;
-  Variables: { user: AuthUser };
+  Variables: { user?: AuthUser };
 };

@@ -41,7 +41,7 @@ ${bodyHtml}
 }
 
 function passwordGatePage(slug: string, error?: string): Response {
-  const errorHtml = error ? `<p class="error">${error}</p>` : "";
+  const errorHtml = error ? `<p class="error">${escapeHtml(error)}</p>` : "";
   const body = `
 <div class="brand">Veer</div>
 <p class="message">This link is password protected</p>
@@ -59,7 +59,7 @@ ${errorHtml}
 function gonePage(message: string): Response {
   const body = `
 <div class="brand">Veer</div>
-<p class="message">${message}</p>`;
+<p class="message">${escapeHtml(message)}</p>`;
   return new Response(htmlPage("Link Unavailable", body), {
     status: 410,
     headers: { "Content-Type": "text/html;charset=utf-8" },
@@ -102,8 +102,18 @@ ${tags.join("\n")}
   });
 }
 
+/** Returns true if the URL is an absolute HTTP(S) URL. */
+function isSafeRedirectUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 function forbiddenPage(): Response {
@@ -261,7 +271,8 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
 
 /** Fire analytics and increment stats in the background. */
 function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, destinationUrl: string) {
-  writeClickEvent(c.env.ANALYTICS!, {
+  if (!c.env.ANALYTICS) return;
+  writeClickEvent(c.env.ANALYTICS, {
     linkId,
     slug,
     destinationUrl,
@@ -281,7 +292,7 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
       const domain = await getDb(c.env.DB).select().from(domainConfig)
         .where(eq(domainConfig.hostname, host))
         .get();
-      if (domain?.notFoundRedirect) {
+      if (domain?.notFoundRedirect && isSafeRedirectUrl(domain.notFoundRedirect)) {
         return c.redirect(domain.notFoundRedirect, 302);
       }
     }
@@ -392,7 +403,7 @@ export async function handleCustomDomainRoot(c: Context<AppEnv, "/">, next: Next
 
   if (!domain) return next();
 
-  if (domain.rootRedirect) {
+  if (domain.rootRedirect && isSafeRedirectUrl(domain.rootRedirect)) {
     return c.redirect(domain.rootRedirect, 302);
   }
 

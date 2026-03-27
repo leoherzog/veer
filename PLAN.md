@@ -45,6 +45,7 @@ veer/
     index.ts                   # Hono app entry point ✅
     bindings.ts                # Env type re-exports (types from worker-configuration.d.ts) ✅
     types.ts                   # AppEnv + AuthUser types ✅ (added in M1)
+    env.d.ts                   # Secret/optional env var declarations ✅ (added in M8)
     db/
       schema.ts                # All Drizzle table definitions ✅
       index.ts                 # drizzle(env.DB) factory ✅
@@ -71,9 +72,10 @@ veer/
     services/
       kv-cache.ts              # KV read/write/invalidate helpers ✅
       analytics.ts             # AE write (binding) + query (REST SQL API) helpers ✅
-      slug.ts                  # Slug validation (custom slugs only, no generation) ✅
+      slug.ts                  # Slug validation + SLUG_PATTERN/RESERVED_SLUGS constants ✅
     lib/
-      constants.ts             # SLUG_PATTERN, RESERVED_SLUGS ✅
+      team.ts                  # requireTeamMember() helper ✅ (added in M8)
+      validators.ts            # validateHttpUrl(), validateDomainAccess() ✅ (added in M8)
       errors.ts                # Typed HTTP error helpers (badRequest, notFound, conflict) ✅
       providers.ts             # OAuth provider detection helper ✅ (added in M1)
       crypto.ts                # HMAC-SHA256 API key hashing + key generation ✅
@@ -86,7 +88,8 @@ veer/
       lib/
         escape.js              # HTML/attribute escaping utilities ✅ (added in M1)
         chart-helper.js        # Theme-aware Chart.js wrapper ✅
-        stats-common.js        # Shared stats utilities (skeleton, noData, fetchJSON) ✅
+        stats-common.js        # Shared stats utilities (skeleton, noData, fetchJSON, cardError) ✅
+        ui.js                  # Shared UI utilities (apiFetch, withLoadingBtn, shortUrl, etc.) ✅ (added in M8)
       views/
         home.js                # Landing / quick shorten ✅
         dashboard.js           # Link list (authenticated) ✅
@@ -117,10 +120,10 @@ veer/
 
 `run_worker_first: true` means the Worker handles ALL requests. Hono routing priority as implemented in `src/index.ts`:
 
-1. Global: security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`) on all responses
+1. Global: security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`, `Content-Security-Policy`) on all responses
 2. `/api/*` - CORS middleware
 3. `/api/auth/*` - Better Auth handler (no auth middleware — handles its own)
-4. `/api/me`, `/api/me/*` - `requireAuth` middleware (session only)
+4. `/api/me` - `requireAuth` middleware (session only)
 5. `/api/links`, `/api/links/*`, `/api/stats/*`, `/api/campaigns/*`, `/api/bulk/*`, `/api/reports/*` - `requireAuthOrApiKey` + `rateLimitApiKey` middleware (session or API key)
 6. `/api/domains`, `/api/domains/*` - `requireAuth` (session only, admin routes further gated by `requireAdmin`)
 7. `/api/keys`, `/api/keys/*` - `requireAuth` (session only — can't manage keys via API key)
@@ -133,15 +136,11 @@ The slug handler checks KV first (sub-ms, `cacheTtl: 30`), falls back to D1 on m
 ## Better Auth Configuration Pattern
 
 ```typescript
-// src/auth/index.ts - created per-request with env bindings
+// src/auth/index.ts - cached per env object via WeakMap
 // Provider detection extracted to src/lib/providers.ts (getConfiguredProviders)
 // Passkey plugin loaded conditionally via PASSKEY_ENABLED env var
 export function getAuth(env: Env) {
-  const providers = getConfiguredProviders(env);  // Map<ProviderId, {clientId, clientSecret}>
-  const socialProviders: Record<string, { clientId: string; clientSecret: string }> = {};
-  for (const [id, creds] of providers) {
-    socialProviders[id] = creds;
-  }
+  const socialProviders = getConfiguredProviders(env);  // Record<string, {clientId, clientSecret}>
   const origin = env.BETTER_AUTH_URL;
   const rpID = new URL(origin).hostname;
   const plugins = [];
@@ -159,7 +158,7 @@ export function getAuth(env: Env) {
 }
 ```
 
-The `getConfiguredProviders()` helper iterates `["google", "github", "microsoft", "discord"]` and checks for `{PROVIDER}_CLIENT_ID` + `{PROVIDER}_CLIENT_SECRET` env vars. It's also used by `GET /api/auth/providers` to return the list of available providers to the frontend login view. The providers endpoint also returns `passkey: true/false` based on `PASSKEY_ENABLED`.
+The `getConfiguredProviders()` helper iterates `["google", "github", "microsoft", "discord"]` and checks for `{PROVIDER}_CLIENT_ID` + `{PROVIDER}_CLIENT_SECRET` env vars, returning a `Record<string, { clientId, clientSecret }>` directly. It's also used by `GET /api/auth/providers` to return the list of available providers to the frontend login view. The providers endpoint also returns `passkey: true/false` based on `PASSKEY_ENABLED`.
 
 All auth methods (OAuth providers and passkey) are conditionally enabled — the login page only renders buttons for methods that are configured. If nothing is configured, the login page shows an administrator notice instead.
 
@@ -888,72 +887,118 @@ button, icon, button-group, input, card, details, avatar, spinner, callout, copy
 
 ---
 
-## Milestone 8: A/B Testing, Polish & Self-Hosting
+## Milestone 8: Code Quality, Security Hardening & DRY Refactor
 
-**Delivers**: A/B testing, one-click social share, setup wizard, theme toggle, CSV export, README.
+**Delivers**: Comprehensive refactoring pass extracting shared utilities, hardening security, fixing WA component patterns, and reducing frontend/backend code duplication. No new features — focuses on correctness, maintainability, and consistency across the entire codebase.
 
-### New Tables
-- `ab_tests` (id, linkId FK UNIQUE, isActive, createdAt)
-- `ab_variants` (id, testId FK, destinationUrl, weight INT, clicks INT DEFAULT 0)
+**Status**: All files implemented.
 
 ### Key Changes
-- `redirect.ts` - Weighted random traffic splitting for A/B variants
-- First-run setup wizard (create admin user on empty DB)
-- Dark/light theme toggle (swap `wa-light` ↔ `wa-dark` on `<html>`, persist to `localStorage`)
-- CSV export endpoint
-- Comprehensive README.md with self-hosting guide
 
-### One-Click Social Share
+#### Backend: Extracted shared utilities
+- **`src/lib/validators.ts` (NEW)** — Extracted `validateHttpUrl()` and `validateDomainAccess()` from `links.ts`. Used by links, bulk, and targets validation.
+- **`src/lib/team.ts` (NEW)** — Extracted `requireTeamMember()` from `teams.ts`. Used by links, stats, and teams routes.
+- **`src/lib/request.ts`** — Added `parsePagination()` helper. Used by links, admin, and campaigns routes (replaced inline page/limit/offset parsing).
+- **`src/lib/date.ts`** — Moved `formatHour()` and `formatWeek()` from `stats.ts` into shared module. Made `MONTHS` non-exported (internal).
+- **`src/lib/constants.ts` (DELETED)** — `SLUG_PATTERN` and `RESERVED_SLUGS` moved into `src/services/slug.ts` (their only consumer).
 
-Share buttons appear on the link detail view, letting users quickly share their short URL to social platforms. Uses the WA Social Share pattern with `wa-button` + `wa-icon` brand icons inside a `wa-cluster`.
+#### Backend: Security hardening
+- **`src/routes/redirect.ts`** — Added `isSafeRedirectUrl()` validation on `rootRedirect` and `notFoundRedirect` before issuing `c.redirect()`. HTML-escaped error messages in `passwordGatePage()` and `gonePage()` to prevent reflected XSS.
+- **`src/index.ts`** — Added `Content-Security-Policy` header (default-src 'self', script-src 'self', font-src 'self' + jsdelivr CDN).
+- **`src/services/password.ts`** — Replaced manual constant-time comparison loop with `crypto.subtle.timingSafeEqual()` (Web Crypto native).
+- **`src/middleware/rate-limit.ts`** — Extracted shared `rateLimit()` function used by both `rateLimitApiKey` and `rateLimitSession`. Added `checkRateLimit()` standalone function for use outside middleware (public report endpoint).
+- **`src/middleware/cors.ts`** — Instantiate `cors()` handler once per worker instance instead of per-request. Reads `BETTER_AUTH_URL` from env inside the origin callback.
 
-#### Component: `frontend/src/components/share-links.js`
+#### Backend: Type safety & cleanup
+- **`src/types.ts`** — Changed `Variables: { user: AuthUser }` to `{ user?: AuthUser }` (correct — middleware may not have run). All route handlers now use `c.var.user!` (non-null assertion after auth middleware has run).
+- **`src/auth/index.ts`** — `getConfiguredProviders()` now returns `Record<string, ...>` directly (removed intermediate `Map` → `Record` conversion). Removed unused `Auth` type export. Removed `Env` import (uses global from `worker-configuration.d.ts`).
+- **`src/lib/providers.ts`** — Simplified to return `Record<string, { clientId, clientSecret }>` directly. Removed `ProviderCredentials` interface and `envKey()` helper. Removed `Env` import.
+- **`src/routes/api/reports.ts`** — Simplified `generateReportToken()` to use `crypto.randomUUID()` (replaces manual rejection sampling). PUT handler returns constructed response object instead of re-fetching from DB.
+- **`src/routes/api/admin.ts`** — Uses `parsePagination()`. Deferred user existence check to after body validation (avoids unnecessary DB read on no-op).
+- **`src/routes/api/links.ts`** — Exported `stripPassword()` (used by admin route). Removed `validateDestinationUrl()` and `validateOgImageUrl()` wrappers (replaced by direct `validateHttpUrl()` calls). Removed `validateDomainAccess()` (moved to `lib/validators.ts`).
+- **`src/routes/api/teams.ts`** — Extracted `requireNotLastAdmin()` helper (used by leave, remove member, change role). Removed local `requireTeamMember()` (imported from `lib/team.ts`).
+- **`src/routes/api/stats.ts`** — Added team member access check (team members can view stats for team-owned links).
+- **`src/routes/api/bulk.ts`** — Uses `validateHttpUrl` and `validateDomainAccess` from `lib/validators.ts`.
+- **`src/index.ts`** — Removed duplicate `/api/me/*` middleware registration. Public report rate limiting uses `checkRateLimit()` instead of inline logic.
+- **`src/services/analytics.ts`** — Made `AERow`, `AEMeta`, `AEResult` types non-exported (internal to module).
+- **`src/services/kv-cache.ts`** — Made `kvKey()` non-exported (internal helper).
+- **`src/services/useragent.ts`** — Made `UAInfo` interface non-exported.
+- **`src/env.d.ts` (NEW)** — Declares secrets (`CF_ACCOUNT_ID`, `CF_API_TOKEN`, `ADMIN_EMAILS`) and optional OAuth vars on `Cloudflare.Env` via interface merging. These are set via `wrangler secret put` and not generated by `wrangler types`.
+- **`tsconfig.json`** — Removed unused `paths` alias (`@/*`). Removed `globals: true` from vitest config.
 
-```html
-<div class="wa-cluster wa-gap-s">
-  <wa-button size="large" variant="neutral" appearance="plain"
-    ><wa-icon name="x-twitter" family="brands" label="Share on X"></wa-icon
-  ></wa-button>
-  <wa-button size="large" variant="neutral" appearance="plain"
-    ><wa-icon name="facebook" family="brands" label="Share on Facebook"></wa-icon
-  ></wa-button>
-  <wa-button size="large" variant="neutral" appearance="plain"
-    ><wa-icon name="bluesky" family="brands" label="Share on Bluesky"></wa-icon
-  ></wa-button>
-  <wa-button size="large" variant="neutral" appearance="plain"
-    ><wa-icon name="linkedin" family="brands" label="Share on LinkedIn"></wa-icon
-  ></wa-button>
-  <wa-button size="large" variant="neutral" appearance="plain"
-    ><wa-icon name="mastodon" family="brands" label="Share on Mastodon"></wa-icon
-  ></wa-button>
-  <wa-button size="large" variant="neutral" appearance="plain"
-    ><wa-icon name="envelope-open" label="Share via email"></wa-icon
-  ></wa-button>
-</div>
-```
+#### Frontend: Shared UI utilities
+- **`frontend/src/lib/ui.js` (NEW)** — Extracted 5 shared helpers used across all views:
+  - `SPINNER` — Loading state HTML constant
+  - `apiFetch(url, opts)` — Fetch wrapper with 401 redirect and error toast (returns parsed JSON or null)
+  - `withLoadingBtn(btn, fn)` — Button loading/disabled guard
+  - `shortUrl(link)` — Construct short URL from link object (domain-aware)
+  - `emptyState(icon, message)` — Empty state with icon HTML
+  - `bindConfirmDialog({ dialog, confirmBtn, cancelBtn, onConfirm })` — Confirm dialog wiring
+  - `bindSearchInput(input, onSearch, opts)` — Debounced search with wa-clear support
 
-Each button opens the platform's share URL in a new window via `window.open()`:
-```js
-const shareUrls = {
-  'x-twitter': (url, title) => `https://x.com/intent/tweet?url=${encodeURIComponent(url)}&text=${encodeURIComponent(title)}`,
-  facebook:    (url) => `https://www.facebook.com/sharer/sharer.php?u=${encodeURIComponent(url)}`,
-  bluesky:     (url, title) => `https://bsky.app/intent/compose?text=${encodeURIComponent(title + ' ' + url)}`,
-  linkedin:    (url) => `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(url)}`,
-  mastodon:    (url, title) => `https://share.joinmastodon.org/#text=${encodeURIComponent(title + ' ' + url)}`,
-  email:       (url, title) => `mailto:?subject=${encodeURIComponent(title)}&body=${encodeURIComponent(url)}`,
-};
-```
+#### Frontend: Views refactored
+- **All views** (`admin.js`, `dashboard.js`, `link-detail.js`, `campaign-detail.js`, `campaigns.js`, `settings.js`, `teams.js`, `team-detail.js`, `login.js`) — Replaced inline fetch+error+loading patterns with `apiFetch()` and `withLoadingBtn()`. Net reduction: ~650 lines removed across frontend.
+- **`login.js`** — Added error handling for single-provider auto-redirect (catches failed social sign-in). Shows "Failed to load login providers" on provider fetch failure instead of rendering empty buttons.
+- **`campaign-detail.js`** — Fixed `wa-textarea` value assignment (set programmatically, not via HTML attribute). Used `#campaign-link-count` ID instead of fragile `.wa-heading-xl` selector.
+- **`settings.js`** — Fixed `wa-textarea` value for access emails (set programmatically after render). Passkey delete now uses `authClient.passkey.deletePasskey()` instead of raw fetch to `/api/auth/passkey/delete-passkey`.
 
-The component also includes a "Copy Link" button using `wa-copy-button` for the short URL. On devices that support it, a native share fallback is offered via `navigator.share()`.
+#### Frontend: WA component fixes
+- **`wa-select` values** — Replaced `selected` attribute on `wa-option` with `value` attribute on `wa-select` parent (correct WA pattern). Applied in `link-form.js`, `dashboard.js`, `settings.js`.
+- **`wa-flank`** — Fixed `wa-flank:end` to `wa-flank` (`:end` is not valid class syntax).
+- **`wa-icon variant`** — Fixed `variant="regular"` to `variant="solid"` in `campaigns.js` (FA Free has no regular variant).
+- **`wa-input hint`** — Fixed `slot="hint"` to `slot="help-text"` in `teams.js`.
+
+#### Frontend: Build & helpers
+- **`frontend/esbuild.mjs`** — Sourcemaps only in watch mode (`--watch` flag), not production builds.
+- **`frontend/src/lib/chart-helper.js`** — Fixed typo: `--wa-color-wa-color-text-quiet` → `--wa-color-text-quiet`.
+- **`frontend/src/lib/escape.js`** — Removed unnecessary `>` escaping in `escapeAttr()` (not required in HTML attributes).
+- **`frontend/src/lib/stats-common.js`** — Added `cardError()` helper (wraps `noData()` in `wa-card`).
+- **`frontend/src/components/link-table.js`** — Uses shared `shortUrl()` from `ui.js`.
+- **`frontend/src/components/stats-devices.js`, `stats-geo.js`, `stats-referrers.js`** — Use `cardError()` for error states.
+
+#### Test infrastructure
+- **`test/helpers.ts`** — Expanded `createTestLink()` to support all M3+ fields (expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, paramForwarding). Added shared helpers: `createTestDomain()`, `insertClickStat()`, `apiRequest()`. These replace duplicated setup code across test files.
+- **`test/integration/app.test.ts`** — Removed redundant CORS tests (CORS behavior already covered by other integration tests).
+- **Test files** (`auth-apikey`, `campaigns`, `keys`, `links-domain`, `domains`, `bulk`, `links`, `reports`, `redirect-advanced`, `stats`) — Use shared `apiRequest()` and `createTestDomain()` helpers instead of inline implementations.
+- **`test/unit/providers.test.ts`** — Updated for new `Record<string, ...>` return type (was `Map`).
+- **`test/unit/constants.test.ts`** — Imports from `slug.ts` instead of deleted `constants.ts`.
+- **`test/unit/slug.test.ts`** — Imports from `slug.ts` instead of deleted `constants.ts`.
+- **`vitest.config.ts`** — Removed `globals: true` (explicit imports preferred).
 
 ### Verification
-- A/B test splits traffic correctly per weights
-- Setup wizard runs on first deploy, then hides
-- Theme toggle works
-- Social share buttons open correct platform share dialogs with pre-filled short URL
-- `navigator.share()` fallback works on mobile
-- CSV export produces valid file
-- Fresh clone + configure + `wrangler deploy` works end-to-end
+- All existing tests pass after refactoring
+- No new features or API surface changes
+- `wrangler dev` + frontend builds correctly
+- Auth, links, campaigns, teams, stats all function as before
+- Security headers (CSP) applied to all responses
+- Redirect URL validation prevents open redirect via domain config
+
+### Implementation Notes
+
+**Implemented 2026-03-25. All M8 files complete.**
+
+#### Design decisions
+- **`apiFetch()` returns null on failure**: Callers check `if (!result) return;` — this eliminates try/catch/finally boilerplate. Toast and 401 redirect are handled once.
+- **`withLoadingBtn()` does NOT catch errors**: It only manages the loading/disabled state. Error handling is the caller's responsibility (typically via `apiFetch()` returning null).
+- **`user?: AuthUser` in AppEnv**: The `user` variable is set by auth middleware, which doesn't run on all routes (e.g. `/api/auth/*`, `/:slug`). Making it optional is type-correct. Route handlers behind auth middleware use `c.var.user!`.
+- **`constants.ts` deleted**: The slug pattern and reserved slugs were only used in `slug.ts`. Co-locating them eliminates a module that existed solely for two constants.
+- **`requireTeamMember` extracted to `lib/team.ts`**: Used in teams, links (for team-scoped operations), and stats (for team member access). The `Database` type is imported from `db/index.ts`.
+- **`validateDomainAccess` extracted to `lib/validators.ts`**: Used in links create/update and bulk create. Co-located with `validateHttpUrl` since both are input validation helpers.
+- **`isSafeRedirectUrl()` in redirect.ts**: Prevents open redirect via malicious `rootRedirect`/`notFoundRedirect` in domain_config (defense in depth — admin controls these values, but validates at point of use).
+- **`crypto.subtle.timingSafeEqual()`**: Available in Workers runtime. Replaces manual XOR loop for password verification — more correct and harder to accidentally break.
+- **Report token simplified**: `crypto.randomUUID()` with dashes stripped provides 122 bits of entropy, sufficient for public report tokens. The previous rejection sampling approach was over-engineered.
+- **Sourcemaps in dev only**: Production builds don't need sourcemaps and they add ~30% to bundle size.
+- **CORS handler singleton**: `cors()` is now instantiated once rather than per-request. The origin callback reads `env.BETTER_AUTH_URL` at call time via the Hono context parameter, so it still works correctly with different env bindings.
+- **Stats team access**: Team members can now view stats for links owned by their team. The middleware checks `link.teamId` and validates membership before allowing access.
+
+#### Files created
+- `frontend/src/lib/ui.js` — Shared frontend UI utilities
+- `src/env.d.ts` — Secret/optional env var declarations (augments generated `Env`)
+- `src/lib/team.ts` — `requireTeamMember()` helper
+- `src/lib/validators.ts` — `validateHttpUrl()`, `validateDomainAccess()` helpers
+
+#### Files deleted
+- `src/lib/constants.ts` — Constants moved to `src/services/slug.ts`
 
 ---
 
@@ -968,7 +1013,7 @@ The component also includes a "Copy Link" button using `wa-copy-button` for the 
 | `0004_simplified_domains.sql` | M5 | domain_config, domain_access, ALTER links (+domainHostname), DROP domains |
 | `0004_api_keys.sql` | M6 ✅ | api_keys, public_reports |
 | `0005_teams.sql` | M7 | teams, team_members, team_invites, ALTER links/user |
-| `0006_ab_testing.sql` | M8 | ab_tests, ab_variants |
+| (none) | M8 | No schema changes — refactoring only |
 
 ## Frontend Conventions (Web Awesome)
 

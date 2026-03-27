@@ -1,37 +1,20 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
 import { hashPassword } from "../../src/services/password";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-type JsonBody = Record<string, unknown>;
-
-async function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string>; body?: JsonBody } = {}
-) {
-  const init: RequestInit = { method, headers: opts.headers };
-  if (opts.body) {
-    init.body = JSON.stringify(opts.body);
-  }
-  return app.request(path, init, env);
+function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
+  return apiRequest(app, method, path, opts);
 }
 
 /** Shorthand: POST /api/links with auth. */
-async function postLink(body: JsonBody, headers: Record<string, string>) {
+function postLink(body: JsonBody, headers: Record<string, string>) {
   return api("POST", "/api/links", { headers, body });
-}
-
-/** Insert a click stat row directly into D1 for the given link. */
-async function insertClickStat(linkId: string, clicks: number, date = "2026-03-17") {
-  await env.DB.prepare(
-    "INSERT INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, ?)"
-  ).bind(linkId, date, clicks, clicks).run();
 }
 
 // ---------------------------------------------------------------------------
@@ -211,8 +194,8 @@ describe("Links API", () => {
 
     it("returns aggregated totalClicks from link_stats", async () => {
       const link = await createTestLink(env.DB, { slug: "get-clicks", userId });
-      await insertClickStat(link.id, 15, "2026-03-15");
-      await insertClickStat(link.id, 25, "2026-03-16");
+      await insertClickStat(env.DB, link.id, 15, "2026-03-15");
+      await insertClickStat(env.DB, link.id, 25, "2026-03-16");
 
       const res = await api("GET", `/api/links/${link.id}`, { headers });
       const json = await res.json() as { data: { totalClicks: number } };

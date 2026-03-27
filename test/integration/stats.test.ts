@@ -1,32 +1,18 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
-import { setupAuth, createTestLink } from "../helpers";
+import { setupAuth, createTestLink, apiRequest, insertClickStat } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string> } = {}
-) {
-  return app.request(path, { method, headers: opts.headers }, env);
+function api(method: string, path: string, opts: { headers?: Record<string, string> } = {}) {
+  return apiRequest(app, method, path, opts);
 }
 
-/** Insert a link_stats row directly into D1. */
-async function insertLinkStat(
-  linkId: string,
-  date: string,
-  clicks: number,
-  uniqueClicks = clicks
-) {
-  await env.DB.prepare(
-    "INSERT OR REPLACE INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, ?, ?, ?)"
-  )
-    .bind(linkId, date, clicks, uniqueClicks)
-    .run();
+function insertLinkStat(linkId: string, date: string, clicks: number, uniqueClicks = clicks) {
+  return insertClickStat(env.DB, linkId, clicks, date, uniqueClicks);
 }
 
 // ---------------------------------------------------------------------------

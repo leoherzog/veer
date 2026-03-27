@@ -16,7 +16,7 @@ async function checkSession(c: { env: AppEnv["Bindings"]; req: { raw: Request } 
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   if (!session?.user) return null;
   const isAdmin = isAdminUser(c.env, session.user.email);
-  return { ...session.user, isAdmin } as AuthUser;
+  return { ...session.user, isAdmin };
 }
 
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
@@ -68,14 +68,13 @@ export const requireAuthOrApiKey = createMiddleware<AppEnv>(async (c, next) => {
       email: row.userEmail,
       image: row.userImage ?? null,
       isAdmin,
-    } as AuthUser);
+    });
 
     c.executionCtx.waitUntil(
       db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.keyId)),
     );
 
-    await next();
-    return;
+    return await next();
   }
 
   // Fall through to session auth

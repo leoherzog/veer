@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SLUG_PATTERN, RESERVED_SLUGS } from "../../src/lib/constants";
+import { SLUG_PATTERN, RESERVED_SLUGS } from "../../src/services/slug";
 
 describe("SLUG_PATTERN", () => {
   it("is a RegExp", () => {

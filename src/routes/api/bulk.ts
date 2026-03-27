@@ -1,14 +1,15 @@
 import { Hono } from "hono";
 import { eq, and, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
-import { links, domainConfig, domainAccess, teamMembers } from "../../db/schema";
+import { links } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect } from "../../services/kv-cache";
 import { badRequest } from "../../lib/errors";
+import { requireTeamMember } from "../../lib/team";
+import { validateHttpUrl, validateDomainAccess } from "../../lib/validators";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "../../types";
 import type { CachedRedirect } from "../../services/kv-cache";
-import type { Database } from "../../db";
 
 /** Build a minimal CachedRedirect for a freshly created link (no targets). */
 function buildNewLinkCache(
@@ -33,33 +34,6 @@ function buildNewLinkCache(
     targets: null,
     domainHostname,
   };
-}
-
-/** Validate that a URL is parseable and uses http(s) scheme. */
-function validateHttpUrl(url: string, fieldName: string): string {
-  if (!url) throw badRequest(`${fieldName} is required`);
-  let parsed: URL;
-  try {
-    parsed = new URL(url);
-  } catch {
-    throw badRequest(`Invalid ${fieldName}`);
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw badRequest(`${fieldName} must use http or https`);
-  }
-  return url;
-}
-
-/** Validate domain access: checks domain exists AND user has access. */
-async function validateDomainAccess(db: Database, hostname: string, userEmail: string, isAdmin: boolean): Promise<void> {
-  const domain = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
-  if (!domain) throw badRequest("Domain not found");
-  if (isAdmin) return;
-  if (domain.accessMode === "all") return;
-  const access = await db.select().from(domainAccess)
-    .where(and(eq(domainAccess.hostname, hostname), eq(domainAccess.email, userEmail.toLowerCase())))
-    .get();
-  if (!access) throw badRequest("You do not have access to this domain");
 }
 
 interface BulkLinkInput {
@@ -87,7 +61,7 @@ type BulkResult =
 const bulkRoutes = new Hono<AppEnv>();
 
 bulkRoutes.post("/", async (c) => {
-  const user = c.var.user;
+  const user = c.var.user!;
 
   // Check body size — 100KB limit for bulk (allow missing Content-Length per Workers convention)
   const contentLength = c.req.header("content-length");
@@ -104,14 +78,11 @@ bulkRoutes.post("/", async (c) => {
 
   const teamId = body.teamId?.trim() || null;
 
+  const db = getDb(c.env.DB);
+
   // Validate team membership if teamId provided
   if (teamId) {
-    const db = getDb(c.env.DB);
-    const member = await db.select({ role: teamMembers.role })
-      .from(teamMembers)
-      .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, user.id)))
-      .get();
-    if (!member) throw badRequest("Team not found or you are not a member");
+    await requireTeamMember(db, teamId, user.id);
   }
 
   if (!Array.isArray(body.links)) {
@@ -125,8 +96,6 @@ bulkRoutes.post("/", async (c) => {
   if (body.links.length > 50) {
     throw badRequest("Maximum 50 links per request");
   }
-
-  const db = getDb(c.env.DB);
   const results: BulkResult[] = new Array(body.links.length);
   const validated: ValidatedLink[] = [];
 
@@ -255,7 +224,7 @@ bulkRoutes.post("/", async (c) => {
     );
 
     try {
-      await db.batch(batchOps as any);
+      await db.batch(batchOps as [typeof batchOps[number], ...typeof batchOps[number][]]);
       // Batch succeeded — mark all as success
       for (const v of validated) {
         results[v.index] = { slug: v.slug, id: v.id, success: true };

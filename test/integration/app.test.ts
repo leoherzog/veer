@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import app from "../../src/index";
 import { setupAuth } from "../helpers";
 
@@ -55,60 +55,6 @@ describe("App-level concerns", () => {
       );
 
       expect(res.headers.get("Access-Control-Allow-Origin")).toBe(BETTER_AUTH_URL);
-      expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
-    });
-
-    it("OPTIONS /api/links with non-matching origin omits CORS allow-origin", async () => {
-      const res = await app.request(
-        "/api/links",
-        {
-          method: "OPTIONS",
-          headers: {
-            Origin: "https://evil.example.com",
-            "Access-Control-Request-Method": "POST",
-          },
-        },
-        env
-      );
-
-      const allowOrigin = res.headers.get("Access-Control-Allow-Origin");
-      // Should be empty string or absent — never the attacker's origin
-      expect(allowOrigin).not.toBe("https://evil.example.com");
-    });
-
-    it("CORS allows GET, POST, PUT, DELETE methods", async () => {
-      const res = await app.request(
-        "/api/links",
-        {
-          method: "OPTIONS",
-          headers: {
-            Origin: BETTER_AUTH_URL,
-            "Access-Control-Request-Method": "PUT",
-          },
-        },
-        env
-      );
-
-      const allowMethods = res.headers.get("Access-Control-Allow-Methods") ?? "";
-      expect(allowMethods).toContain("GET");
-      expect(allowMethods).toContain("POST");
-      expect(allowMethods).toContain("PUT");
-      expect(allowMethods).toContain("DELETE");
-    });
-
-    it("CORS includes Access-Control-Allow-Credentials: true", async () => {
-      const res = await app.request(
-        "/api/links",
-        {
-          method: "OPTIONS",
-          headers: {
-            Origin: BETTER_AUTH_URL,
-            "Access-Control-Request-Method": "GET",
-          },
-        },
-        env
-      );
-
       expect(res.headers.get("Access-Control-Allow-Credentials")).toBe("true");
     });
   });
