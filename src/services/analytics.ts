@@ -14,7 +14,7 @@ export function writeClickEvent(analytics: AnalyticsEngineDataset, event: ClickE
   //   blob3  = user-agent     (devices endpoint)
   //   blob4  = referer        (referrers endpoint)
   //   blob5  = city           (geo endpoint)
-  //   blob6  = destinationUrl (not queried)
+  //   blob6  = destinationUrl (A/B stats endpoint)
   //   blob7  = region         (not queried)
   analytics.writeDataPoint({
     indexes: [event.linkId],

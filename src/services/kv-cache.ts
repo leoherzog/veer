@@ -1,5 +1,5 @@
 export interface CachedTarget {
-  type: "geo" | "device";
+  type: "geo" | "device" | "ab";
   matchValue: string;
   destinationUrl: string;
   priority: number;

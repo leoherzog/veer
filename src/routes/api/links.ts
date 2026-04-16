@@ -35,7 +35,7 @@ async function buildCachedRedirect(
   } else {
     const rows = await db.select().from(linkTargets).where(eq(linkTargets.linkId, link.id));
     targets = rows.length > 0
-      ? rows.map(t => ({ type: t.type as "geo" | "device", matchValue: t.matchValue, destinationUrl: t.destinationUrl, priority: t.priority }))
+      ? rows.map(t => ({ type: t.type as "geo" | "device" | "ab", matchValue: t.matchValue, destinationUrl: t.destinationUrl, priority: t.priority }))
       : null;
   }
 
@@ -594,8 +594,8 @@ linkRoutes.put("/:id/targets", async (c) => {
   // Validate each target
   const VALID_DEVICE_TYPES = new Set(["mobile", "tablet", "desktop"]);
   for (const t of body.targets) {
-    if (t.type !== "geo" && t.type !== "device") {
-      throw badRequest('Invalid target type. Must be "geo" or "device"');
+    if (t.type !== "geo" && t.type !== "device" && t.type !== "ab") {
+      throw badRequest('Invalid target type. Must be "geo", "device", or "ab"');
     }
     if (!t.matchValue || typeof t.matchValue !== "string") {
       throw badRequest("matchValue is required");
@@ -614,7 +614,22 @@ linkRoutes.put("/:id/targets", async (c) => {
       }
       t.matchValue = device;
     }
+    if (t.type === "ab") {
+      const weight = parseInt(t.matchValue, 10);
+      if (isNaN(weight) || weight < 1 || weight > 99) {
+        throw badRequest("A/B weight must be an integer between 1 and 99");
+      }
+      t.matchValue = String(weight);
+    }
     validateHttpUrl(t.destinationUrl, "destinationUrl");
+  }
+
+  // Validate A/B weight sum
+  const abWeightSum = body.targets
+    .filter(t => t.type === "ab")
+    .reduce((sum, t) => sum + parseInt(t.matchValue, 10), 0);
+  if (abWeightSum >= 100) {
+    throw badRequest("A/B variant weights must sum to less than 100");
   }
 
   // Replace all targets atomically via db.batch()
@@ -636,7 +651,7 @@ linkRoutes.put("/:id/targets", async (c) => {
       })
     );
     newTargets.push({
-      type: t.type as "geo" | "device",
+      type: t.type as "geo" | "device" | "ab",
       matchValue: t.matchValue,
       destinationUrl: t.destinationUrl,
       priority,

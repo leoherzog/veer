@@ -297,4 +297,27 @@ async function fallbackSummary(c: Context<StatsEnv>, linkId: string, days: numbe
   });
 }
 
+// GET /api/stats/:linkId/ab - A/B test variant performance
+statsRoutes.get("/:linkId/ab", async (c) => {
+  const linkId = c.req.param("linkId");
+  const days = parseDays(c.req.query("days"), 90, 30);
+
+  if (c.var.aeAvailable) {
+    try {
+      const sql = `SELECT blob6 as destinationUrl, count() as clicks FROM veer_clicks WHERE index1 = '${linkId}' AND timestamp >= NOW() - INTERVAL '${days}' DAY GROUP BY blob6 ORDER BY clicks DESC LIMIT 20`;
+      const result = await queryAnalyticsEngine(c.env.CF_ACCOUNT_ID, c.env.CF_API_TOKEN, sql);
+      const variants = (result.data || []).map((row) => ({
+        url: String(row.destinationUrl || "(unknown)"),
+        clicks: parseInt(String(row.clicks)) || 0,
+      }));
+      return c.json({ data: variants });
+    } catch (e) {
+      logAEError("ab", e);
+    }
+  }
+
+  // Fallback: no per-variant data available from D1 (link_stats doesn't track destination)
+  return c.json({ data: [], fallback: true });
+});
+
 export default statsRoutes;

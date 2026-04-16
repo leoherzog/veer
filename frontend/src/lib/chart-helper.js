@@ -1,5 +1,6 @@
 import { Chart, registerables } from "chart.js";
-Chart.register(...registerables);
+import { ChoroplethController, GeoFeature, ColorScale, ProjectionScale } from "chartjs-chart-geo";
+Chart.register(...registerables, ChoroplethController, GeoFeature, ColorScale, ProjectionScale);
 
 function getThemeColors() {
   const style = getComputedStyle(document.documentElement);

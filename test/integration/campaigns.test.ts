@@ -610,8 +610,9 @@ describe("Campaigns API", () => {
       await linkToCampaign(link1.id, campaign.id);
       await linkToCampaign(link2.id, campaign.id);
 
-      await insertClickStat(env.DB, link1.id, 10, "2026-03-20", 8);
-      await insertClickStat(env.DB, link2.id, 20, "2026-03-20", 15);
+      const recent = new Date(Date.now() - 5 * 86400000).toISOString().slice(0, 10);
+      await insertClickStat(env.DB, link1.id, 10, recent, 8);
+      await insertClickStat(env.DB, link2.id, 20, recent, 15);
 
       const res = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
       expect(res.status).toBe(200);

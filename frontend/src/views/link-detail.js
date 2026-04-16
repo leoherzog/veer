@@ -63,7 +63,8 @@ function buildOgPreview(link) {
 }
 
 function buildTargetingRules(targets) {
-  if (!targets || !targets.length) return "";
+  const filtered = (targets || []).filter(t => t.type !== "ab");
+  if (!filtered.length) return "";
   return `
     <wa-card>
       <div class="wa-stack wa-gap-s">
@@ -78,7 +79,7 @@ function buildTargetingRules(targets) {
             </tr>
           </thead>
           <tbody>
-            ${targets.map(t => `
+            ${filtered.map(t => `
               <tr>
                 <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
                 <td>${escapeHtml(t.matchValue)}</td>
@@ -88,6 +89,43 @@ function buildTargetingRules(targets) {
             `).join("")}
           </tbody>
         </table>
+      </div>
+    </wa-card>
+  `;
+}
+
+function buildAbTestCard(targets, link) {
+  const abTargets = (targets || []).filter(t => t.type === "ab");
+  if (!abTargets.length) return "";
+  const totalWeight = abTargets.reduce((sum, t) => sum + (parseInt(t.matchValue) || 0), 0);
+  const defaultWeight = Math.max(1, 100 - totalWeight);
+  return `
+    <wa-card>
+      <div class="wa-stack wa-gap-s">
+        <div class="wa-split">
+          <h3>A/B Test</h3>
+          <wa-badge variant="brand" pill>Active</wa-badge>
+        </div>
+        <table class="link-table" aria-label="A/B test variants">
+          <thead>
+            <tr><th>Variant</th><th>Destination</th><th>Weight</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><wa-badge variant="neutral" pill>Control</wa-badge></td>
+              <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>
+              <td>${defaultWeight}%</td>
+            </tr>
+            ${abTargets.map((t, i) => `
+              <tr>
+                <td><wa-badge variant="brand" pill>Variant ${String.fromCharCode(66 + i)}</wa-badge></td>
+                <td class="text-truncate">${escapeHtml(t.destinationUrl)}</td>
+                <td>${escapeHtml(t.matchValue)}%</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+        <div id="ab-stats-container"></div>
       </div>
     </wa-card>
   `;
@@ -180,6 +218,7 @@ export async function renderLinkDetail(container, { id }) {
 
       ${buildPublicReportCard(report)}
       ${buildTargetingRules(targets)}
+      ${buildAbTestCard(targets, link)}
       ${buildOgPreview(link)}
 
       <div id="edit-section" style="display:none;">
@@ -257,4 +296,10 @@ export async function renderLinkDetail(container, { id }) {
   // Render analytics charts (only if link has clicks)
   const statsEl = container.querySelector("#stats-container");
   if (statsEl) renderStatsCharts(statsEl, link.id);
+
+  // Render A/B test stats if variants exist
+  const abStatsEl = container.querySelector("#ab-stats-container");
+  if (abStatsEl && link.totalClicks > 0) {
+    import("../components/stats-ab.js").then(m => m.renderAbStats(abStatsEl, link.id));
+  }
 }

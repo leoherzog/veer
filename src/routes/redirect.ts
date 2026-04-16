@@ -176,7 +176,7 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname?
       ogImage: link.ogImage ?? null,
       paramForwarding: link.paramForwarding ?? false,
       targets: targets.length > 0 ? targets.map(t => ({
-        type: t.type as "geo" | "device",
+        type: t.type as "geo" | "device" | "ab",
         matchValue: t.matchValue,
         destinationUrl: t.destinationUrl,
         priority: t.priority,
@@ -247,6 +247,24 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
       if (target.type === "device" && target.matchValue.toLowerCase() === device) {
         destinationUrl = target.destinationUrl;
         break;
+      }
+    }
+
+    // A/B testing: weighted random selection among "ab" variants + default
+    if (destinationUrl === resolved.url) {
+      const abTargets = resolved.targets.filter(t => t.type === "ab");
+      if (abTargets.length > 0) {
+        const weights = abTargets.map(t => Math.max(1, Math.min(99, parseInt(t.matchValue) || 0)));
+        const defaultWeight = Math.max(1, 100 - weights.reduce((s, w) => s + w, 0));
+        const roll = Math.random() * (defaultWeight + weights.reduce((s, w) => s + w, 0));
+        let cumulative = defaultWeight;
+        for (let i = 0; i < abTargets.length; i++) {
+          cumulative += weights[i];
+          if (roll < cumulative) {
+            destinationUrl = abTargets[i].destinationUrl;
+            break;
+          }
+        }
       }
     }
   }
@@ -358,7 +376,7 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
     ogImage: link.ogImage ?? null,
     paramForwarding: link.paramForwarding ?? false,
     targets: targets.length > 0 ? targets.map(t => ({
-      type: t.type as "geo" | "device",
+      type: t.type as "geo" | "device" | "ab",
       matchValue: t.matchValue,
       destinationUrl: t.destinationUrl,
       priority: t.priority,

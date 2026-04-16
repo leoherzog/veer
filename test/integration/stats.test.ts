@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import app from "../../src/index";
 import { setupAuth, createTestLink, apiRequest, insertClickStat } from "../helpers";
+import { formatDate } from "../../src/lib/date";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -13,6 +14,12 @@ function api(method: string, path: string, opts: { headers?: Record<string, stri
 
 function insertLinkStat(linkId: string, date: string, clicks: number, uniqueClicks = clicks) {
   return insertClickStat(env.DB, linkId, clicks, date, uniqueClicks);
+}
+
+// Build an ISO date string N days before today. Used for test rows that need
+// to stay inside a runtime-computed cutoff window regardless of wall-clock drift.
+function daysAgo(n: number): string {
+  return new Date(Date.now() - n * 86400000).toISOString().slice(0, 10);
 }
 
 // ---------------------------------------------------------------------------
@@ -82,9 +89,9 @@ describe("Stats API", () => {
 
     it("returns D1 fallback data when link_stats rows exist", async () => {
       const link = await createTestLink(env.DB, { slug: "ts-with-data", userId });
-      await insertLinkStat(link.id, "2026-03-10", 5);
-      await insertLinkStat(link.id, "2026-03-11", 12);
-      await insertLinkStat(link.id, "2026-03-12", 8);
+      await insertLinkStat(link.id, daysAgo(5), 5);
+      await insertLinkStat(link.id, daysAgo(4), 12);
+      await insertLinkStat(link.id, daysAgo(3), 8);
 
       const res = await api("GET", `/api/stats/${link.id}/timeseries?days=30`, { headers });
       expect(res.status).toBe(200);
@@ -122,11 +129,12 @@ describe("Stats API", () => {
 
     it("formats labels as readable dates (MMM D)", async () => {
       const link = await createTestLink(env.DB, { slug: "ts-labels", userId });
-      await insertLinkStat(link.id, "2026-03-17", 7);
+      const isoDate = daysAgo(10);
+      await insertLinkStat(link.id, isoDate, 7);
 
       const res = await api("GET", `/api/stats/${link.id}/timeseries?days=90`, { headers });
       const json = await res.json() as { data: { labels: string[] } };
-      expect(json.data.labels).toContain("Mar 17");
+      expect(json.data.labels).toContain(formatDate(isoDate));
     });
   });
 
@@ -224,9 +232,9 @@ describe("Stats API", () => {
 
     it("aggregates totalClicks from D1 link_stats rows", async () => {
       const link = await createTestLink(env.DB, { slug: "sum-clicks", userId });
-      await insertLinkStat(link.id, "2026-03-14", 10);
-      await insertLinkStat(link.id, "2026-03-15", 20);
-      await insertLinkStat(link.id, "2026-03-16", 30);
+      await insertLinkStat(link.id, daysAgo(5), 10);
+      await insertLinkStat(link.id, daysAgo(4), 20);
+      await insertLinkStat(link.id, daysAgo(3), 30);
 
       const res = await api("GET", `/api/stats/${link.id}/summary?days=90`, { headers });
       expect(res.status).toBe(200);

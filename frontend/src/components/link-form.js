@@ -30,6 +30,20 @@ function createTargetRow(target = {}) {
   return row;
 }
 
+function createAbRow(variant = {}) {
+  const row = document.createElement("div");
+  row.className = "ab-variant wa-cluster wa-gap-s wa-align-items-end";
+  row.innerHTML = `
+    <wa-input name="abUrl" label="Variant URL" type="url" placeholder="https://..." value="${escapeAttr(variant.destinationUrl || "")}" style="flex:1;"></wa-input>
+    <wa-input name="abWeight" label="Weight %" type="number" min="1" max="99" value="${escapeAttr(variant.matchValue || "50")}" style="max-width:100px;"></wa-input>
+    <wa-button variant="danger" appearance="plain" pill class="remove-ab-btn" aria-label="Remove variant">
+      <wa-icon name="xmark"></wa-icon>
+    </wa-button>
+  `;
+  row.querySelector(".remove-ab-btn").addEventListener("click", () => row.remove());
+  return row;
+}
+
 function collectTargets(container) {
   const rows = container.querySelectorAll(".target-rule");
   const targets = [];
@@ -43,6 +57,19 @@ function collectTargets(container) {
     }
   }
   return targets;
+}
+
+function collectAbVariants(container) {
+  const rows = container.querySelectorAll(".ab-variant");
+  const variants = [];
+  for (const row of rows) {
+    const url = row.querySelector('[name="abUrl"]').value.trim();
+    const weight = row.querySelector('[name="abWeight"]').value.trim();
+    if (url && weight) {
+      variants.push({ type: "ab", matchValue: weight, destinationUrl: url, priority: 0 });
+    }
+  }
+  return variants;
 }
 
 export function renderLinkForm(container, { link = null, onSuccess, teams = [] } = {}) {
@@ -135,6 +162,18 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
             <div id="targets-list" class="wa-stack wa-gap-s"></div>
           </div>
           <wa-divider></wa-divider>
+          <div class="wa-stack wa-gap-s">
+            <div class="wa-split">
+              <strong>A/B Test Variants</strong>
+              <wa-button size="small" variant="neutral" id="add-ab-btn">
+                <wa-icon slot="start" name="plus"></wa-icon>
+                Add Variant
+              </wa-button>
+            </div>
+            <p class="wa-body-s wa-color-text-quiet" style="margin:0;">Split traffic between destination URLs. Weights must sum to less than 100 (remainder goes to default).</p>
+            <div id="ab-list" class="wa-stack wa-gap-s"></div>
+          </div>
+          <wa-divider></wa-divider>
           <wa-input
             name="ogTitle"
             label="OG Title"
@@ -216,6 +255,19 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     targetsList.appendChild(createTargetRow());
   });
 
+  // Populate existing A/B variants
+  const abList = container.querySelector("#ab-list");
+  if (link?.targets) {
+    for (const t of link.targets.filter(t => t.type === "ab")) {
+      abList.appendChild(createAbRow(t));
+    }
+  }
+
+  // Add A/B variant button
+  container.querySelector("#add-ab-btn").addEventListener("click", () => {
+    abList.appendChild(createAbRow());
+  });
+
   // Track whether password field was touched
   let passwordTouched = false;
   const passwordInput = container.querySelector('[name="password"]');
@@ -234,7 +286,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     }
 
     // Validate targeting rules
-    const targets = collectTargets(container);
+    const targets = [...collectTargets(container), ...collectAbVariants(container)];
     const targetRows = container.querySelectorAll(".target-rule");
     for (const row of targetRows) {
       const match = row.querySelector('[name="targetMatch"]').value.trim();
@@ -243,6 +295,14 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
         showToast("Each targeting rule must have both a match value and destination URL", "danger");
         return;
       }
+    }
+
+    // Validate A/B weights
+    const abVariants = collectAbVariants(container);
+    const totalWeight = abVariants.reduce((sum, v) => sum + (parseInt(v.matchValue) || 0), 0);
+    if (totalWeight >= 100) {
+      showToast("A/B variant weights must sum to less than 100", "danger");
+      return;
     }
 
     const submitBtn = form.querySelector('wa-button[type="submit"]');
