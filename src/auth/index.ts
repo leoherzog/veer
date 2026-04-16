@@ -5,6 +5,7 @@ import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { getConfiguredProviders } from "../lib/providers";
 import { cleanupOrphanedTeams } from "../routes/api/teams";
+import { getInstanceName } from "../lib/branding";
 
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -21,7 +22,7 @@ export function getAuth(env: Env) {
 
   const plugins = [];
   if (env.PASSKEY_ENABLED === "true") {
-    plugins.push(passkey({ rpID, rpName: "Veer", origin }));
+    plugins.push(passkey({ rpID, rpName: getInstanceName(env), origin }));
   }
 
   const db = getDb(env.DB);

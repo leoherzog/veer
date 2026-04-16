@@ -2,6 +2,9 @@
 BETTER_AUTH_SECRET=your-secret-min-32-chars-here!!!
 BETTER_AUTH_URL=http://localhost:8787
 
+# Branding (optional — defaults to "Veer" when unset)
+INSTANCE_NAME=
+
 # Admin access
 ADMIN_EMAILS=you@example.com
 

@@ -15,6 +15,7 @@ import reportRoutes, { publicReportRoute } from "./routes/api/reports";
 import teamRoutes from "./routes/api/teams";
 import adminRoutes from "./routes/api/admin";
 import { handleRedirect, handleRedirectPost, handleCustomDomainRoot } from "./routes/redirect";
+import { getInstanceName } from "./lib/branding";
 
 const app = new Hono<AppEnv>();
 
@@ -54,6 +55,11 @@ app.use("/api/*", corsMiddleware);
 
 // Auth routes (no auth middleware - handles its own)
 app.route("/api/auth", authRoutes);
+
+// Public API endpoint: instance config (no auth required — public branding)
+app.get("/api/config", (c) => {
+  return c.json({ instanceName: getInstanceName(c.env) });
+});
 
 // Public API endpoint: password check (no auth required)
 app.post("/api/links/:id/check-password", checkPassword);

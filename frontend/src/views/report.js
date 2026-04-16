@@ -1,5 +1,6 @@
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 import { escapeHtml } from "../lib/escape.js";
+import { getInstanceName } from "../lib/config.js";
 
 let chart;
 
@@ -61,7 +62,7 @@ export async function renderReport(container, { token }) {
           <wa-callout variant="neutral">No click data yet.</wa-callout>
         `}
         <p class="wa-color-text-quiet wa-body-s" style="text-align:center;">
-          Powered by Veer
+          Powered by ${escapeHtml(getInstanceName())}
         </p>
       </div>
     `;

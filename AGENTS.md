@@ -93,6 +93,9 @@ Dual-storage stats:
 ### Environment & bindings (`wrangler.jsonc`)
 `DB` (D1), `KV` (namespaces for cache/rate limit/public-report counters), `ANALYTICS` (Analytics Engine dataset `veer_clicks`), and `ASSETS` (static site) are all required. `compatibility_flags: ["nodejs_compat_v2"]` is required for Better Auth dependencies. The `staging` env is pre-wired with separate D1/KV/AE datasets.
 
+### Instance branding (`INSTANCE_NAME`)
+`INSTANCE_NAME` is an optional plain `var` in `wrangler.jsonc` (not a secret — it is public branding). When unset or empty it falls back to `"Veer"`. Resolved everywhere via `getInstanceName(env)` in `src/lib/branding.ts` — **never hardcode the brand string.** The frontend reads it from a public `GET /api/config` endpoint (`{ instanceName }`) fetched once by `frontend/src/lib/config.js` before the first render; `getInstanceName()` on the client returns the cached value. `public/index.html` ships with an empty `<title>` and is filled in by `loadConfig()`. The passkey `rpName` reads the resolved name at `getAuth()` time — changing `INSTANCE_NAME` after passkey credentials exist only affects new registrations. Shape `/api/config`'s return object so future branding knobs (logo URL, footer text, etc.) slot in without a new endpoint.
+
 ### Directory map
 ```
 src/
@@ -121,6 +124,7 @@ test/
 
 ### Core
 - Never hardcode `veer.ing` or any other hostname in source — everything is driven by `BETTER_AUTH_URL`, `domain_config`, or the request host.
+- Never hardcode the brand string `"Veer"` in user-facing UI or server-rendered HTML. Use `getInstanceName(env)` on the server (`src/lib/branding.ts`) and `getInstanceName()` on the client (`frontend/src/lib/config.js`) — both fall back to `"Veer"` when `INSTANCE_NAME` is empty.
 - Slugs are user-supplied and required. `src/services/slug.ts` only validates; it never generates.
 - When adding a table, update `src/db/schema.ts`, generate a migration (`npm run db:generate`), and mirror the new DDL in `test/setup.ts` so tests keep passing.
 - When adding a new AE field, update the blob-index comment in `src/services/analytics.ts` *and* every reader in `src/routes/api/stats.ts`.

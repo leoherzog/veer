@@ -12,6 +12,7 @@ const BASE_ENV = {
   ASSETS: {} as Fetcher,
   WORKER_NAME: "veer" as const,
   PASSKEY_ENABLED: "false",
+  INSTANCE_NAME: "",
 } satisfies Env;
 
 function envWith(extra: Record<string, string>): Env {

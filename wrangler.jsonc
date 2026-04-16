@@ -29,7 +29,8 @@
   ],
   "vars": {
     "WORKER_NAME": "veer",
-    "BETTER_AUTH_URL": "https://veer.production.example"
+    "BETTER_AUTH_URL": "https://veer.production.example",
+    "INSTANCE_NAME": ""
   },
   "placement": { "mode": "smart" },
   "observability": {
@@ -40,7 +41,8 @@
     "staging": {
       "vars": {
         "WORKER_NAME": "veer-staging",
-        "BETTER_AUTH_URL": "https://veer-staging.example"
+        "BETTER_AUTH_URL": "https://veer-staging.example",
+        "INSTANCE_NAME": ""
       },
       "d1_databases": [
         {

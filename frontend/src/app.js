@@ -34,6 +34,7 @@ import "@awesome.me/webawesome/dist/components/color-picker/color-picker.js";
 import "./styles/app.css";
 
 import { authClient } from "./auth-client.js";
+import { loadConfig } from "./lib/config.js";
 import { addRoute, setNotFound, resolve } from "./router.js";
 import { renderNavBar } from "./components/nav-bar.js";
 import { renderHome } from "./views/home.js";
@@ -49,6 +50,9 @@ import { renderAcceptInvite } from "./views/accept-invite.js";
 let currentUser = null;
 
 async function init() {
+  // Load instance branding before first render so titles/logos aren't empty
+  await loadConfig();
+
   // Check auth state
   try {
     const session = await authClient.getSession();

@@ -1,5 +1,7 @@
 import { authClient } from "../auth-client.js";
 import { showToast } from "../components/toast.js";
+import { getInstanceName } from "../lib/config.js";
+import { escapeHtml } from "../lib/escape.js";
 
 const allProviders = [
   { id: "google", name: "Google", icon: "google" },
@@ -65,7 +67,7 @@ function renderPasskeyButton(container, enabled) {
 export function renderLogin(container) {
   container.innerHTML = `
     <div class="login-view wa-stack wa-gap-l">
-      <h1>Sign in to Veer</h1>
+      <h1>Sign in to ${escapeHtml(getInstanceName())}</h1>
       <p id="login-help">Choose a provider to continue</p>
       <div class="wa-stack wa-gap-s" id="provider-buttons">
         <wa-skeleton effect="sheen" style="height:44px;width:100%;"></wa-skeleton>

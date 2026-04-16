@@ -1,6 +1,7 @@
 import { authClient } from "../auth-client.js";
 import { navigate } from "../router.js";
-import { escapeAttr } from "../lib/escape.js";
+import { escapeAttr, escapeHtml } from "../lib/escape.js";
+import { getInstanceName } from "../lib/config.js";
 
 function toggleTheme(iconEl, labelEl) {
   const root = document.documentElement;
@@ -27,7 +28,7 @@ export function renderNavBar(container, user) {
   container.innerHTML = `
     <nav class="nav-bar wa-split">
       <div class="nav-left wa-cluster wa-gap-m">
-        <a href="${user ? "/links" : "/"}" class="nav-logo" data-link>Veer</a>
+        <a href="${user ? "/links" : "/"}" class="nav-logo" data-link>${escapeHtml(getInstanceName())}</a>
       </div>
       <div class="nav-right wa-cluster wa-gap-m">
         ${user

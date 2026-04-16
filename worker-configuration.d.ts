@@ -14,6 +14,7 @@ declare namespace Cloudflare {
 		BETTER_AUTH_URL: string;
 		BETTER_AUTH_SECRET: string;
 		PASSKEY_ENABLED: string;
+		INSTANCE_NAME: string;
 	}
 	interface Env {
 		KV: KVNamespace;
@@ -24,6 +25,7 @@ declare namespace Cloudflare {
 		BETTER_AUTH_URL: string;
 		BETTER_AUTH_SECRET: string;
 		PASSKEY_ENABLED: string;
+		INSTANCE_NAME: string;
 	}
 }
 interface Env extends Cloudflare.Env {}

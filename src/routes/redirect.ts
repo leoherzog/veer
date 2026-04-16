@@ -7,15 +7,16 @@ import { getCachedRedirect, setCachedRedirect } from "../services/kv-cache";
 import { writeClickEvent } from "../services/analytics";
 import { verifyPassword } from "../services/password";
 import { getAuth } from "../auth";
+import { getInstanceName } from "../lib/branding";
 
 /** Render a minimal self-contained HTML page. */
-function htmlPage(title: string, bodyHtml: string): string {
+function htmlPage(title: string, bodyHtml: string, instanceName: string): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${title} - Veer</title>
+<title>${escapeHtml(title)} - ${escapeHtml(instanceName)}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;color:#1a1a1a}
@@ -40,27 +41,27 @@ ${bodyHtml}
 </html>`;
 }
 
-function passwordGatePage(slug: string, error?: string): Response {
+function passwordGatePage(slug: string, instanceName: string, error?: string): Response {
   const errorHtml = error ? `<p class="error">${escapeHtml(error)}</p>` : "";
   const body = `
-<div class="brand">Veer</div>
+<div class="brand">${escapeHtml(instanceName)}</div>
 <p class="message">This link is password protected</p>
 <form method="POST" action="/${slug}">
 <input type="password" name="password" placeholder="Enter password" required autofocus>
 <button type="submit">Continue</button>
 ${errorHtml}
 </form>`;
-  return new Response(htmlPage("Password Required", body), {
+  return new Response(htmlPage("Password Required", body, instanceName), {
     status: 200,
     headers: { "Content-Type": "text/html;charset=utf-8" },
   });
 }
 
-function gonePage(message: string): Response {
+function gonePage(message: string, instanceName: string): Response {
   const body = `
-<div class="brand">Veer</div>
+<div class="brand">${escapeHtml(instanceName)}</div>
 <p class="message">${escapeHtml(message)}</p>`;
-  return new Response(htmlPage("Link Unavailable", body), {
+  return new Response(htmlPage("Link Unavailable", body, instanceName), {
     status: 410,
     headers: { "Content-Type": "text/html;charset=utf-8" },
   });
@@ -116,11 +117,11 @@ function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function forbiddenPage(): Response {
+function forbiddenPage(instanceName: string): Response {
   const body = `
-<div class="brand">Veer</div>
+<div class="brand">${escapeHtml(instanceName)}</div>
 <p class="message">This link requires authentication.</p>`;
-  return new Response(htmlPage("Access Denied", body), {
+  return new Response(htmlPage("Access Denied", body, instanceName), {
     status: 403,
     headers: { "Content-Type": "text/html;charset=utf-8" },
   });
@@ -194,9 +195,11 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname?
 
 /** Check expiration, max clicks, and internal-only constraints. Returns a Response if blocked, null if OK. */
 async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: NonNullable<Awaited<ReturnType<typeof resolveSlug>>>) {
+  const instanceName = getInstanceName(c.env);
+
   // Expiration check
   if (resolved.expiresAt && Date.now() > resolved.expiresAt * 1000) {
-    return gonePage("This link has expired.");
+    return gonePage("This link has expired.", instanceName);
   }
 
   // Internal link check
@@ -204,9 +207,9 @@ async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: NonNulla
     try {
       const auth = getAuth(c.env);
       const session = await auth.api.getSession({ headers: c.req.raw.headers });
-      if (!session) return forbiddenPage();
+      if (!session) return forbiddenPage(instanceName);
     } catch {
-      return forbiddenPage();
+      return forbiddenPage(instanceName);
     }
   }
 
@@ -220,7 +223,7 @@ async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: NonNulla
       .where(eq(linkStats.linkId, resolved.linkId));
     const total = statsResult[0]?.totalClicks ?? 0;
     if (total >= resolved.maxClicks) {
-      return gonePage("This link is no longer available.");
+      return gonePage("This link is no longer available.", instanceName);
     }
   }
 
@@ -332,7 +335,7 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
 
   // Password gate — serve the form on GET
   if (resolved.hasPassword) {
-    return passwordGatePage(slug);
+    return passwordGatePage(slug, getInstanceName(c.env));
   }
 
   trackClick(c, slug, resolved.linkId, destinationUrl);
@@ -392,13 +395,15 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   const formData = await c.req.parseBody();
   const submittedPassword = typeof formData.password === "string" ? formData.password : "";
 
+  const instanceName = getInstanceName(c.env);
+
   if (!submittedPassword) {
-    return passwordGatePage(slug, "Please enter a password.");
+    return passwordGatePage(slug, instanceName, "Please enter a password.");
   }
 
   const valid = await verifyPassword(submittedPassword, link.password);
   if (!valid) {
-    return passwordGatePage(slug, "Incorrect password. Please try again.");
+    return passwordGatePage(slug, instanceName, "Incorrect password. Please try again.");
   }
 
   // Password correct — resolve targeting + param forwarding, then track and redirect
