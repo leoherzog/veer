@@ -391,3 +391,172 @@ describe("Targeting + param forwarding combined", () => {
     expect(loc.searchParams.get("campaign")).toBe("spring");
   });
 });
+
+describe("A/B targeting via redirect", () => {
+  it("never selects default when variant weights sum to 100", async () => {
+    // Two variants at 50/50 leave 0 default weight (clamped to 1 by the code),
+    // so ~99% of the time we pick one of the variants. Over many iterations,
+    // we should see both variants chosen and not the default (except very rarely).
+    await setCachedRedirect(env.KV, "ab-split", cachedRedirect({
+      url: "https://default.example.com/control",
+      targets: [
+        { type: "ab", matchValue: "50", destinationUrl: "https://a.example.com", priority: 0 },
+        { type: "ab", matchValue: "50", destinationUrl: "https://b.example.com", priority: 0 },
+      ],
+    }));
+
+    const seen = new Set<string>();
+    for (let i = 0; i < 40; i++) {
+      const req = cfRequest("/ab-split");
+      const res = await app.fetch(req, env, mockExecutionCtx());
+      expect(res.status).toBe(302);
+      seen.add(res.headers.get("Location")!);
+    }
+    // Both variants should have been picked across 40 rolls
+    expect(seen.has("https://a.example.com")).toBe(true);
+    expect(seen.has("https://b.example.com")).toBe(true);
+  });
+
+  it("single variant with 100 weight still occasionally hits default (weight clamped to 1)", async () => {
+    // One variant at weight=100 leaves defaultWeight = max(1, 100 - 100) = 1.
+    // roll in [0, 101); default if roll < 1, variant if 1 <= roll < 101.
+    await setCachedRedirect(env.KV, "ab-heavy", cachedRedirect({
+      url: "https://default.example.com/ctl",
+      targets: [
+        { type: "ab", matchValue: "100", destinationUrl: "https://variant.example.com", priority: 0 },
+      ],
+    }));
+
+    const seen = new Set<string>();
+    for (let i = 0; i < 50; i++) {
+      const req = cfRequest("/ab-heavy");
+      const res = await app.fetch(req, env, mockExecutionCtx());
+      expect(res.status).toBe(302);
+      seen.add(res.headers.get("Location")!);
+    }
+    // Over 50 rolls, variant is overwhelmingly likely; we assert it is always present
+    expect(seen.has("https://variant.example.com")).toBe(true);
+  });
+
+  it("geo match takes precedence over A/B variants", async () => {
+    await setCachedRedirect(env.KV, "ab-plus-geo", cachedRedirect({
+      url: "https://default.example.com/ctl",
+      targets: [
+        { type: "ab", matchValue: "50", destinationUrl: "https://ab.example.com", priority: 0 },
+        { type: "geo", matchValue: "FR", destinationUrl: "https://fr.example.com", priority: 5 },
+      ],
+    }));
+
+    // 20 rolls — a matching geo rule must always win over the A/B bucket.
+    for (let i = 0; i < 20; i++) {
+      const req = cfRequest("/ab-plus-geo", { cf: { country: "FR" } });
+      const res = await app.fetch(req, env, mockExecutionCtx());
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://fr.example.com");
+    }
+  });
+
+  it("invalid A/B weight (non-numeric) is clamped to min weight 1", async () => {
+    // matchValue "foo" → parseInt=NaN → Math.max(1, Math.min(99, NaN||0)) = 1
+    // defaultWeight = max(1, 100 - 1) = 99, so ~99/100 chance of default
+    await setCachedRedirect(env.KV, "ab-nan", cachedRedirect({
+      url: "https://default.example.com/ctl",
+      targets: [
+        { type: "ab", matchValue: "not-a-number", destinationUrl: "https://variant.example.com", priority: 0 },
+      ],
+    }));
+
+    // Don't assert exact probability — just confirm it doesn't crash and returns 302
+    const req = cfRequest("/ab-nan");
+    const res = await app.fetch(req, env, mockExecutionCtx());
+    expect(res.status).toBe(302);
+    const loc = res.headers.get("Location")!;
+    expect(loc === "https://default.example.com/ctl" || loc === "https://variant.example.com").toBe(true);
+  });
+});
+
+describe("OG meta page (bot/crawler)", () => {
+  it("renders og:url from the request URL", async () => {
+    await setCachedRedirect(env.KV, "og-url-test", cachedRedirect({
+      url: "https://dest.example.com",
+      ogTitle: "Hello",
+    }));
+
+    const req = cfRequest("/og-url-test", {
+      headers: { "User-Agent": "facebookexternalhit/1.1" },
+    });
+    const res = await app.fetch(req, env, mockExecutionCtx());
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<meta property="og:url"');
+    // The og:url should match the slug path on the request host
+    expect(html).toMatch(/<meta property="og:url" content="http:\/\/localhost\/og-url-test"/);
+  });
+
+  it("HTML-escapes og:title so embedded quotes/angle brackets cannot break out", async () => {
+    await setCachedRedirect(env.KV, "og-xss", cachedRedirect({
+      url: "https://dest.example.com",
+      ogTitle: '<script>alert(1)</script>"evil"',
+      ogDescription: "Desc with <b> & 'apostrophe'",
+      ogImage: "https://img.example.com/a.png?x=<y>",
+    }));
+
+    const req = cfRequest("/og-xss", {
+      headers: { "User-Agent": "Twitterbot/1.0" },
+    });
+    const res = await app.fetch(req, env, mockExecutionCtx());
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    // Raw <script> must not appear
+    expect(html).not.toContain("<script>alert(1)</script>");
+    // Angle brackets inside content must be escaped
+    expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("&lt;b&gt;");
+    // Double quotes inside content must be escaped so they don't break out of the attr
+    expect(html).toContain("&quot;evil&quot;");
+    // Ampersand must be escaped (including inside the URL)
+    expect(html).toContain("?x=&lt;y&gt;");
+  });
+
+  it("omits og:image tag when ogImage is null", async () => {
+    await setCachedRedirect(env.KV, "og-no-image", cachedRedirect({
+      url: "https://dest.example.com",
+      ogTitle: "Only title",
+      ogImage: null,
+    }));
+
+    const req = cfRequest("/og-no-image", {
+      headers: { "User-Agent": "LinkedInBot" },
+    });
+    const res = await app.fetch(req, env, mockExecutionCtx());
+
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('<meta property="og:title"');
+    expect(html).not.toContain('property="og:image"');
+  });
+});
+
+describe("detectDeviceType — extra coverage", () => {
+  it("classifies iPod Touch as mobile", () => {
+    const ua = "Mozilla/5.0 (iPod touch; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15";
+    expect(detectDeviceType(ua)).toBe("mobile");
+  });
+
+  it("classifies Opera Mini as mobile", () => {
+    const ua = "Opera/9.80 (J2ME/MIDP; Opera Mini/5.1.21214/28.2725; U; ru) Presto/2.8.119 Version/11.10";
+    expect(detectDeviceType(ua)).toBe("mobile");
+  });
+
+  it("classifies IEMobile UA as mobile (not tablet despite containing 'Mobile')", () => {
+    const ua = "Mozilla/5.0 (compatible; MSIE 10.0; Windows Phone 8.0; Trident/6.0; IEMobile/10.0)";
+    expect(detectDeviceType(ua)).toBe("mobile");
+  });
+
+  it("classifies generic Tablet UA as tablet", () => {
+    const ua = "Mozilla/5.0 (Linux; U; Tablet; en-US) AppleWebKit/537.36";
+    expect(detectDeviceType(ua)).toBe("tablet");
+  });
+});

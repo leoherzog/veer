@@ -363,6 +363,66 @@ describe("Redirect engine – advanced", () => {
     });
   });
 
+  // ── isSafeRedirectUrl defense-in-depth: protocol smuggling ─────────────
+  //
+  // rootRedirect and notFoundRedirect are editable by domain admins; we must
+  // never honor javascript:, data:, or malformed URLs — even if the row in
+  // domain_config somehow contains one. See AGENTS.md "Redirect hot path".
+
+  describe("isSafeRedirectUrl — domain_config values", () => {
+    it("ignores javascript: in rootRedirect and falls through to SPA", async () => {
+      await createTestDomain(env.DB, "hostile-root.example.com", {
+        rootRedirect: "javascript:alert(1)",
+      });
+
+      const res = await app.request("/", {
+        headers: { Host: "hostile-root.example.com" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).not.toBe(301);
+      expect(res.status).not.toBe(302);
+    });
+
+    it("ignores data: URL in rootRedirect", async () => {
+      await createTestDomain(env.DB, "hostile-data.example.com", {
+        rootRedirect: "data:text/html,<script>alert(1)</script>",
+      });
+
+      const res = await app.request("/", {
+        headers: { Host: "hostile-data.example.com" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).not.toBe(301);
+      expect(res.status).not.toBe(302);
+    });
+
+    it("ignores malformed URL in notFoundRedirect", async () => {
+      await createTestDomain(env.DB, "hostile-nf.example.com", {
+        notFoundRedirect: "not a real url at all",
+      });
+
+      const res = await app.request("/some-missing-slug", {
+        headers: { Host: "hostile-nf.example.com" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).not.toBe(301);
+      expect(res.status).not.toBe(302);
+    });
+
+    it("ignores javascript: in notFoundRedirect", async () => {
+      await createTestDomain(env.DB, "hostile-nf-js.example.com", {
+        notFoundRedirect: "javascript:alert('xss')",
+      });
+
+      const res = await app.request("/also-missing", {
+        headers: { Host: "hostile-nf-js.example.com" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).not.toBe(301);
+      expect(res.status).not.toBe(302);
+    });
+  });
+
   // ── Task 10: domain-scoped slug lookup ─────────────────────────────────
 
   describe("Domain-scoped slug lookup", () => {

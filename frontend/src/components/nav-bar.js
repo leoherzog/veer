@@ -12,7 +12,18 @@ function toggleTheme(iconEl, labelEl) {
   if (labelEl) labelEl.textContent = isDark ? "Dark Mode" : "Light Mode";
 }
 
+function getInitials(name) {
+  if (!name) return "";
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (words.length === 0) return "";
+  if (words.length === 1) return words[0].slice(0, 2).toUpperCase();
+  return (words[0][0] + words[words.length - 1][0]).toUpperCase();
+}
+
 export function renderNavBar(container, user) {
+  const avatarAttrs = user
+    ? `${user.image ? `image="${escapeAttr(user.image)}"` : ""} initials="${escapeAttr(getInitials(user.name))}" label="${escapeAttr(user.name || "")}"`
+    : "";
   container.innerHTML = `
     <nav class="nav-bar wa-split">
       <div class="nav-left wa-cluster wa-gap-m">
@@ -23,7 +34,7 @@ export function renderNavBar(container, user) {
           ? `
             <wa-dropdown placement="bottom-end">
               <wa-button slot="trigger" variant="neutral" appearance="plain" pill>
-                <wa-avatar id="user-avatar" image="${escapeAttr(user.image || "")}" label="${escapeAttr(user.name)}" style="--size: 2rem;"></wa-avatar>
+                <wa-avatar id="user-avatar" ${avatarAttrs} style="--size: 2rem;"></wa-avatar>
               </wa-button>
               <wa-dropdown-item id="settings-link">
                 <wa-icon slot="icon" name="gear"></wa-icon>
