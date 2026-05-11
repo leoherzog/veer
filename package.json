@@ -32,7 +32,7 @@
     "topojson-client": "^3.1.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.14.7",
+    "@cloudflare/vitest-pool-workers": "^0.16.3",
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.9",
     "esbuild": "^0.28.0",
