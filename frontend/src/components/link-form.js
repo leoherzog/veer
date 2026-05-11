@@ -185,7 +185,6 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
             label="OG Description"
             placeholder="Custom social preview description"
             rows="2"
-            value="${escapeAttr(link?.ogDescription || "")}"
           ></wa-textarea>
           <wa-input
             name="ogImage"
@@ -200,6 +199,10 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
       <wa-button type="submit" variant="brand">${isEdit ? "Update" : "Create"} Link</wa-button>
     </form>
   `;
+
+  // wa-textarea ignores the `value` HTML attribute — set it programmatically.
+  const ogDescTextarea = container.querySelector('[name="ogDescription"]');
+  if (ogDescTextarea) ogDescTextarea.value = link?.ogDescription || "";
 
   // Update owner icon when selection changes
   const ownerSelect = container.querySelector('[name="teamId"]');

@@ -190,4 +190,11 @@ async function init() {
   resolve();
 }
 
+document.addEventListener("click", (e) => {
+  const trigger = e.target.closest('[data-dialog="close"]');
+  if (!trigger) return;
+  const dialog = trigger.closest("wa-dialog");
+  if (dialog) dialog.open = false;
+});
+
 init();

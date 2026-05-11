@@ -72,7 +72,7 @@ export async function renderAdmin(container) {
         </wa-tab-panel>
       </wa-tab-group>
 
-      <wa-dialog id="edit-user-dialog" label="Edit User">
+      <wa-dialog id="edit-user-dialog" label="Edit User" light-dismiss>
         <div class="wa-stack wa-gap-m">
           <p>Editing <strong id="edit-user-name"></strong></p>
           <wa-input id="edit-user-maxlinks" label="Max Links" type="number" min="0"></wa-input>

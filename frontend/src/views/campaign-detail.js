@@ -81,7 +81,7 @@ export async function renderCampaignDetail(container, { id }) {
       </div>
       <div id="campaign-links-list"></div>
 
-      <wa-dialog id="add-links-dialog" label="Add Links to Campaign" style="--width:600px;">
+      <wa-dialog id="add-links-dialog" label="Add Links to Campaign" light-dismiss style="--width:600px;">
         <div id="available-links-list" class="wa-stack wa-gap-s"></div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Close</wa-button>
       </wa-dialog>
@@ -169,7 +169,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
             <td>
               <div class="wa-cluster wa-gap-2xs">
                 <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
-                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
+                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
               </div>
             </td>
             <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>

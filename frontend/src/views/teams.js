@@ -53,7 +53,7 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
         }
       </div>
 
-      <wa-dialog id="create-team-dialog" label="Create Team">
+      <wa-dialog id="create-team-dialog" label="Create Team" light-dismiss>
         <div class="wa-stack wa-gap-m">
           <wa-input id="team-name-input" label="Team Name" placeholder="My Team" required></wa-input>
           <wa-input id="team-slug-input" label="Team Slug" placeholder="my-team" required hint="Used in URLs. Lowercase letters, numbers, and hyphens only."></wa-input>

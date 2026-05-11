@@ -16,7 +16,7 @@ export async function renderAcceptInvite(container, { token }) {
     if (!res.ok) {
       container.innerHTML = `
         <div class="wa-stack wa-align-items-center wa-gap-m centered-state">
-          <wa-icon name="circle-xmark" class="wa-font-size-3xl wa-color-text-danger"></wa-icon>
+          <wa-icon name="circle-xmark" class="wa-font-size-3xl" style="color: var(--wa-color-danger);"></wa-icon>
           <h2>Invite Failed</h2>
           <p>${escapeHtml(result.error || "Unable to accept this invite.")}</p>
           <wa-button variant="brand" id="go-teams">Go to Teams</wa-button>
@@ -29,7 +29,7 @@ export async function renderAcceptInvite(container, { token }) {
     const teamName = result.data?.team?.name || "the team";
     container.innerHTML = `
       <div class="wa-stack wa-align-items-center wa-gap-m centered-state">
-        <wa-icon name="circle-check" class="wa-font-size-3xl wa-color-text-success"></wa-icon>
+        <wa-icon name="circle-check" class="wa-font-size-3xl" style="color: var(--wa-color-success);"></wa-icon>
         <h2>Welcome!</h2>
         <p>You've joined <strong>${escapeHtml(teamName)}</strong>.</p>
         <wa-button variant="brand" id="go-team">View Team</wa-button>
@@ -39,7 +39,7 @@ export async function renderAcceptInvite(container, { token }) {
   } catch {
     container.innerHTML = `
       <div class="wa-stack wa-align-items-center wa-gap-m centered-state">
-        <wa-icon name="circle-xmark" class="wa-font-size-3xl wa-color-text-danger"></wa-icon>
+        <wa-icon name="circle-xmark" class="wa-font-size-3xl" style="color: var(--wa-color-danger);"></wa-icon>
         <h2>Network Error</h2>
         <p>Please check your connection and try again.</p>
         <wa-button variant="brand" id="retry">Retry</wa-button>

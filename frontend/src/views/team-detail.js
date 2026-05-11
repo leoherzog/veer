@@ -201,13 +201,13 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
         ` : ""}
       </wa-tab-group>
 
-      <wa-dialog id="edit-team-dialog" label="Edit Team">
+      <wa-dialog id="edit-team-dialog" label="Edit Team" light-dismiss>
         <wa-input id="edit-team-name" label="Team Name" value="${escapeAttr(team.name)}" required></wa-input>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" id="confirm-edit-team">Save</wa-button>
       </wa-dialog>
 
-      <wa-dialog id="delete-team-dialog" label="Delete Team">
+      <wa-dialog id="delete-team-dialog" label="Delete Team" light-dismiss>
         <p>Are you sure you want to delete <strong>${escapeHtml(team.name)}</strong>? This cannot be undone. All team links will be unlinked from the team.</p>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="danger" id="confirm-delete-team">Delete</wa-button>
@@ -259,7 +259,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
           <wa-callout variant="success">
             <div class="wa-cluster wa-gap-s wa-align-items-center">
               <code style="word-break:break-all;">${escapeHtml(inviteUrl)}</code>
-              <wa-copy-button value="${escapeAttr(inviteUrl)}" copy-label="Copy link" success-label="Copied!"></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(inviteUrl)}" copy-label="Copy link" success-label="Copied!"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
             </div>
             <p class="wa-body-s wa-color-text-quiet" style="margin-top:var(--wa-space-2xs);">Share this link with ${escapeHtml(email)}. It expires in 7 days.</p>
           </wa-callout>

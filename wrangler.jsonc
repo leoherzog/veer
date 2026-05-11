@@ -72,6 +72,44 @@
           "dataset": "veer_clicks_staging"
         }
       ]
+    },
+    "demo": {
+      "name": "veer-demo",
+      "vars": {
+        "WORKER_NAME": "veer-demo",
+        "BETTER_AUTH_URL": "https://demo.veer.ing",
+        "INSTANCE_NAME": "Veer Demo",
+        "DEMO_MODE": "true"
+      },
+      "triggers": {
+        "crons": ["0 * * * *"]
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "veer-db-demo",
+          "database_id": "c9c779fe-a0a4-4326-af74-a55b836b5b86",
+          "migrations_dir": "drizzle/migrations"
+        }
+      ],
+      "kv_namespaces": [
+        {
+          "binding": "KV",
+          "id": "c8636bccd191475c865d413edd4813ed"
+        }
+      ],
+      "analytics_engine_datasets": [
+        {
+          "binding": "ANALYTICS",
+          "dataset": "veer_clicks_demo"
+        }
+      ],
+      "routes": [
+        {
+          "pattern": "demo.veer.ing",
+          "custom_domain": true
+        }
+      ]
     }
   }
 }

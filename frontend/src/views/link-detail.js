@@ -144,7 +144,7 @@ function buildPublicReportCard(report) {
         <p class="wa-body-s wa-color-text-quiet">Share your analytics dashboard with others via a public link.</p>
         <div id="report-link-container" class="wa-cluster wa-gap-2xs" style="display: ${report.isEnabled ? "flex" : "none"};">
           <wa-input readonly value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
-          <wa-copy-button value="${escapeAttr(reportUrl)}"></wa-copy-button>
+          <wa-copy-button value="${escapeAttr(reportUrl)}"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
           <wa-button variant="neutral" appearance="outlined" data-href="${escapeAttr(reportUrl)}">
             <wa-icon name="arrow-up-right-from-square"></wa-icon>
           </wa-button>
@@ -203,7 +203,7 @@ export async function renderLinkDetail(container, { id }) {
             <div class="wa-cluster wa-gap-2xs">
               <strong>Short URL:</strong>
               <a href="${escapeAttr(linkShortUrl)}" target="_blank" rel="noopener">${escapeHtml(linkShortUrl)}</a>
-              <wa-copy-button value="${escapeAttr(linkShortUrl)}"></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(linkShortUrl)}"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
             </div>
             <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
             <div><strong>Lifetime Clicks:</strong> ${link.totalClicks}</div>

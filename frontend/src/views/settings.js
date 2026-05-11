@@ -429,7 +429,7 @@ export async function renderSettings(container) {
             <strong>Copy your API key now — it will not be shown again.</strong>
             <div class="wa-cluster wa-gap-xs" style="margin-top:var(--wa-space-xs);">
               <code style="word-break:break-all;">${escapeHtml(result.data.key)}</code>
-              <wa-copy-button value="${escapeAttr(result.data.key)}"></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(result.data.key)}"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
             </div>
           </wa-callout>
         `;
