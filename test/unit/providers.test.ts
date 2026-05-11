@@ -13,6 +13,7 @@ const BASE_ENV = {
   WORKER_NAME: "veer" as const,
   PASSKEY_ENABLED: "false",
   INSTANCE_NAME: "",
+  DEMO_MODE: "",
 } satisfies Env;
 
 function envWith(extra: Record<string, string>): Env {

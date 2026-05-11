@@ -1,7 +1,7 @@
 import { authClient } from "../auth-client.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { getInstanceName } from "../lib/config.js";
+import { getInstanceName, isDemoMode } from "../lib/config.js";
 
 function toggleTheme(iconEl, labelEl) {
   const root = document.documentElement;
@@ -51,11 +51,13 @@ export function renderNavBar(container, user) {
                 <wa-icon slot="icon" name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}"></wa-icon>
                 <span class="theme-label">${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}</span>
               </wa-dropdown-item>
+              ${isDemoMode() ? "" : `
               <wa-divider></wa-divider>
               <wa-dropdown-item id="logout-btn">
                 <wa-icon slot="icon" name="right-from-bracket"></wa-icon>
                 Logout
               </wa-dropdown-item>
+              `}
             </wa-dropdown>
           `
           : `

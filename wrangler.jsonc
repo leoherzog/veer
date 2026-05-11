@@ -30,7 +30,13 @@
   "vars": {
     "WORKER_NAME": "veer",
     "BETTER_AUTH_URL": "https://veer.production.example",
-    "INSTANCE_NAME": ""
+    "INSTANCE_NAME": "",
+    "DEMO_MODE": ""
+  },
+  // Hourly cron. The scheduled handler (src/scheduled.ts) early-returns when
+  // DEMO_MODE is unset, so non-demo deployments incur one cheap no-op per hour.
+  "triggers": {
+    "crons": ["0 * * * *"]
   },
   "placement": { "mode": "smart" },
   "observability": {
@@ -42,7 +48,11 @@
       "vars": {
         "WORKER_NAME": "veer-staging",
         "BETTER_AUTH_URL": "https://veer-staging.example",
-        "INSTANCE_NAME": ""
+        "INSTANCE_NAME": "",
+        "DEMO_MODE": ""
+      },
+      "triggers": {
+        "crons": ["0 * * * *"]
       },
       "d1_databases": [
         {

@@ -169,3 +169,31 @@ body {
   .link-table td:nth-child(3) { display: none; }
   .text-truncate { max-width: 100px; }
 }
+
+/* Demo mode: hide top-level create buttons. Mutations still 403 with a
+   friendly toast (see apiFetch), so this is purely UI polish. */
+body.demo-mode #new-link-btn,
+body.demo-mode #new-link-dropdown,
+body.demo-mode #bulk-create-btn,
+body.demo-mode #new-campaign-btn,
+body.demo-mode #create-team-btn,
+body.demo-mode wa-button-group:has(#new-link-btn) {
+  display: none !important;
+}
+
+.demo-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1000;
+  background: var(--wa-color-brand-fill-loud);
+  color: var(--wa-color-brand-on-loud);
+  padding: var(--wa-space-s) var(--wa-space-m);
+  font-size: var(--wa-font-size-s);
+}
+
+.demo-banner a {
+  color: inherit;
+  text-decoration: underline;
+}

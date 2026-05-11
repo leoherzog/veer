@@ -5,3 +5,4 @@ public/dist/
 *.tsbuildinfo
 .DS_Store
 worker-configuration.d.ts
+scripts/seed.generated.sql

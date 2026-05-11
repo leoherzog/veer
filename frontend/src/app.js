@@ -34,7 +34,7 @@ import "@awesome.me/webawesome/dist/components/color-picker/color-picker.js";
 import "./styles/app.css";
 
 import { authClient } from "./auth-client.js";
-import { loadConfig } from "./lib/config.js";
+import { loadConfig, isDemoMode } from "./lib/config.js";
 import { addRoute, setNotFound, resolve } from "./router.js";
 import { renderNavBar } from "./components/nav-bar.js";
 import { renderHome } from "./views/home.js";
@@ -53,22 +53,33 @@ async function init() {
   // Load instance branding before first render so titles/logos aren't empty
   await loadConfig();
 
-  // Check auth state
-  try {
-    const session = await authClient.getSession();
-    currentUser = session?.data?.user || null;
-    // Enrich with server-side user data (isAdmin, etc.)
-    if (currentUser) {
-      try {
-        const meRes = await fetch("/api/me");
-        if (meRes.ok) {
-          const { data: meData } = await meRes.json();
-          if (meData) currentUser = { ...currentUser, ...meData };
-        }
-      } catch { /* use basic session data */ }
+  if (isDemoMode()) {
+    // Skip OAuth entirely — backend auto-injects the synthetic user.
+    currentUser = {
+      id: "demo-user",
+      name: "Demo User",
+      email: "demo@veer.example",
+      image: null,
+      isAdmin: false,
+    };
+  } else {
+    // Check auth state
+    try {
+      const session = await authClient.getSession();
+      currentUser = session?.data?.user || null;
+      // Enrich with server-side user data (isAdmin, etc.)
+      if (currentUser) {
+        try {
+          const meRes = await fetch("/api/me");
+          if (meRes.ok) {
+            const { data: meData } = await meRes.json();
+            if (meData) currentUser = { ...currentUser, ...meData };
+          }
+        } catch { /* use basic session data */ }
+      }
+    } catch {
+      currentUser = null;
     }
-  } catch {
-    currentUser = null;
   }
 
   const nav = document.getElementById("nav");
@@ -144,11 +155,35 @@ async function init() {
     });
   });
 
-  // Impersonation banner
-  if (isImpersonating()) {
+  // Impersonation banner (suppressed in demo mode — impersonation isn't a
+  // thing without real users, and stacking with the demo banner clips content)
+  if (isImpersonating() && !isDemoMode()) {
     document.body.insertAdjacentHTML("afterbegin", getImpersonationBanner());
     bindImpersonationBanner();
     document.body.style.paddingTop = "3rem";
+  } else if (isDemoMode() && isImpersonating()) {
+    sessionStorage.removeItem("veer_impersonating_from");
+  }
+
+  // Demo mode: banner + body class for CSS-based button hiding.
+  // Body padding is set from the banner's actual height so 2-line wraps on
+  // narrow viewports don't clip content underneath.
+  if (isDemoMode()) {
+    document.body.classList.add("demo-mode");
+    const banner = `<div class="demo-banner" role="status">
+      <div class="wa-cluster wa-justify-content-center wa-gap-xs">
+        <wa-icon name="circle-info"></wa-icon>
+        <span>Demo instance — write actions are disabled.
+          <a href="https://github.com/xd1936/veer" target="_blank" rel="noopener noreferrer">Clone the repo</a> to host your own.</span>
+      </div>
+    </div>`;
+    document.body.insertAdjacentHTML("afterbegin", banner);
+    const bannerEl = document.body.firstElementChild;
+    const applyPadding = () => {
+      document.body.style.paddingTop = `${bannerEl.getBoundingClientRect().height}px`;
+    };
+    applyPadding();
+    new ResizeObserver(applyPadding).observe(bannerEl);
   }
 
   // Initial resolve

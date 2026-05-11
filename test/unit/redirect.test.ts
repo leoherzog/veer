@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import app from "../../src/index";
+import { app } from "../../src/index";
 import { setupAuth, mockExecutionCtx } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
 import { detectDeviceType } from "../../src/routes/redirect";

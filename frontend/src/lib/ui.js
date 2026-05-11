@@ -32,7 +32,8 @@ export async function apiFetch(url, opts = {}) {
   }
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
-    showToast(err.error || err.message || "Request failed", "danger");
+    const variant = err.demoMode ? "warning" : "danger";
+    showToast(err.error || err.message || "Request failed", variant);
     return null;
   }
   return res.json();

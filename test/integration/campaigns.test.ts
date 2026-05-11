@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import app from "../../src/index";
+import { app } from "../../src/index";
 import { setupAuth, createTestLink, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
 
 // ---------------------------------------------------------------------------

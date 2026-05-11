@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import app from "../../src/index";
+import { app } from "../../src/index";
 import { setupAuth } from "../helpers";
 
 const BETTER_AUTH_URL = "http://localhost:8787";

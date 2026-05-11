@@ -20,6 +20,8 @@ npm test                 # vitest run (workerd pool)
 npm run test:watch       # vitest in watch mode
 npm run db:generate      # drizzle-kit generate (create a new migration from schema.ts)
 npm run db:migrate:local # apply drizzle/migrations to the local D1
+npm run seed:local       # generate scripts/seed.generated.sql + apply to local D1 (DEMO_MODE seed)
+npm run seed:remote      # same, applied to the remote D1 (deploy demo instance)
 ```
 
 Run a single test file or name: `npx vitest run test/integration/links.test.ts` / `npx vitest run -t "creates link"`.
@@ -94,12 +96,24 @@ Dual-storage stats:
 `DB` (D1), `KV` (namespaces for cache/rate limit/public-report counters), `ANALYTICS` (Analytics Engine dataset `veer_clicks`), and `ASSETS` (static site) are all required. `compatibility_flags: ["nodejs_compat_v2"]` is required for Better Auth dependencies. The `staging` env is pre-wired with separate D1/KV/AE datasets.
 
 ### Instance branding (`INSTANCE_NAME`)
-`INSTANCE_NAME` is an optional plain `var` in `wrangler.jsonc` (not a secret — it is public branding). When unset or empty it falls back to `"Veer"`. Resolved everywhere via `getInstanceName(env)` in `src/lib/branding.ts` — **never hardcode the brand string.** The frontend reads it from a public `GET /api/config` endpoint (`{ instanceName }`) fetched once by `frontend/src/lib/config.js` before the first render; `getInstanceName()` on the client returns the cached value. `public/index.html` ships with an empty `<title>` and is filled in by `loadConfig()`. The passkey `rpName` reads the resolved name at `getAuth()` time — changing `INSTANCE_NAME` after passkey credentials exist only affects new registrations. Shape `/api/config`'s return object so future branding knobs (logo URL, footer text, etc.) slot in without a new endpoint.
+`INSTANCE_NAME` is an optional plain `var` in `wrangler.jsonc` (not a secret — it is public branding). When unset or empty it falls back to `"Veer"`. Resolved everywhere via `getInstanceName(env)` in `src/lib/branding.ts` — **never hardcode the brand string.** The frontend reads it from a public `GET /api/config` endpoint (`{ instanceName, demoMode }`) fetched once by `frontend/src/lib/config.js` before the first render; `getInstanceName()` on the client returns the cached value. `public/index.html` ships with an empty `<title>` and is filled in by `loadConfig()`. The passkey `rpName` reads the resolved name at `getAuth()` time — changing `INSTANCE_NAME` after passkey credentials exist only affects new registrations. Shape `/api/config`'s return object so future branding knobs (logo URL, footer text, etc.) slot in without a new endpoint.
+
+### Demo mode (`DEMO_MODE=true`)
+Setting `DEMO_MODE=true` (plain `var` in `wrangler.jsonc`) turns the same codebase into a public read-only showcase. Resolved via `isDemoMode(env)` in `src/lib/branding.ts`. Three things change:
+
+1. **Auth is bypassed.** `requireAuth` / `requireAuthOrApiKey` short-circuit via the `tryDemoBypass()` helper and inject the synthetic `DEMO_USER` from `src/lib/demo.ts` (id=`demo-user`, `isAdmin: false`). No session row, no OAuth, no `/login` view. The frontend mirrors this in `app.js`: when `isDemoMode()` is true, it sets a synthetic `currentUser` and skips `authClient.getSession()`.
+2. **All non-GET `/api/*` writes return 403** with `{ error, demoMode: true }`. The block is a single middleware in `src/index.ts` placed right after CORS, before any route mount. The only allowlisted write is the password gate, matched by the precise regex `^/api/links/[^/]+/check-password$` — not `endsWith("/check-password")`. `POST /api/auth/*` is intentionally blocked (no login flow in demo). Non-`/api/` writes like `POST /:slug` (password form submit) pass through.
+3. **An hourly cron** (`triggers.crons: ["0 * * * *"]`) wakes `src/scheduled.ts`, which early-returns when `DEMO_MODE` is unset (one cheap no-op per hour on non-demo deploys). When demo, it writes 1–5 synthetic AE click events per seeded link and upserts today's `link_stats` row with `uniqueClicks` scaled to 60–85% of `clicks`.
+
+Frontend signals demo mode by adding a `.demo-mode` class to `<body>` plus a fixed-position `.demo-banner` (see `frontend/src/styles/app.css`). Body padding follows the banner's actual height via `ResizeObserver` so mobile wraps don't clip content. Top-level create buttons are hidden by CSS selectors keyed on `body.demo-mode`. The impersonation banner is suppressed in demo mode (both occupy the same fixed slot). The Logout dropdown item is also hidden — it has nothing to log out of.
+
+Seed lives in `scripts/seed.ts` and emits `scripts/seed.generated.sql` (gitignored), applied via `wrangler d1 execute --file`. Re-running is idempotent: the script prepends `DELETE FROM link_stats WHERE linkId IN (...seeded IDs...)` and uses `INSERT OR REPLACE` everywhere else. Fixtures cover the showcase surface: plain, password-gated (password is `demo`), expired, max-clicks-capped, A/B campaign, custom-domain, team-owned. The password hash is computed with the same PBKDF2 params as the runtime, sourced from `src/lib/password-params.ts` so the seed and `src/services/password.ts` can't drift.
 
 ### Directory map
 ```
 src/
-  index.ts              # Hono app + route wiring
+  index.ts              # Hono app + route wiring (named `app` export for tests)
+  scheduled.ts          # Cron handler (demo synthetic clicks; no-op outside demo)
   auth/index.ts         # Better Auth setup
   db/{index,schema}.ts  # Drizzle client + schema
   middleware/           # auth, cors, rate-limit
@@ -107,7 +121,7 @@ src/
     redirect.ts         # /:slug hot path
     api/                # auth, links, stats, campaigns, domains, keys, bulk, reports, teams, admin
   services/             # analytics, kv-cache, password, slug, useragent
-  lib/                  # crypto, date, errors, providers, request, team, validators
+  lib/                  # branding, crypto, date, demo, errors, password-params, providers, request, team, validators
 frontend/src/
   app.js, router.js, auth-client.js
   views/                # one file per SPA screen
@@ -115,6 +129,7 @@ frontend/src/
   styles/, lib/
 public/                 # SPA shell + esbuild output (dist/)
 drizzle/migrations/     # numbered SQL migrations (0000_initial.sql, …)
+scripts/                # seed.ts (DEMO_MODE seed → seed.generated.sql, gitignored)
 test/
   setup.ts              # hand-written schema bootstrap — update with new migrations
   unit/, integration/   # vitest suites
@@ -151,9 +166,9 @@ test/
 - Password hashing: PBKDF2-SHA256 (100k iterations, 16-byte salt) via Web Crypto; verify with `crypto.subtle.timingSafeEqual()`.
 
 ### Shared helpers (reuse, don't reinvent)
-- Backend `src/lib/`: `validators.ts` (`validateHttpUrl`, `validateDomainAccess`), `team.ts` (`requireTeamMember`), `request.ts` (`parsePagination`), `errors.ts` (typed HTTP helpers), `crypto.ts` (`hashApiKey`, `generateApiKey`), `date.ts` (`formatDate`, `formatHour`, `formatWeek`).
+- Backend `src/lib/`: `branding.ts` (`getInstanceName`, `isDemoMode`), `demo.ts` (`DEMO_USER`, `DEMO_USER_ID`, `DEMO_BLOCKED_MESSAGE`), `password-params.ts` (PBKDF2 constants — shared between `src/services/password.ts` and `scripts/seed.ts`), `validators.ts` (`validateHttpUrl`, `validateDomainAccess`), `team.ts` (`requireTeamMember`), `request.ts` (`parsePagination`), `errors.ts` (typed HTTP helpers), `crypto.ts` (`hashApiKey`, `generateApiKey`), `date.ts` (`formatDate`, `formatHour`, `formatWeek`).
 - Backend `src/middleware/rate-limit.ts` exports `rateLimitApiKey`, `rateLimitSession`, and standalone `checkRateLimit()` for non-middleware use.
-- Frontend: `lib/ui.js`, `lib/chart-helper.js`, `lib/stats-common.js`, `lib/escape.js` (see the Frontend architecture section above).
+- Frontend: `lib/ui.js`, `lib/chart-helper.js`, `lib/stats-common.js`, `lib/escape.js` (see the Frontend architecture section above). `lib/config.js` exposes `getInstanceName()` and `isDemoMode()` after `loadConfig()` resolves.
 
 ### Tests
 - New tests should use shared helpers in `test/helpers.ts`: `createTestLink`, `createTestDomain`, `insertClickStat`, `apiRequest`. Don't inline setup.
@@ -210,3 +225,12 @@ Non-obvious rationale behind load-bearing choices. Read these before "cleaning u
 - **Chart colors read from `--wa-color-*` custom properties** — charts auto-theme on light/dark toggle with zero JS glue.
 - **`apiFetch` returns `null` on failure** — eliminates try/catch/finally boilerplate at every call site. Toast and 401-redirect happen once inside the helper.
 - **`withLoadingBtn` does NOT catch errors** — separation of concerns: it manages button state only, `apiFetch` owns error reporting. Together they cover all cases without overlap.
+
+### Demo mode
+- **Synthetic user via middleware, no `session`/`user` row inserted at boot** — `tryDemoBypass()` in `src/middleware/auth.ts` injects `DEMO_USER` directly on `c.var.user`. Cheaper than maintaining a real Better Auth session, and there's no real D1 row that a buggy non-demo deploy could accidentally read.
+- **`/api/auth/*` writes are blocked along with everything else** — there is no login flow in demo, so sign-in/sign-out endpoints should never be reachable. The few public POSTs that must work (password gate) are explicitly allowlisted with a precise regex, not `endsWith` (a loose suffix match would catch future endpoints).
+- **Cron stays registered for non-demo deploys** — `triggers.crons` is in the default `wrangler.jsonc`, and the scheduled handler early-returns when `DEMO_MODE` is unset. Cleaner than per-env-block triggers; the cost is one cheap no-op invocation per hour on non-demo deployments.
+- **Seed re-runs are idempotent via `DELETE FROM link_stats` + `INSERT OR REPLACE`** — without the DELETE, re-running on a later calendar day leaves yesterday's oldest day lingering and the table grows unbounded. All other tables use stable IDs so `INSERT OR REPLACE` alone is enough.
+- **PBKDF2 params live in `src/lib/password-params.ts`, imported by both `services/password.ts` and `scripts/seed.ts`** — if the iterations bump for security, the seed's hashed `"demo"` password stays compatible automatically. Duplicating the integers in two files was a real drift risk.
+- **Banner padding is driven by `ResizeObserver` on the banner element** — fixed `padding-top: 3rem` clipped content under 2-line wraps on mobile. The observer keeps body padding equal to the banner's actual height.
+- **Frontend signals demo state via `body.demo-mode` class + CSS, not per-view JS guards** — top-level create buttons hide via `body.demo-mode #new-link-btn` etc. with a `:has()` selector also hiding the wrapping `wa-button-group`. Detail-page edit/delete buttons stay clickable and surface the demo `403` as a warning toast through `apiFetch`.

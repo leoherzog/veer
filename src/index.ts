@@ -15,9 +15,11 @@ import reportRoutes, { publicReportRoute } from "./routes/api/reports";
 import teamRoutes from "./routes/api/teams";
 import adminRoutes from "./routes/api/admin";
 import { handleRedirect, handleRedirectPost, handleCustomDomainRoot } from "./routes/redirect";
-import { getInstanceName } from "./lib/branding";
+import { getInstanceName, isDemoMode } from "./lib/branding";
+import { DEMO_BLOCKED_MESSAGE } from "./lib/demo";
+import { scheduled } from "./scheduled";
 
-const app = new Hono<AppEnv>();
+export const app = new Hono<AppEnv>();
 
 // Global error handler: consistent JSON errors, no internal detail leaks
 app.onError((err, c) => {
@@ -53,12 +55,30 @@ app.use("*", async (c, next) => {
 // CORS for API routes
 app.use("/api/*", corsMiddleware);
 
+// Demo mode: block mutating /api/* requests with a friendly 403.
+// Allowlist: the public password gate (/api/links/:id/check-password). Non-/api/
+// writes (e.g. the /:slug password POST) pass through unchanged. POST /api/auth/*
+// is intentionally blocked — there is no login flow in demo mode (see src/lib/demo.ts).
+const CHECK_PASSWORD_PATH = /^\/api\/links\/[^/]+\/check-password$/;
+app.use("*", async (c, next) => {
+  if (!isDemoMode(c.env)) return next();
+  const method = c.req.method;
+  if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
+  const path = c.req.path;
+  if (!path.startsWith("/api/")) return next();
+  if (CHECK_PASSWORD_PATH.test(path)) return next();
+  return c.json({ error: DEMO_BLOCKED_MESSAGE, demoMode: true }, 403);
+});
+
 // Auth routes (no auth middleware - handles its own)
 app.route("/api/auth", authRoutes);
 
 // Public API endpoint: instance config (no auth required — public branding)
 app.get("/api/config", (c) => {
-  return c.json({ instanceName: getInstanceName(c.env) });
+  return c.json({
+    instanceName: getInstanceName(c.env),
+    demoMode: isDemoMode(c.env),
+  });
 });
 
 // Public API endpoint: password check (no auth required)
@@ -152,4 +172,7 @@ app.all("*", async (c) => {
   return c.env.ASSETS.fetch(new Request(url, c.req.raw));
 });
 
-export default app;
+export default {
+  fetch: app.fetch,
+  scheduled,
+} satisfies ExportedHandler<Env>;

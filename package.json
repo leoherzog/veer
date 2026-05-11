@@ -12,7 +12,9 @@
     "db:migrate:local": "wrangler d1 migrations apply veer-db --local",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "seed:local": "tsx scripts/seed.ts && wrangler d1 execute veer-db --local --file=scripts/seed.generated.sql",
+    "seed:remote": "tsx scripts/seed.ts && wrangler d1 execute veer-db --remote --file=scripts/seed.generated.sql"
   },
   "keywords": [],
   "author": "",
@@ -34,6 +36,7 @@
     "concurrently": "^9.2.1",
     "drizzle-kit": "^0.31.9",
     "esbuild": "^0.28.0",
+    "tsx": "^4.21.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4",
     "wrangler": "^4.83.0"

@@ -1,5 +1,4 @@
-const ITERATIONS = 100_000;
-const KEY_LENGTH = 32;
+import { PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH, PBKDF2_SALT_LENGTH } from "../lib/password-params";
 
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
@@ -23,14 +22,14 @@ async function deriveKey(plain: string, salt: Uint8Array): Promise<ArrayBuffer> 
     ["deriveBits"],
   );
   return crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt, iterations: ITERATIONS, hash: "SHA-256" },
+    { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
     keyMaterial,
-    KEY_LENGTH * 8,
+    PBKDF2_KEY_LENGTH * 8,
   );
 }
 
 export async function hashPassword(plain: string): Promise<string> {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const salt = crypto.getRandomValues(new Uint8Array(PBKDF2_SALT_LENGTH));
   const hash = await deriveKey(plain, salt);
   return `${toHex(salt.buffer)}:${toHex(hash)}`;
 }

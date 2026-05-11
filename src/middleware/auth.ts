@@ -4,6 +4,8 @@ import { getAuth } from "../auth";
 import { getDb } from "../db";
 import { apiKeys, user as userTable } from "../db/schema";
 import { hashApiKey } from "../lib/crypto";
+import { isDemoMode } from "../lib/branding";
+import { DEMO_USER } from "../lib/demo";
 import type { AppEnv, AuthUser } from "../types";
 
 function isAdminUser(env: AppEnv["Bindings"], email: string): boolean {
@@ -19,7 +21,15 @@ async function checkSession(c: { env: AppEnv["Bindings"]; req: { raw: Request } 
   return { ...session.user, isAdmin };
 }
 
+/** Inject the synthetic demo user when DEMO_MODE=true. Returns true if demo bypass fired. */
+async function tryDemoBypass(c: { env: AppEnv["Bindings"]; set: (k: "user", v: AuthUser) => void }): Promise<boolean> {
+  if (!isDemoMode(c.env)) return false;
+  c.set("user", DEMO_USER);
+  return true;
+}
+
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
+  if (await tryDemoBypass(c)) return next();
   const user = await checkSession(c);
   if (!user) return c.json({ error: "Unauthorized" }, 401);
   c.set("user", user);
@@ -32,6 +42,7 @@ export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
 });
 
 export const requireAuthOrApiKey = createMiddleware<AppEnv>(async (c, next) => {
+  if (await tryDemoBypass(c)) return next();
   const authHeader = c.req.header("Authorization");
 
   if (authHeader?.startsWith("Bearer ")) {

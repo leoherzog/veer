@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import app from "../../src/index";
+import { app } from "../../src/index";
 
 describe("GET /api/config", () => {
   it("returns 200 with the default instance name when INSTANCE_NAME is unset", async () => {
@@ -8,8 +8,8 @@ describe("GET /api/config", () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Content-Type")).toMatch(/application\/json/);
-    const body = await res.json<{ instanceName: string }>();
-    expect(body).toEqual({ instanceName: "Veer" });
+    const body = await res.json<{ instanceName: string; demoMode: boolean }>();
+    expect(body).toEqual({ instanceName: "Veer", demoMode: false });
   });
 
   it("is reachable without authentication", async () => {
@@ -20,11 +20,11 @@ describe("GET /api/config", () => {
   });
 
   it("reflects a configured INSTANCE_NAME override", async () => {
-    const overridden: Env = { ...env, INSTANCE_NAME: "Acme Links" };
+    const overridden = { ...env, INSTANCE_NAME: "Acme Links" } as unknown as Env;
     const res = await app.request("/api/config", {}, overridden);
 
     expect(res.status).toBe(200);
-    const body = await res.json<{ instanceName: string }>();
-    expect(body).toEqual({ instanceName: "Acme Links" });
+    const body = await res.json<{ instanceName: string; demoMode: boolean }>();
+    expect(body).toEqual({ instanceName: "Acme Links", demoMode: false });
   });
 });
