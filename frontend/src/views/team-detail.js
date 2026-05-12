@@ -259,7 +259,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
           <wa-callout variant="success">
             <div class="wa-cluster wa-gap-s wa-align-items-center">
               <code style="word-break:break-all;">${escapeHtml(inviteUrl)}</code>
-              <wa-copy-button value="${escapeAttr(inviteUrl)}" copy-label="Copy link" success-label="Copied!"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(inviteUrl)}" copy-label="Copy link" success-label="Copied!"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
             </div>
             <p class="wa-body-s wa-color-text-quiet" style="margin-top:var(--wa-space-2xs);">Share this link with ${escapeHtml(email)}. It expires in 7 days.</p>
           </wa-callout>

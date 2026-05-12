@@ -169,7 +169,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
             <td>
               <div class="wa-cluster wa-gap-2xs">
                 <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
-                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"><wa-icon slot="copy-icon" name="copy"></wa-icon></wa-copy-button>
+                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
               </div>
             </td>
             <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>
