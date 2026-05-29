@@ -87,15 +87,20 @@ async function init() {
 
   renderNavBar(nav, currentUser);
 
-  let initialLoad = true;
+  // Move focus to #main on route changes so screen-reader users land on the new
+  // content. Skip this during the initial bootstrap, otherwise the first paint
+  // leaves a focus ring on #main (Firefox shows :focus-visible for programmatic
+  // focus until the next pointer interaction). The flag must be module-scoped to
+  // the bootstrap rather than per-render: the "/" → "/links" redirect renders
+  // reentrantly during the first load, and that nested render is still bootstrap.
+  let bootstrapping = true;
   function render(viewFn) {
     main.innerHTML = "";
     Promise.resolve(viewFn(main)).catch((err) => {
       console.error(err);
       main.innerHTML = '<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Something went wrong</h2><p>Please try again.</p></div>';
     });
-    if (!initialLoad) main.focus();
-    initialLoad = false;
+    if (!bootstrapping) main.focus();
   }
 
   // Routes
@@ -186,8 +191,11 @@ async function init() {
     new ResizeObserver(applyPadding).observe(bannerEl);
   }
 
-  // Initial resolve
+  // Initial resolve. resolve() runs synchronously (including any bootstrap
+  // redirect like "/" → "/links"), so clearing the flag afterward leaves the
+  // first paint focus-free while later navigations still move focus to #main.
   resolve();
+  bootstrapping = false;
 }
 
 document.addEventListener("click", (e) => {
