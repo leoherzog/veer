@@ -491,26 +491,8 @@ linkRoutes.put("/:id", async (c) => {
 
   // Build merged record for KV and response
   const merged = { ...existing, ...updates };
-  // Determine password for KV (updates may have changed it)
-  const mergedPassword = updates.password !== undefined ? (updates.password as string | null) : existing.password;
-
-  const mergedHostname = updates.domainHostname !== undefined ? (updates.domainHostname as string | null) : existing.domainHostname;
-  const kvData = await buildCachedRedirect(db, {
-    id,
-    destinationUrl: (merged.destinationUrl ?? existing.destinationUrl) as string,
-    redirectType: (merged.redirectType ?? existing.redirectType) as number,
-    isActive: merged.isActive ?? existing.isActive,
-    expiresAt: merged.expiresAt !== undefined ? merged.expiresAt : existing.expiresAt,
-    maxClicks: merged.maxClicks !== undefined ? (merged.maxClicks ?? null) : existing.maxClicks,
-    password: mergedPassword,
-    isInternal: merged.isInternal ?? existing.isInternal,
-    ogTitle: merged.ogTitle !== undefined ? (merged.ogTitle ?? null) : existing.ogTitle,
-    ogDescription: merged.ogDescription !== undefined ? (merged.ogDescription ?? null) : existing.ogDescription,
-    ogImage: merged.ogImage !== undefined ? (merged.ogImage ?? null) : existing.ogImage,
-    paramForwarding: merged.paramForwarding ?? existing.paramForwarding,
-    domainHostname: mergedHostname,
-  });
-  await setCachedRedirect(c.env.KV, existing.slug, kvData, mergedHostname);
+  const kvData = await buildCachedRedirect(db, merged);
+  await setCachedRedirect(c.env.KV, existing.slug, kvData, merged.domainHostname);
 
   // Build response — strip password hash
   const response = stripPassword(merged as typeof existing);

@@ -195,5 +195,6 @@ export function mockExecutionCtx(): ExecutionContext {
     passThroughOnException: () => {},
     exports: {} as Cloudflare.Exports,
     props: {},
+    tracing: {} as Tracing,
   };
 }
