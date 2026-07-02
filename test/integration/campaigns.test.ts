@@ -252,6 +252,11 @@ describe("Campaigns API", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { name: string } };
       expect(json.data.name).toBe("Updated Name");
+
+      // Read back persisted state — guards against an UPDATE that only echoes the input
+      const getRes = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
+      const getJson = await getRes.json() as { data: { name: string } };
+      expect(getJson.data.name).toBe("Updated Name");
     });
 
     it("updates the campaign description", async () => {
@@ -267,6 +272,11 @@ describe("Campaigns API", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { description: string } };
       expect(json.data.description).toBe("New description");
+
+      // Read back persisted state — guards against an UPDATE that only echoes the input
+      const getRes = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
+      const getJson = await getRes.json() as { data: { description: string } };
+      expect(getJson.data.description).toBe("New description");
     });
 
     it("partial update leaves unchanged fields intact", async () => {
@@ -298,6 +308,11 @@ describe("Campaigns API", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { description: string | null } };
       expect(json.data.description).toBeNull();
+
+      // Read back persisted state — guards against an UPDATE that only echoes the input
+      const getRes = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
+      const getJson = await getRes.json() as { data: { description: string | null } };
+      expect(getJson.data.description).toBeNull();
     });
 
     it("rejects empty name with 400", async () => {

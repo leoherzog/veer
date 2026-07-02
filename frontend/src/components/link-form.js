@@ -112,7 +112,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
         value="${escapeAttr(link?.title || "")}"
       ></wa-input>
       <wa-details summary="Advanced Options">
-        <div class="wa-stack wa-gap-m" style="padding-top:var(--wa-space-xs);">
+        <div class="wa-stack wa-gap-m pt-xs">
           <wa-radio-group label="Redirect Type" name="redirectType" value="${link?.redirectType || 302}" orientation="horizontal">
             <wa-radio value="302">302 Temporary</wa-radio>
             <wa-radio value="301">301 Permanent</wa-radio>

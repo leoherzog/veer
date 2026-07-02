@@ -1,6 +1,6 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { apiFetch, withLoadingBtn, bindSearchInput } from "../lib/ui.js";
+import { apiFetch, withLoadingBtn, bindSearchInput, renderPagination } from "../lib/ui.js";
 
 const IMPERSONATION_KEY = "veer_impersonating_from";
 
@@ -11,7 +11,7 @@ export function isImpersonating() {
 export function getImpersonationBanner() {
   if (!isImpersonating()) return "";
   return `
-    <wa-callout variant="warning" id="impersonation-banner" style="position:fixed;top:0;left:0;right:0;z-index:1000;">
+    <wa-callout variant="warning" id="impersonation-banner" slot="banner">
       <wa-icon slot="icon" name="mask"></wa-icon>
       <div class="wa-cluster wa-gap-s wa-align-items-center">
         <span>You are impersonating a user.</span>
@@ -143,18 +143,14 @@ export async function renderAdmin(container) {
             `).join("")}
           </tbody>
         </table>
-        ${pagination && pagination.total > pagination.limit ? `
-          <div class="wa-cluster wa-gap-s wa-justify-content-center pagination-row">
-            <wa-button size="small" variant="neutral" ${usersPage <= 1 ? "disabled" : ""} id="users-prev-page">Previous</wa-button>
-            <span>Page ${Number(pagination.page)} of ${Math.ceil(Number(pagination.total) / Number(pagination.limit))}</span>
-            <wa-button size="small" variant="neutral" ${usersPage * pagination.limit >= pagination.total ? "disabled" : ""} id="users-next-page">Next</wa-button>
-          </div>
-        ` : ""}
       `;
 
-      // Pagination
-      usersContainer.querySelector("#users-prev-page")?.addEventListener("click", () => { usersPage--; loadUsers(); });
-      usersContainer.querySelector("#users-next-page")?.addEventListener("click", () => { usersPage++; loadUsers(); });
+      renderPagination(usersContainer, {
+        page: Number(pagination.page),
+        total: Number(pagination.total),
+        limit: Number(pagination.limit),
+        onPageChange: (p) => { usersPage = p; loadUsers(); },
+      });
 
       // Edit user
       usersContainer.querySelectorAll(".admin-edit-user-btn").forEach((btn) => {
@@ -263,18 +259,14 @@ export async function renderAdmin(container) {
             `).join("")}
           </tbody>
         </table>
-        ${pagination && pagination.total > pagination.limit ? `
-          <div class="wa-cluster wa-gap-s wa-justify-content-center pagination-row">
-            <wa-button size="small" variant="neutral" ${teamsPage <= 1 ? "disabled" : ""} id="teams-prev-page">Previous</wa-button>
-            <span>Page ${Number(pagination.page)} of ${Math.ceil(Number(pagination.total) / Number(pagination.limit))}</span>
-            <wa-button size="small" variant="neutral" ${teamsPage * pagination.limit >= pagination.total ? "disabled" : ""} id="teams-next-page">Next</wa-button>
-          </div>
-        ` : ""}
       `;
 
-      // Pagination
-      teamsContainer.querySelector("#teams-prev-page")?.addEventListener("click", () => { teamsPage--; loadAdminTeams(); });
-      teamsContainer.querySelector("#teams-next-page")?.addEventListener("click", () => { teamsPage++; loadAdminTeams(); });
+      renderPagination(teamsContainer, {
+        page: Number(pagination.page),
+        total: Number(pagination.total),
+        limit: Number(pagination.limit),
+        onPageChange: (p) => { teamsPage = p; loadAdminTeams(); },
+      });
 
       // Delete team
       teamsContainer.querySelectorAll(".admin-delete-team-btn").forEach((btn) => {

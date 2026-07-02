@@ -1,3 +1,7 @@
+import { sql } from "drizzle-orm";
+import { linkStats } from "../db/schema";
+import type { Database } from "../db";
+
 interface ClickEvent {
   linkId: string;
   slug: string;
@@ -31,17 +35,35 @@ export function writeClickEvent(analytics: AnalyticsEngineDataset, event: ClickE
   });
 }
 
+/**
+ * Upsert the permanent daily aggregate in `link_stats` — the D1 half of
+ * dual-storage stats (AE holds ~90-day detail; this survives forever and
+ * feeds the maxClicks cap and lifetime totals).
+ */
+export async function upsertDailyStats(
+  db: Database,
+  linkId: string,
+  date: string,
+  clicks: number,
+  uniqueClicks = 0
+): Promise<void> {
+  await db
+    .insert(linkStats)
+    .values({ linkId, date, clicks, uniqueClicks })
+    .onConflictDoUpdate({
+      target: [linkStats.linkId, linkStats.date],
+      set: {
+        clicks: sql`${linkStats.clicks} + ${clicks}`,
+        uniqueClicks: sql`${linkStats.uniqueClicks} + ${uniqueClicks}`,
+      },
+    });
+}
+
 // AE SQL API response types
 type AERow = Record<string, string | number>;
 
-interface AEMeta {
-  name: string;
-  type: string;
-}
-
 interface AEResult {
   data: AERow[];
-  meta: AEMeta[];
 }
 
 // WARNING: The AE SQL API does not support parameterized queries.
@@ -60,10 +82,10 @@ export async function queryAnalyticsEngine(
   if (!resp.ok) {
     throw new Error(`AE API returned ${resp.status}: ${resp.statusText}`);
   }
-  const result = await resp.json<{ success: boolean; errors?: { message: string }[]; data?: AERow[]; meta?: AEMeta[] }>();
+  const result = await resp.json<{ success: boolean; errors?: { message: string }[]; data?: AERow[] }>();
   if (!result.success) {
     const msg = result.errors?.[0]?.message ?? "Analytics Engine query failed";
     throw new Error(msg);
   }
-  return { data: result.data ?? [], meta: result.meta ?? [] };
+  return { data: result.data ?? [] };
 }

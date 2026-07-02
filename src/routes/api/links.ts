@@ -1,34 +1,26 @@
-import { Hono, type Context } from "hono";
-import { eq, desc, asc, sql, and, or, like, inArray } from "drizzle-orm";
+import { Hono, type Context, type MiddlewareHandler } from "hono";
+import { eq, desc, asc, sql, and, or, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
 import { links, linkStats, linkTargets, linkCampaigns, campaigns, teamMembers, teams, user as userTable } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
-import { setCachedRedirect, deleteCachedRedirect } from "../../services/kv-cache";
+import { setCachedRedirect, deleteCachedRedirect, toCachedRedirect } from "../../services/kv-cache";
 import { badRequest, notFound, conflict } from "../../lib/errors";
 import { requireTeamMember } from "../../lib/team";
 import { validateHttpUrl, validateDomainAccess } from "../../lib/validators";
 import { parseJsonBody, parsePagination, stripPassword } from "../../lib/request";
 import { hashPassword, verifyPassword } from "../../services/password";
+import { checkRateLimit } from "../../middleware/rate-limit";
 import type { AppEnv } from "../../types";
-import type { CachedRedirect, CachedTarget } from "../../services/kv-cache";
+import type { CachedRedirect, CachedRedirectSource, CachedTarget } from "../../services/kv-cache";
 import type { Database } from "../../db";
 
 /** Build a CachedRedirect object from link data + optional targets. */
 async function buildCachedRedirect(
   db: Database,
-  link: { id: string; destinationUrl: string; redirectType: number; isActive: boolean | number;
-    expiresAt: Date | string | number | null; maxClicks: number | null; password: string | null;
-    isInternal: boolean | number; ogTitle: string | null; ogDescription: string | null;
-    ogImage: string | null; paramForwarding: boolean | number; domainHostname?: string | null },
+  link: CachedRedirectSource,
   preloadedTargets?: CachedTarget[] | null,
 ): Promise<CachedRedirect> {
-  let kvExpiresAt: number | null = null;
-  if (link.expiresAt != null) {
-    const d = link.expiresAt instanceof Date ? link.expiresAt : new Date(link.expiresAt as string | number);
-    kvExpiresAt = Math.floor(d.getTime() / 1000);
-  }
-
   let targets: CachedTarget[] | null;
   if (preloadedTargets !== undefined) {
     targets = preloadedTargets;
@@ -39,22 +31,7 @@ async function buildCachedRedirect(
       : null;
   }
 
-  return {
-    url: link.destinationUrl,
-    redirectType: link.redirectType as number,
-    linkId: link.id,
-    isActive: !!link.isActive,
-    expiresAt: kvExpiresAt,
-    maxClicks: link.maxClicks ?? null,
-    hasPassword: !!link.password,
-    isInternal: !!link.isInternal,
-    ogTitle: link.ogTitle ?? null,
-    ogDescription: link.ogDescription ?? null,
-    ogImage: link.ogImage ?? null,
-    paramForwarding: !!link.paramForwarding,
-    targets,
-    domainHostname: link.domainHostname ?? null,
-  };
+  return toCachedRedirect(link, targets);
 }
 
 function parseExpiresAt(value: string | number): Date {
@@ -84,7 +61,28 @@ async function canAccessLink(db: Database, link: { userId: string; teamId: strin
   return !!member;
 }
 
-const linkRoutes = new Hono<AppEnv>();
+type Link = typeof links.$inferSelect;
+
+type LinkEnv = AppEnv & {
+  Variables: AppEnv["Variables"] & { link: Link };
+};
+
+const linkRoutes = new Hono<LinkEnv>();
+
+/** Load the link by :id, enforce access, and stash the full row on c.var.link. */
+const loadLink: MiddlewareHandler<LinkEnv> = async (c, next) => {
+  if (c.var.link) return next();
+  const user = c.var.user!;
+  const db = getDb(c.env.DB);
+  const id = c.req.param("id")!;
+  const link = await db.select().from(links).where(eq(links.id, id)).get();
+  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
+  c.set("link", link);
+  return next();
+};
+
+linkRoutes.use("/:id/*", loadLink);
+linkRoutes.use("/:id", loadLink);
 
 // List user's links (or team links if teamId query param provided)
 linkRoutes.get("/", async (c) => {
@@ -127,13 +125,14 @@ linkRoutes.get("/", async (c) => {
     ownerFilter = eq(links.userId, user.id);
   }
 
+  const pattern = `%${escaped}%`;
   const where = q
     ? and(
         ownerFilter,
         or(
-          like(links.slug, `%${escaped}%`),
-          like(links.title, `%${escaped}%`),
-          like(links.destinationUrl, `%${escaped}%`)
+          sql`${links.slug} LIKE ${pattern} ESCAPE '\\'`,
+          sql`${links.title} LIKE ${pattern} ESCAPE '\\'`,
+          sql`${links.destinationUrl} LIKE ${pattern} ESCAPE '\\'`
         )
       )
     : ownerFilter;
@@ -330,12 +329,9 @@ linkRoutes.post("/", async (c) => {
 
 // Get link by ID (with total clicks)
 linkRoutes.get("/:id", async (c) => {
-  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-
-  const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
+  const link = c.var.link;
 
   const [statsResult, targets, linkedCampaigns] = await Promise.all([
     db.select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
@@ -367,9 +363,7 @@ linkRoutes.put("/:id", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-
-  const existing = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!existing || !(await canAccessLink(db, existing, user.id))) throw notFound("Link not found");
+  const existing = c.var.link;
 
   const body = await parseJsonBody<{
     destinationUrl?: string;
@@ -501,12 +495,9 @@ linkRoutes.put("/:id", async (c) => {
 
 // Toggle isActive
 linkRoutes.patch("/:id/active", async (c) => {
-  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const { id } = c.req.param();
-
-  const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
+  const link = c.var.link;
 
   // Toggle: if body has explicit isActive use it, otherwise flip current value
   let isActive: boolean;
@@ -532,12 +523,9 @@ linkRoutes.patch("/:id/active", async (c) => {
 
 // Delete link
 linkRoutes.delete("/:id", async (c) => {
-  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-
-  const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
+  const link = c.var.link;
 
   await db.delete(links).where(eq(links.id, id));
   await deleteCachedRedirect(c.env.KV, link.slug, link.domainHostname);
@@ -547,12 +535,8 @@ linkRoutes.delete("/:id", async (c) => {
 
 // GET /api/links/:id/targets - list targeting rules
 linkRoutes.get("/:id/targets", async (c) => {
-  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-
-  const link = await db.select({ id: links.id, userId: links.userId, teamId: links.teamId }).from(links).where(eq(links.id, id)).get();
-  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
 
   const targets = await db.select().from(linkTargets).where(eq(linkTargets.linkId, id));
   return c.json({ data: targets });
@@ -560,12 +544,9 @@ linkRoutes.get("/:id/targets", async (c) => {
 
 // PUT /api/links/:id/targets - replace all targeting rules
 linkRoutes.put("/:id/targets", async (c) => {
-  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
-
-  const link = await db.select().from(links).where(eq(links.id, id)).get();
-  if (!link || !(await canAccessLink(db, link, user.id))) throw notFound("Link not found");
+  const link = c.var.link;
 
   const body = await parseJsonBody<{ targets: { type: string; matchValue: string; destinationUrl: string; priority?: number }[] }>(c);
 
@@ -657,12 +638,11 @@ export async function checkPassword(c: Context<AppEnv, "/api/links/:id/check-pas
   // Brute-force protection: 5 attempts per 15-minute window per IP+link
   const windowEpoch = Math.floor(Date.now() / 1000 / 900);
   const rlKey = `rl:pw:${id}:${ip}:${windowEpoch}`;
-  const stored = await c.env.KV.get(rlKey);
-  const rlCount = stored ? parseInt(stored, 10) : 0;
-  if (rlCount >= 5) {
+  const rl = await checkRateLimit(c.env.KV, rlKey, 5, 900);
+  if (rl.exceeded) {
     return c.json({ error: "Too many attempts, try again later" }, 429);
   }
-  c.executionCtx.waitUntil(c.env.KV.put(rlKey, String(rlCount + 1), stored === null ? { expirationTtl: 1800 } : {}));
+  c.executionCtx.waitUntil(c.env.KV.put(rlKey, String(rl.count + 1), rl.stored === null ? { expirationTtl: 1800 } : {}));
 
   const db = getDb(c.env.DB);
 

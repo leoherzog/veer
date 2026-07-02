@@ -10,9 +10,9 @@ export async function renderAbStats(container, linkId) {
   if (totalClicks === 0) return;
 
   container.innerHTML = `
-    <div class="wa-stack wa-gap-s" style="margin-top:var(--wa-space-s);">
+    <div class="wa-stack wa-gap-s mt-s">
       <h4>Variant Performance</h4>
-      <canvas id="ab-chart" style="height:200px;"></canvas>
+      <canvas id="ab-chart" class="stats-chart"></canvas>
     </div>
   `;
 

@@ -21,6 +21,8 @@ export function renderQrCode(container, shortUrl) {
 
   // Color pickers update QR in real-time
   container.querySelector("#qr-fill-color").addEventListener("change", (e) => {
+    // fill only paints the data modules; the finder squares read --corner-color
+    qrEl.style.setProperty("--corner-color", e.target.value);
     qrEl.fill = e.target.value;
   });
   container.querySelector("#qr-bg-color").addEventListener("change", (e) => {

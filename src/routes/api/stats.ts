@@ -16,10 +16,10 @@ const statsRoutes = new Hono<StatsEnv>();
 
 const LINK_ID_RE = /^[0-9a-f-]{36}$/i;
 
-function parseDays(raw: string | undefined, max = 90, def = 30): number {
-  const n = raw ? parseInt(raw, 10) : def;
-  if (isNaN(n) || n < 1) return def;
-  return Math.min(n, max);
+function parseDays(raw: string | undefined): number {
+  const n = raw ? parseInt(raw, 10) : 30;
+  if (isNaN(n) || n < 1) return 30;
+  return Math.min(n, 90);
 }
 
 // Middleware: validate linkId format + ownership, check AE credentials
@@ -300,7 +300,7 @@ async function fallbackSummary(c: Context<StatsEnv>, linkId: string, days: numbe
 // GET /api/stats/:linkId/ab - A/B test variant performance
 statsRoutes.get("/:linkId/ab", async (c) => {
   const linkId = c.req.param("linkId");
-  const days = parseDays(c.req.query("days"), 90, 30);
+  const days = parseDays(c.req.query("days"));
 
   if (c.var.aeAvailable) {
     try {

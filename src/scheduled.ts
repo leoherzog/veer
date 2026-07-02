@@ -1,8 +1,9 @@
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb } from "./db";
-import { links, linkStats } from "./db/schema";
+import { links } from "./db/schema";
 import { isDemoMode } from "./lib/branding";
 import { DEMO_USER_ID } from "./lib/demo";
+import { upsertDailyStats } from "./services/analytics";
 
 const SYNTHETIC_VISITORS: Array<{
   country: string;
@@ -63,20 +64,6 @@ export async function scheduled(
       });
     }
 
-    await db
-      .insert(linkStats)
-      .values({
-        linkId: link.id,
-        date: today,
-        clicks: clickCount,
-        uniqueClicks: uniqueCount,
-      })
-      .onConflictDoUpdate({
-        target: [linkStats.linkId, linkStats.date],
-        set: {
-          clicks: sql`${linkStats.clicks} + ${clickCount}`,
-          uniqueClicks: sql`${linkStats.uniqueClicks} + ${uniqueCount}`,
-        },
-      });
+    await upsertDailyStats(db, link.id, today, clickCount, uniqueCount);
   }
 }

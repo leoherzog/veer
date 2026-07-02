@@ -1,43 +1,54 @@
-### **1. URL Management & Shortening**
-*   **Custom Branded Short URLs:** Create links using your own custom domain (e.g., `YourBrand.co/Keyword`).
-*   **Personalized/Editable Links:** Edit the destination URL and other information at any time.
-*   **Bulk URL Creation:** Import and shorten URLs in bulk using CSV tools.
-*   **URL Expiration:** Set links to expire after a certain date or number of clicks.
-*   **Password Protection:** Secure your links with a password.
-*   **Internal Links:** Create URLs that require authentication before redirecting.
-*   **A/B Testing:** Test multiple destination URLs to see which performs better.
-*   **One-Click Social Share:** Easily share shortened links to social media platforms.
+# Features
 
-### **2. Advanced Analytics & Reporting**
-*   **Real-Time Tracking:** Track unique and repeated clicks as they happen.
-*   **Geographic Analytics:** Detailed data on clicks by country, state, city, and postal code (available in list and map views).
-*   **Device & Platform Data:** Insights into the top browsers, operating systems, and device types.
-*   **Referrer Tracking:** Identify which sites or sources are driving traffic.
-*   **Timeline Charts:** Visualize click trends over specific periods.
-*   **Public & Private Reports:** Share analytics reports publicly with clients or keep them private.
-*   **Custom Analytics Reports:** Generate tailored reports based on specific filtering options.
+The implemented product surface. Each bullet corresponds to shipped code — see `AGENTS.md` for architecture.
 
-### **3. QR Code Features**
-*   **Dynamic QR Codes:** Export QR code PNG and SVG images for each URL.
-*   **Branded QR Codes:** Customize the appearance of QR codes with logos, colors, dot pattern styles, and more.
+### 1. URL Management & Shortening
+*   **Custom branded short URLs:** Serve links from any number of your own domains (e.g. `YourBrand.co/keyword`).
+*   **Custom slugs:** Slugs are user-chosen and required — no auto-generated gibberish. Same slug can exist on different domains.
+*   **Editable links:** Change the destination URL, title, and settings at any time (the slug itself is immutable).
+*   **Redirect type:** Choose 301 (permanent) or 302 (temporary) per link.
+*   **Bulk creation:** Paste comma-separated lines into the bulk tool or POST a JSON array to the API (up to 50 links per request, with per-item validation errors).
+*   **Link expiration:** Expire links after a date or after a maximum number of clicks.
+*   **Password protection:** Gate any link behind a password (PBKDF2-hashed, rate-limited, works without JavaScript).
+*   **Internal links:** Require a signed-in session before redirecting.
+*   **Social preview control:** Set custom Open Graph title, description, and image per link; crawlers see the preview even on password-protected links.
+*   **Param forwarding:** Optionally pass query parameters from the short link through to the destination.
 
-### **4. Targeting & Campaign Tools**
-*   **Geo-Targeting:** Redirect users to different destination URLs based on their country.
-*   **Mobile Targeting:** Redirect users based on their mobile operating system (iOS vs. Android).
-*   **Campaign Management:** Group links into campaigns for aggregated analytics.
-*   **Param-Forwarding:** Pass URL parameters from the short link to the destination URL.
+### 2. Analytics & Reporting
+*   **Dual-storage stats:** Detailed per-click events retained ~90 days (Analytics Engine) plus permanent daily aggregates (D1), so lifetime totals never expire.
+*   **Timeline charts:** Click trends by hour, day, or week over a selectable time range.
+*   **Geographic analytics:** Clicks by country and city, in list and choropleth-map views.
+*   **Device & platform data:** Top browsers, operating systems, and device types (mobile/tablet/desktop).
+*   **Referrer tracking:** See which sites drive traffic to each link.
+*   **A/B variant stats:** Per-variant click breakdown for split-tested links.
+*   **Public reports:** Generate a shareable, tokenized public stats page per link (private by default, revocable).
 
-### **5. Branding & Technical Features**
-*   **Branded Custom Domains (BSD):** Support for multiple custom domains.
-*   **Free SSL:** Automatic SSL certificates for all custom domains.
-*   **404 & Main Domain Redirects:** Set custom redirects for your root domain or broken links.
+### 3. QR Codes
+*   **Per-link QR codes:** Rendered for every short URL, with customizable foreground/background colors and PNG download.
 
-### **6. Automation & Integrations**
-*   **Full-Featured REST API:** Automate link shortening and management within your own apps.
-*   **Stats API:** Pull click statistics directly into BI tools or custom dashboards.
-*   **Bulk URL Creation:** Import and manage multiple URLs in bulk using textbox input parsing.
+### 4. Targeting & Campaigns
+*   **Geo-targeting:** Redirect visitors to different destinations by country.
+*   **Device targeting:** Redirect by device type (mobile, tablet, desktop).
+*   **A/B testing:** Weighted random split across multiple destination URLs.
+*   **Campaigns:** Group links into campaigns with aggregated click totals.
 
-### **7. Team & Enterprise Management**
-*   **Multi-User Support:** Create teammate accounts with individual isolation and data privacy.
-*   **oAuth Single Sign-On (SSO):** Integration with Google, Microsoft, etc.
-*   **Admin Oversight:** Monitor user quotas and "impersonate" user accounts for troubleshooting.
+### 5. Domains & Branding
+*   **Multiple custom domains:** Admin-synced from the Cloudflare API — no DNS verification dance. SSL is automatic via Cloudflare.
+*   **Root & 404 redirects:** Per-domain redirects for the bare domain and for unknown slugs.
+*   **Instance branding:** Rename the whole instance via `INSTANCE_NAME` — no hardcoded product name anywhere.
+
+### 6. API & Automation
+*   **REST API:** Full link, campaign, stats, and bulk management with Bearer API keys (`veer_` prefix, up to 10 per user, revocable, optional expiry).
+*   **Stats API:** Pull click statistics into BI tools or dashboards.
+*   **Rate limiting:** Advisory per-key limits on API traffic; session traffic is unmetered.
+
+### 7. Teams, Auth & Admin
+*   **OAuth sign-in:** Google, GitHub, Microsoft, and Discord — each enabled simply by setting its env-var credential pair.
+*   **Passkeys (WebAuthn):** Optional passwordless sign-in, gated by `PASSKEY_ENABLED`.
+*   **Teams:** Shared link ownership with member roles and email-token invitations.
+*   **Admin oversight:** Per-user link quotas and account impersonation for troubleshooting, driven by an `ADMIN_EMAILS` allowlist (no role column).
+
+### 8. Self-Hosting
+*   **Runs entirely on Cloudflare Workers:** D1 (SQLite) + KV + Analytics Engine + static assets — no servers, no containers.
+*   **No hardcoded domains:** Any hostname can serve the app or act as a branded short domain.
+*   **Demo mode:** One env var turns a deployment into a read-only public showcase with seeded links and synthetic traffic.

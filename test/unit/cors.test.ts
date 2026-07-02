@@ -133,7 +133,7 @@ describe("corsMiddleware", () => {
       expect(allowOrigin).not.toBe("https://evil.example.com");
     });
 
-    it("does not grant credentials to a non-matching origin", async () => {
+    it("makes credentials unusable cross-origin by never reflecting the attacker's origin", async () => {
       const app = buildApp();
       const res = await app.request(
         "/test",
@@ -147,13 +147,15 @@ describe("corsMiddleware", () => {
         env
       );
 
-      // Access-Control-Allow-Credentials must not be 'true' when origin is rejected
-      const creds = res.headers.get("Access-Control-Allow-Credentials");
+      // hono/cors sets Access-Control-Allow-Credentials: true unconditionally,
+      // regardless of whether the origin matched — that alone is safe under the
+      // CORS spec only as long as Access-Control-Allow-Origin is absent (or at
+      // least never equal to the requesting origin) and never "*". The real
+      // invariant that keeps the attacker's browser from using the credentialed
+      // response is the origin check below, not the credentials header.
       const allowOrigin = res.headers.get("Access-Control-Allow-Origin");
-      // Either credentials are absent/false, OR the origin header is not the attacker's
-      const rejected =
-        creds !== "true" || (allowOrigin !== "https://attacker.io");
-      expect(rejected).toBe(true);
+      expect(allowOrigin).toBeNull();
+      expect(allowOrigin).not.toBe("*");
     });
   });
 

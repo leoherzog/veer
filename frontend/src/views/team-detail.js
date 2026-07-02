@@ -1,7 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog } from "../lib/ui.js";
 
 function renderMemberRow(member, isAdmin) {
   return `
@@ -346,17 +346,16 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     });
 
     // Delete team dialog
-    const deleteDialog = container.querySelector("#delete-team-dialog");
-    container.querySelector("#delete-team-btn").addEventListener("click", () => { deleteDialog.open = true; });
-    container.querySelector("#confirm-delete-team").addEventListener("click", async () => {
-      const confirmBtn = container.querySelector("#confirm-delete-team");
-      await withLoadingBtn(confirmBtn, async () => {
+    bindConfirmDialog({
+      dialog: container.querySelector("#delete-team-dialog"),
+      trigger: container.querySelector("#delete-team-btn"),
+      confirmBtn: container.querySelector("#confirm-delete-team"),
+      onConfirm: async () => {
         const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" });
-        if (!res) return;
-        deleteDialog.open = false;
+        if (!res) return false;
         showToast("Team deleted", "success");
         goBack();
-      });
+      },
     });
   }
 

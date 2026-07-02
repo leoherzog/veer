@@ -4,7 +4,7 @@ import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
-import { SPINNER, apiFetch, withLoadingBtn, shortUrl } from "../lib/ui.js";
+import { SPINNER, apiFetch, shortUrl, bindConfirmDialog } from "../lib/ui.js";
 
 function buildBadges(link) {
   const badges = [];
@@ -83,7 +83,7 @@ function buildTargetingRules(targets) {
               <tr>
                 <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
                 <td>${escapeHtml(t.matchValue)}</td>
-                <td class="text-truncate">${escapeHtml(t.destinationUrl)}</td>
+                <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
                 <td>${t.priority}</td>
               </tr>
             `).join("")}
@@ -113,13 +113,13 @@ function buildAbTestCard(targets, link) {
           <tbody>
             <tr>
               <td><wa-badge variant="neutral" pill>Control</wa-badge></td>
-              <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>
+              <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
               <td>${defaultWeight}%</td>
             </tr>
             ${abTargets.map((t, i) => `
               <tr>
                 <td><wa-badge variant="brand" pill>Variant ${String.fromCharCode(66 + i)}</wa-badge></td>
-                <td class="text-truncate">${escapeHtml(t.destinationUrl)}</td>
+                <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
                 <td>${escapeHtml(t.matchValue)}%</td>
               </tr>
             `).join("")}
@@ -231,7 +231,7 @@ export async function renderLinkDetail(container, { id }) {
 
       <wa-dialog id="delete-link-dialog" label="Delete Link">
         <p>Are you sure you want to delete <strong>/${escapeHtml(link.slug)}</strong>? This cannot be undone.</p>
-        <wa-button slot="footer" id="delete-link-cancel-btn" variant="neutral" appearance="outlined">Cancel</wa-button>
+        <wa-button slot="footer" data-dialog="close" variant="neutral" appearance="outlined">Cancel</wa-button>
         <wa-button slot="footer" id="delete-link-confirm-btn" variant="danger">Delete</wa-button>
       </wa-dialog>
     </div>
@@ -272,25 +272,16 @@ export async function renderLinkDetail(container, { id }) {
     }
   });
 
-  const deleteLinkDialog = container.querySelector("#delete-link-dialog");
-
-  container.querySelector("#delete-btn").addEventListener("click", () => {
-    deleteLinkDialog.open = true;
-  });
-
-  container.querySelector("#delete-link-cancel-btn").addEventListener("click", () => {
-    deleteLinkDialog.open = false;
-  });
-
-  container.querySelector("#delete-link-confirm-btn").addEventListener("click", async (e) => {
-    const confirmBtn = e.currentTarget;
-    await withLoadingBtn(confirmBtn, async () => {
+  bindConfirmDialog({
+    dialog: container.querySelector("#delete-link-dialog"),
+    trigger: container.querySelector("#delete-btn"),
+    confirmBtn: container.querySelector("#delete-link-confirm-btn"),
+    onConfirm: async () => {
       const delRes = await apiFetch(`/api/links/${id}`, { method: "DELETE" });
-      if (!delRes) return;
-      deleteLinkDialog.open = false;
+      if (!delRes) return false;
       showToast("Link deleted", "success");
       navigate("/links");
-    });
+    },
   });
 
   // Render analytics charts (only if link has clicks)

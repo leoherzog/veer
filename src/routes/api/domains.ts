@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, or, sql } from "drizzle-orm";
+import { eq, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
 import { domainConfig, domainAccess, links } from "../../db/schema";

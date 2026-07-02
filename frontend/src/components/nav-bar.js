@@ -97,13 +97,6 @@ export function renderNavBar(container, user) {
     });
   }
 
-  // Navigation
-  container.querySelectorAll("[data-link]").forEach((el) => {
-    el.addEventListener("click", (e) => {
-      e.preventDefault();
-      navigate(el.getAttribute("href"));
-    });
-  });
-
+  // Navigation ([data-link] elements are handled by a global delegate in app.js)
   container.querySelector("#login-btn")?.addEventListener("click", () => navigate("/login"));
 }

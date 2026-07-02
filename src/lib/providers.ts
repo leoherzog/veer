@@ -1,5 +1,4 @@
 const PROVIDER_KEYS = ["google", "github", "microsoft", "discord"] as const;
-export type ProviderId = (typeof PROVIDER_KEYS)[number];
 
 export function getConfiguredProviders(env: Env): Record<string, { clientId: string; clientSecret: string }> {
   const result: Record<string, { clientId: string; clientSecret: string }> = {};

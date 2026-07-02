@@ -16,34 +16,86 @@ describe("Auth endpoints", () => {
       // Note: .dev.vars may inject real OAuth secrets, so providers may not be empty
     });
 
-    it("includes 'github' when GITHUB_CLIENT_ID and SECRET are set", async () => {
+    it("returns exactly ['github'] when only GitHub creds are set", async () => {
       const envWithGithub = {
         ...env,
         GITHUB_CLIENT_ID: "test-id",
         GITHUB_CLIENT_SECRET: "test-secret",
+        GOOGLE_CLIENT_ID: undefined,
+        GOOGLE_CLIENT_SECRET: undefined,
+        MICROSOFT_CLIENT_ID: undefined,
+        MICROSOFT_CLIENT_SECRET: undefined,
+        DISCORD_CLIENT_ID: undefined,
+        DISCORD_CLIENT_SECRET: undefined,
       };
 
       const res = await app.request("/api/auth/providers", {}, envWithGithub);
       const body = await res.json<{ providers: string[] }>();
 
       expect(res.status).toBe(200);
-      expect(body.providers).toContain("github");
+      expect(body.providers).toEqual(["github"]);
     });
 
-    it("includes multiple providers when configured", async () => {
+    it("includes multiple providers when configured, and excludes unconfigured ones", async () => {
       const envWithMultiple = {
         ...env,
         GITHUB_CLIENT_ID: "gh-id",
         GITHUB_CLIENT_SECRET: "gh-secret",
         GOOGLE_CLIENT_ID: "g-id",
         GOOGLE_CLIENT_SECRET: "g-secret",
+        MICROSOFT_CLIENT_ID: undefined,
+        MICROSOFT_CLIENT_SECRET: undefined,
+        DISCORD_CLIENT_ID: undefined,
+        DISCORD_CLIENT_SECRET: undefined,
       };
 
       const res = await app.request("/api/auth/providers", {}, envWithMultiple);
       const body = await res.json<{ providers: string[] }>();
 
-      expect(body.providers).toContain("github");
-      expect(body.providers).toContain("google");
+      expect(body.providers.sort()).toEqual(["github", "google"]);
+      expect(body.providers).not.toContain("microsoft");
+      expect(body.providers).not.toContain("discord");
+    });
+
+    it("excludes a provider when clientId is set but clientSecret is missing", async () => {
+      const envWithPartialGithub = {
+        ...env,
+        GITHUB_CLIENT_ID: "test-id",
+        GITHUB_CLIENT_SECRET: undefined,
+        GOOGLE_CLIENT_ID: undefined,
+        GOOGLE_CLIENT_SECRET: undefined,
+        MICROSOFT_CLIENT_ID: undefined,
+        MICROSOFT_CLIENT_SECRET: undefined,
+        DISCORD_CLIENT_ID: undefined,
+        DISCORD_CLIENT_SECRET: undefined,
+      };
+
+      const res = await app.request("/api/auth/providers", {}, envWithPartialGithub);
+      const body = await res.json<{ providers: string[] }>();
+
+      expect(res.status).toBe(200);
+      expect(body.providers).not.toContain("github");
+      expect(body.providers).toEqual([]);
+    });
+
+    it("returns an empty list when no provider creds are set", async () => {
+      const envWithNoProviders = {
+        ...env,
+        GOOGLE_CLIENT_ID: undefined,
+        GOOGLE_CLIENT_SECRET: undefined,
+        GITHUB_CLIENT_ID: undefined,
+        GITHUB_CLIENT_SECRET: undefined,
+        MICROSOFT_CLIENT_ID: undefined,
+        MICROSOFT_CLIENT_SECRET: undefined,
+        DISCORD_CLIENT_ID: undefined,
+        DISCORD_CLIENT_SECRET: undefined,
+      };
+
+      const res = await app.request("/api/auth/providers", {}, envWithNoProviders);
+      const body = await res.json<{ providers: string[] }>();
+
+      expect(res.status).toBe(200);
+      expect(body.providers).toEqual([]);
     });
 
     it("returns passkey true when PASSKEY_ENABLED is 'true'", async () => {

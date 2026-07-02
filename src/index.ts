@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "./types";
 import { corsMiddleware } from "./middleware/cors";
 import { requireAuth, requireAdmin, requireAuthOrApiKey } from "./middleware/auth";
-import { rateLimitApiKey, rateLimitSession } from "./middleware/rate-limit";
+import { rateLimitApiKey, rateLimitSession, checkRateLimit } from "./middleware/rate-limit";
 import authRoutes from "./routes/api/auth";
 import linkRoutes, { checkPassword } from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
@@ -137,19 +137,17 @@ app.get("/api/public-report/:token", async (c, next) => {
   const windowEpoch = Math.floor(Date.now() / 1000 / 60);
   const rlKey = `rl:pub:${ip}:${windowEpoch}`;
 
-  const stored = await c.env.KV.get(rlKey);
-  const count = stored ? parseInt(stored, 10) : 0;
-  if (count >= 30) {
-    const secondsRemaining = 60 - (Math.floor(Date.now() / 1000) % 60);
+  const rl = await checkRateLimit(c.env.KV, rlKey, 30, 60);
+  if (rl.exceeded) {
     return Response.json(
-      { error: "Rate limit exceeded", retryAfter: secondsRemaining },
-      { status: 429, headers: { "Retry-After": String(secondsRemaining) } }
+      { error: "Rate limit exceeded", retryAfter: rl.secondsRemaining },
+      { status: 429, headers: { "Retry-After": String(rl.secondsRemaining) } }
     );
   }
 
   // Increment asynchronously — non-blocking, advisory enforcement
   c.executionCtx.waitUntil(
-    c.env.KV.put(rlKey, String(count + 1), stored === null ? { expirationTtl: 120 } : {})
+    c.env.KV.put(rlKey, String(rl.count + 1), rl.stored === null ? { expirationTtl: 120 } : {})
   );
 
   await next();

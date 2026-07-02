@@ -86,6 +86,7 @@ describe("validateSlug", () => {
         expect(RESERVED_SLUGS.has(slug)).toBe(true);
         const result = validateSlug(slug);
         expect(result.valid).toBe(false);
+        expect(result.error).toMatch(/1-128 characters/);
       }
     });
 

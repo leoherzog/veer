@@ -3,6 +3,7 @@ function getContainer() {
   if (!container) {
     container = document.createElement("div");
     container.id = "toast-container";
+    container.className = "wa-stack wa-gap-s";
     document.body.appendChild(container);
   }
   return container;

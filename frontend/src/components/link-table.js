@@ -1,6 +1,6 @@
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { shortUrl } from "../lib/ui.js";
+import { shortUrl, emptyState, renderPagination } from "../lib/ui.js";
 
 const COLUMNS = [
   { key: "slug", label: "Short URL" },
@@ -17,10 +17,7 @@ function sortIndicator(col, sort) {
 
 export function renderLinkTable(container, { links, pagination, sort, onPageChange, onSort }) {
   if (!links.length) {
-    container.innerHTML = `<div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
-      <wa-icon name="link-slash" class="wa-font-size-2xl" style="opacity:0.5;"></wa-icon>
-      <p>No links yet. Create your first short link above.</p>
-    </div>`;
+    container.innerHTML = emptyState("link-slash", "No links yet. Create your first short link above.");
     return;
   }
 
@@ -42,7 +39,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
                 ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
               </div>
             </td>
-            <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>
+            <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
             <td>${escapeHtml(link.title || "")}</td>
             <td>${new Date(link.createdAt).toLocaleDateString()}</td>
             <td>
@@ -55,14 +52,14 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
         `).join("")}
       </tbody>
     </table>
-    ${pagination.total > pagination.limit ? `
-      <div class="wa-cluster wa-gap-s wa-justify-content-center" style="margin-top:var(--wa-space-m);">
-        <wa-button size="small" variant="neutral" ${pagination.page <= 1 ? "disabled" : ""} id="prev-page" aria-label="Previous page">Previous</wa-button>
-        <span>Page ${pagination.page} of ${Math.ceil(pagination.total / pagination.limit)}</span>
-        <wa-button size="small" variant="neutral" ${pagination.page * pagination.limit >= pagination.total ? "disabled" : ""} id="next-page" aria-label="Next page">Next</wa-button>
-      </div>
-    ` : ""}
   `;
+
+  renderPagination(container, {
+    page: pagination.page,
+    total: pagination.total,
+    limit: pagination.limit,
+    onPageChange,
+  });
 
   // Sort column click handlers
   container.querySelectorAll("th[data-sort]").forEach((th) => {
@@ -76,9 +73,6 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
   container.querySelectorAll("[data-edit]").forEach((el) => {
     el.addEventListener("click", () => navigate(el.dataset.edit));
   });
-
-  container.querySelector("#prev-page")?.addEventListener("click", () => onPageChange(pagination.page - 1));
-  container.querySelector("#next-page")?.addEventListener("click", () => onPageChange(pagination.page + 1));
 
   container.querySelectorAll("[data-href]").forEach((el) => {
     el.addEventListener("click", () => window.open(el.dataset.href, "_blank", "noopener"));

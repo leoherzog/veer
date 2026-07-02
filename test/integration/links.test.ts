@@ -280,8 +280,19 @@ describe("Links API", () => {
   // TOGGLE ACTIVE  PATCH /api/links/:id/active
   // -----------------------------------------------------------------------
   describe("PATCH /api/links/:id/active", () => {
-    it("deactivates a link", async () => {
+    it("deactivates a link and invalidates its cached redirect", async () => {
       const link = await createTestLink(env.DB, { slug: "deactivate-me", userId, isActive: true });
+
+      // Seed the KV cache the way the redirect path would. Key format matches
+      // kvKey() in src/services/kv-cache.ts: bare slug when there is no custom domain.
+      await env.KV.put(
+        "deactivate-me",
+        JSON.stringify({ url: link.destinationUrl, redirectType: 302, linkId: link.id, isActive: true }),
+      );
+      // Sanity: the entry exists before we deactivate, so a null afterwards can only
+      // mean deactivation deleted it (not that it was never there).
+      expect(await env.KV.get("deactivate-me")).not.toBeNull();
+
       const res = await api("PATCH", `/api/links/${link.id}/active`, {
         headers,
         body: { isActive: false },
@@ -719,23 +730,49 @@ describe("Links API", () => {
   // Search SQL wildcard escaping (Task 17)
   // -----------------------------------------------------------------------
   describe("GET /api/links – search wildcard escaping", () => {
-    it("search for % only matches literal percent", async () => {
-      await createTestLink(env.DB, { slug: `has-percent-${crypto.randomUUID().slice(0, 8)}%sign`, userId });
-      await createTestLink(env.DB, { slug: `normal-link-${crypto.randomUUID().slice(0, 8)}`, userId });
+    it("search for % matches a literal percent and does not act as a wildcard", async () => {
+      const unique = crypto.randomUUID().slice(0, 8);
+      const percentSlug = `has-percent-${unique}%sign`;
+      const normalSlug = `normal-link-${unique}`;
+      await createTestLink(env.DB, { slug: percentSlug, userId });
+      await createTestLink(env.DB, { slug: normalSlug, userId });
 
+      // ?q=%25 decodes to a single literal "%". With correct LIKE escaping this
+      // matches only slugs containing a literal "%", not every row (which is what
+      // an unescaped "%" wildcard would return).
       const res = await api("GET", "/api/links?q=%25", { headers });
       const json = await res.json() as { data: { slug: string }[] };
-      // All results should contain a literal % in slug, title, or destinationUrl
+      const slugs = json.data.map((l) => l.slug);
+
+      // Positive: the literal-percent slug IS found (guards against the escaping
+      // being so aggressive it matches nothing — the previous vacuous-pass bug).
+      expect(slugs).toContain(percentSlug);
+      // Negative: a slug without a "%" is NOT returned, proving "%" is not a wildcard.
+      expect(slugs).not.toContain(normalSlug);
+      // Every result must contain a literal "%".
+      expect(json.data.length).toBeGreaterThan(0);
       for (const item of json.data) {
         expect(item.slug).toContain("%");
       }
     });
 
-    it("search for _ only matches literal underscore", async () => {
-      await createTestLink(env.DB, { slug: `has_underscore_${crypto.randomUUID().slice(0, 8)}`, userId });
+    it("search for _ matches a literal underscore and does not act as a single-char wildcard", async () => {
+      const unique = crypto.randomUUID().slice(0, 8);
+      const literalSlug = `has_underscore_${unique}`;
+      // Under an unescaped LIKE, "_underscore_" is <any><literal "underscore"><any>,
+      // which would match this slug even though it has no "_" characters. Correct
+      // escaping treats "_" literally, so this control must be excluded.
+      const wildcardOnlySlug = `zunderscorez${unique}`;
+      await createTestLink(env.DB, { slug: literalSlug, userId });
+      await createTestLink(env.DB, { slug: wildcardOnlySlug, userId });
 
       const res = await api("GET", "/api/links?q=_underscore_", { headers });
       const json = await res.json() as { data: { slug: string }[] };
+      const slugs = json.data.map((l) => l.slug);
+
+      expect(slugs).toContain(literalSlug);
+      expect(slugs).not.toContain(wildcardOnlySlug);
+      expect(json.data.length).toBeGreaterThan(0);
       for (const item of json.data) {
         expect(item.slug).toContain("_underscore_");
       }

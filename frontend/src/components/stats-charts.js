@@ -55,7 +55,7 @@ async function loadTimeline(container, linkId, days) {
       },
     });
   } catch {
-    wrap.innerHTML = `<div class="wa-stack wa-align-items-center wa-color-text-quiet" style="padding:var(--wa-space-2xl);">Failed to load timeline</div>`;
+    wrap.innerHTML = `<div class="wa-stack wa-align-items-center wa-color-text-quiet p-2xl">Failed to load timeline</div>`;
   }
 }
 

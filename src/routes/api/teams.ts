@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { eq, sql, and } from "drizzle-orm";
 import { getDb } from "../../db";
 import type { Database } from "../../db";
-import { teams, teamMembers, teamInvites, links, user as userTable } from "../../db/schema";
+import { teams, teamMembers, teamInvites, user as userTable } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { badRequest, notFound, forbidden, conflict } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";

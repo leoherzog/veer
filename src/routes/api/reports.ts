@@ -3,7 +3,7 @@ import type { Context } from "hono";
 import { eq, and, sql, gte } from "drizzle-orm";
 import { getDb } from "../../db";
 import { publicReports, links, linkStats } from "../../db/schema";
-import { badRequest, notFound } from "../../lib/errors";
+import { notFound } from "../../lib/errors";
 import { formatDate } from "../../lib/date";
 import type { AppEnv } from "../../types";
 

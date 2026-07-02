@@ -1,7 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, shortUrl } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, shortUrl, emptyState } from "../lib/ui.js";
 
 export async function renderCampaignDetail(container, { id }) {
   container.innerHTML = SPINNER;
@@ -144,12 +144,7 @@ export async function renderCampaignDetail(container, { id }) {
 
 function renderCampaignLinks(container, links, campaignId, rootContainer) {
   if (!links.length) {
-    container.innerHTML = `
-      <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-2xl);">
-        <wa-icon name="link-slash" class="wa-font-size-2xl" style="opacity:0.5;"></wa-icon>
-        <p class="wa-color-text-quiet">No links in this campaign yet.</p>
-      </div>
-    `;
+    container.innerHTML = emptyState("link-slash", "No links in this campaign yet.");
     return;
   }
 
@@ -172,7 +167,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
                 <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
               </div>
             </td>
-            <td class="text-truncate">${escapeHtml(link.destinationUrl)}</td>
+            <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
             <td>${link.totalClicks || 0}</td>
             <td>
               <wa-button size="small" variant="danger" appearance="plain" pill class="remove-link-btn" data-link-id="${escapeAttr(link.id)}" aria-label="Remove from campaign">
@@ -185,12 +180,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
     </table>
   `;
 
-  container.querySelectorAll("[data-link]").forEach(el => {
-    el.addEventListener("click", (e) => {
-      e.preventDefault();
-      navigate(el.getAttribute("href"));
-    });
-  });
+  // [data-link] anchors are handled by a global delegate in app.js.
 
   container.querySelectorAll(".remove-link-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -222,7 +212,7 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
   const available = allLinks.filter(l => !existingIds.has(l.id));
 
   if (!available.length) {
-    container.innerHTML = `<p class="wa-stack wa-align-items-center wa-color-text-quiet" style="padding:var(--wa-space-m);">All your links are already in this campaign.</p>`;
+    container.innerHTML = `<p class="wa-stack wa-align-items-center wa-color-text-quiet p-m">All your links are already in this campaign.</p>`;
     return;
   }
 
@@ -232,7 +222,7 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
         <div class="wa-split available-link-row">
           <div class="wa-stack wa-gap-2xs">
             <strong>${escapeHtml(link.slug)}</strong>
-            <span class="text-truncate wa-body-s wa-color-text-quiet">${escapeHtml(link.destinationUrl)}</span>
+            <span class="text-truncate wa-text-truncate wa-body-s wa-color-text-quiet">${escapeHtml(link.destinationUrl)}</span>
           </div>
           <wa-button size="small" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
         </div>

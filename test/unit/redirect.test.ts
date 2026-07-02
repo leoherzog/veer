@@ -393,10 +393,10 @@ describe("Targeting + param forwarding combined", () => {
 });
 
 describe("A/B targeting via redirect", () => {
-  it("never selects default when variant weights sum to 100", async () => {
-    // Two variants at 50/50 leave 0 default weight (clamped to 1 by the code),
-    // so ~99% of the time we pick one of the variants. Over many iterations,
-    // we should see both variants chosen and not the default (except very rarely).
+  it("splits evenly between two 50-weight variants, leaving the default a clamped floor", async () => {
+    // Two variants at weight 50 sum to 100, so defaultWeight = max(1, 100 - 100) = 1.
+    // roll in [0, 101): a in [0,50), b in [50,100), default in [100,101).
+    // Each variant gets ~50/101 ≈ 49.5%; the default keeps only the ~1% floor.
     await setCachedRedirect(env.KV, "ab-split", cachedRedirect({
       url: "https://default.example.com/control",
       targets: [
@@ -405,21 +405,32 @@ describe("A/B targeting via redirect", () => {
       ],
     }));
 
-    const seen = new Set<string>();
-    for (let i = 0; i < 40; i++) {
+    const counts: Record<string, number> = {};
+    const N = 400;
+    for (let i = 0; i < N; i++) {
       const req = cfRequest("/ab-split");
       const res = await app.fetch(req, env, mockExecutionCtx());
       expect(res.status).toBe(302);
-      seen.add(res.headers.get("Location")!);
+      const loc = res.headers.get("Location")!;
+      counts[loc] = (counts[loc] ?? 0) + 1;
     }
-    // Both variants should have been picked across 40 rolls
-    expect(seen.has("https://a.example.com")).toBe(true);
-    expect(seen.has("https://b.example.com")).toBe(true);
+
+    const a = counts["https://a.example.com"] ?? 0;
+    const b = counts["https://b.example.com"] ?? 0;
+    const def = counts["https://default.example.com/control"] ?? 0;
+    // Both variants dominate at roughly equal share (expected ~49.5% each).
+    // Bands are ~6σ wide (σ≈10 over 400 draws), so flakiness is negligible.
+    expect(a / N).toBeGreaterThan(0.3);
+    expect(a / N).toBeLessThan(0.7);
+    expect(b / N).toBeGreaterThan(0.3);
+    expect(b / N).toBeLessThan(0.7);
+    // The default is only the clamped floor (~1%), never a major bucket.
+    expect(def / N).toBeLessThan(0.1);
   });
 
-  it("single variant with 100 weight still occasionally hits default (weight clamped to 1)", async () => {
-    // One variant at weight=100 leaves defaultWeight = max(1, 100 - 100) = 1.
-    // roll in [0, 101); default if roll < 1, variant if 1 <= roll < 101.
+  it("sends nearly all traffic to a single high-weight variant, keeping a small default floor", async () => {
+    // matchValue "100" is clamped by Math.min(99, …) to weight 99, not kept at 100.
+    // defaultWeight = max(1, 100 - 99) = 1, total = 100 → variant ~99%, default ~1%.
     await setCachedRedirect(env.KV, "ab-heavy", cachedRedirect({
       url: "https://default.example.com/ctl",
       targets: [
@@ -427,15 +438,22 @@ describe("A/B targeting via redirect", () => {
       ],
     }));
 
-    const seen = new Set<string>();
-    for (let i = 0; i < 50; i++) {
+    const counts: Record<string, number> = {};
+    const N = 300;
+    for (let i = 0; i < N; i++) {
       const req = cfRequest("/ab-heavy");
       const res = await app.fetch(req, env, mockExecutionCtx());
       expect(res.status).toBe(302);
-      seen.add(res.headers.get("Location")!);
+      const loc = res.headers.get("Location")!;
+      counts[loc] = (counts[loc] ?? 0) + 1;
     }
-    // Over 50 rolls, variant is overwhelmingly likely; we assert it is always present
-    expect(seen.has("https://variant.example.com")).toBe(true);
+
+    const variant = counts["https://variant.example.com"] ?? 0;
+    const def = counts["https://default.example.com/ctl"] ?? 0;
+    // Variant should dominate (expected ~99%); ~9σ margin below the 0.9 bound.
+    expect(variant / N).toBeGreaterThan(0.9);
+    // Default is the ~1% floor at most, never a major share.
+    expect(def / N).toBeLessThan(0.1);
   });
 
   it("geo match takes precedence over A/B variants", async () => {
@@ -456,9 +474,11 @@ describe("A/B targeting via redirect", () => {
     }
   });
 
-  it("invalid A/B weight (non-numeric) is clamped to min weight 1", async () => {
-    // matchValue "foo" → parseInt=NaN → Math.max(1, Math.min(99, NaN||0)) = 1
-    // defaultWeight = max(1, 100 - 1) = 99, so ~99/100 chance of default
+  it("clamps a non-numeric weight to 1, sending the vast majority of traffic to the default", async () => {
+    // matchValue "not-a-number" → parseInt = NaN → Math.max(1, Math.min(99, NaN || 0)) = 1.
+    // defaultWeight = max(1, 100 - 1) = 99, total = 100 → default ~99%, variant ~1%.
+    // This is the regression test for the fall-through bug: before the fix the
+    // default was unreachable whenever A/B targets existed, so its share was 0%.
     await setCachedRedirect(env.KV, "ab-nan", cachedRedirect({
       url: "https://default.example.com/ctl",
       targets: [
@@ -466,12 +486,22 @@ describe("A/B targeting via redirect", () => {
       ],
     }));
 
-    // Don't assert exact probability — just confirm it doesn't crash and returns 302
-    const req = cfRequest("/ab-nan");
-    const res = await app.fetch(req, env, mockExecutionCtx());
-    expect(res.status).toBe(302);
-    const loc = res.headers.get("Location")!;
-    expect(loc === "https://default.example.com/ctl" || loc === "https://variant.example.com").toBe(true);
+    const counts: Record<string, number> = {};
+    const N = 300;
+    for (let i = 0; i < N; i++) {
+      const req = cfRequest("/ab-nan");
+      const res = await app.fetch(req, env, mockExecutionCtx());
+      expect(res.status).toBe(302);
+      const loc = res.headers.get("Location")!;
+      counts[loc] = (counts[loc] ?? 0) + 1;
+    }
+
+    const def = counts["https://default.example.com/ctl"] ?? 0;
+    const variant = counts["https://variant.example.com"] ?? 0;
+    // Default should dominate (expected ~99%); ~9σ margin below the 0.9 bound.
+    expect(def / N).toBeGreaterThan(0.9);
+    // The clamped-to-1 variant is at most the ~1% floor, never a major share.
+    expect(variant / N).toBeLessThan(0.1);
   });
 });
 

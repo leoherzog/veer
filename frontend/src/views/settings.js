@@ -1,7 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { authClient } from "../auth-client.js";
-import { SPINNER, apiFetch, withLoadingBtn } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog } from "../lib/ui.js";
 
 /* ── API Keys helpers ─────────────────────────────────────────────── */
 
@@ -29,7 +29,7 @@ function renderKeyRow(key) {
 function renderApiKeysPanel(keys) {
   return `
     <wa-tab-panel name="api-keys">
-      <div class="wa-stack wa-gap-l" style="padding-top:var(--wa-space-m);">
+      <div class="wa-stack wa-gap-l tab-panel-content">
         <wa-card>
           <div class="wa-stack wa-gap-m">
             <h3>Create API Key</h3>
@@ -89,22 +89,17 @@ function bindDeleteKeyButtons(container) {
 
 function bindDeleteKeyDialog(container) {
   const dialog = container.querySelector("#delete-key-dialog");
-  if (dialog) {
-    const cancelBtn = container.querySelector("#cancel-delete-key");
-    const confirmBtn = container.querySelector("#confirm-delete-key");
-
-    cancelBtn.addEventListener("click", () => { dialog.open = false; });
-    confirmBtn.addEventListener("click", async () => {
-      const keyId = dialog.dataset.keyId;
-      await withLoadingBtn(confirmBtn, async () => {
-        const result = await apiFetch(`/api/keys/${encodeURIComponent(keyId)}`, { method: "DELETE" });
-        if (!result) return;
-        showToast("API key deleted", "success");
-        dialog.open = false;
-        renderSettings(container);
-      });
-    });
-  }
+  if (!dialog) return;
+  bindConfirmDialog({
+    dialog,
+    confirmBtn: container.querySelector("#confirm-delete-key"),
+    onConfirm: async () => {
+      const result = await apiFetch(`/api/keys/${encodeURIComponent(dialog.dataset.keyId)}`, { method: "DELETE" });
+      if (!result) return false;
+      showToast("API key deleted", "success");
+      renderSettings(container);
+    },
+  });
 }
 
 /* ── Passkey helpers ──────────────────────────────────────────────── */
@@ -129,7 +124,7 @@ function renderPasskeyRow(pk) {
 function renderPasskeyPanel(passkeys) {
   return `
     <wa-tab-panel name="passkeys">
-      <div class="wa-stack wa-gap-l" style="padding-top:var(--wa-space-m);">
+      <div class="wa-stack wa-gap-l tab-panel-content">
         <wa-card>
           <div class="wa-stack wa-gap-m">
             <h3>Register Passkey</h3>
@@ -171,7 +166,7 @@ function renderPasskeyPanel(passkeys) {
 
       <wa-dialog id="delete-passkey-dialog" label="Delete Passkey">
         <p>Are you sure you want to delete the passkey <strong id="delete-passkey-name"></strong>? You won't be able to sign in with it anymore.</p>
-        <wa-button slot="footer" variant="neutral" id="cancel-delete-passkey">Cancel</wa-button>
+        <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="danger" id="confirm-delete-passkey">Delete</wa-button>
       </wa-dialog>
     </wa-tab-panel>
@@ -223,26 +218,23 @@ function bindPasskeyDelete(container) {
     });
   });
 
-  const cancelBtn = container.querySelector("#cancel-delete-passkey");
-  const confirmBtn = container.querySelector("#confirm-delete-passkey");
-
-  cancelBtn.addEventListener("click", () => { dialog.open = false; });
-  confirmBtn.addEventListener("click", async () => {
-    const passkeyId = dialog.dataset.passkeyId;
-    await withLoadingBtn(confirmBtn, async () => {
+  bindConfirmDialog({
+    dialog,
+    confirmBtn: container.querySelector("#confirm-delete-passkey"),
+    onConfirm: async () => {
       try {
-        const result = await authClient.passkey.deletePasskey({ id: passkeyId });
+        const result = await authClient.passkey.deletePasskey({ id: dialog.dataset.passkeyId });
         if (result?.error) {
           showToast(result.error.message || "Failed to delete passkey", "danger");
-        } else {
-          showToast("Passkey deleted", "success");
-          dialog.open = false;
-          renderSettings(container);
+          return false;
         }
+        showToast("Passkey deleted", "success");
+        renderSettings(container);
       } catch {
         showToast("Network error", "danger");
+        return false;
       }
-    });
+    },
   });
 }
 
@@ -252,8 +244,8 @@ function renderDomainRow(domain) {
   return `
     <tr class="domain-row" data-hostname="${escapeAttr(domain.hostname)}">
       <td>${escapeHtml(domain.hostname)}</td>
-      <td class="text-truncate">${escapeHtml(domain.rootRedirect || "—")}</td>
-      <td class="text-truncate">${escapeHtml(domain.notFoundRedirect || "—")}</td>
+      <td class="text-truncate wa-text-truncate">${escapeHtml(domain.rootRedirect || "—")}</td>
+      <td class="text-truncate wa-text-truncate">${escapeHtml(domain.notFoundRedirect || "—")}</td>
       <td>
         <wa-badge variant="${domain.accessMode === "restricted" ? "warning" : "success"}" pill>
           ${domain.accessMode === "restricted" ? "Restricted" : "Everyone"}
@@ -275,7 +267,7 @@ function renderEditRow(domain) {
   return `
     <tr class="domain-edit-row" data-edit-for="${escapeAttr(domain.hostname)}">
       <td colspan="5">
-        <form class="wa-stack wa-gap-s edit-domain-form" data-hostname="${escapeAttr(domain.hostname)}" style="padding:var(--wa-space-xs) 0;">
+        <form class="wa-stack wa-gap-s edit-domain-form py-xs" data-hostname="${escapeAttr(domain.hostname)}">
           <div class="wa-cluster wa-gap-s wa-align-items-end">
             <wa-input name="rootRedirect" label="Root Redirect" placeholder="https://example.com" value="${escapeAttr(domain.rootRedirect || "")}" style="flex:1;min-width:200px;"></wa-input>
             <wa-input name="notFoundRedirect" label="404 Redirect" placeholder="https://example.com/404" value="${escapeAttr(domain.notFoundRedirect || "")}" style="flex:1;min-width:200px;"></wa-input>
@@ -342,7 +334,7 @@ export async function renderSettings(container) {
 
   const domainsPanel = isAdmin ? `
     <wa-tab-panel name="domains">
-      <div class="wa-stack wa-gap-l" style="padding-top:var(--wa-space-m);">
+      <div class="wa-stack wa-gap-l tab-panel-content">
         <wa-card>
           <div class="wa-stack wa-gap-m">
             <div class="wa-split">
@@ -390,7 +382,7 @@ export async function renderSettings(container) {
       </wa-tab-group>
       <wa-dialog id="delete-key-dialog" label="Delete API Key">
         <p>Are you sure you want to delete the key <strong id="delete-key-name"></strong>? This cannot be undone.</p>
-        <wa-button slot="footer" variant="neutral" id="cancel-delete-key">Cancel</wa-button>
+        <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="danger" id="confirm-delete-key">Delete</wa-button>
       </wa-dialog>
     </div>

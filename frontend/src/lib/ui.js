@@ -2,11 +2,11 @@ import { showToast } from "../components/toast.js";
 import { escapeHtml } from "./escape.js";
 
 /** Loading spinner HTML */
-export const SPINNER = `<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><wa-spinner></wa-spinner></div>`;
+export const SPINNER = `<div class="wa-stack wa-align-items-center centered-state"><wa-spinner></wa-spinner></div>`;
 
 /** Empty state with icon */
 export function emptyState(icon, message) {
-  return `<div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-3xl);">
+  return `<div class="wa-stack wa-gap-m wa-align-items-center centered-state">
     <wa-icon name="${icon}" class="wa-font-size-2xl" style="opacity:0.5;"></wa-icon>
     <p class="wa-color-text-quiet">${escapeHtml(message)}</p>
   </div>`;
@@ -52,6 +52,35 @@ export async function withLoadingBtn(btn, fn) {
     btn.loading = false;
     btn.disabled = false;
   }
+}
+
+/**
+ * Wire a confirmation dialog. An optional `trigger` opens the dialog on click;
+ * the `confirmBtn` runs `onConfirm` inside withLoadingBtn and closes the dialog
+ * once it resolves (return `false` to keep it open, e.g. on failure).
+ * `onConfirm` owns its own success toast and any navigation/reload.
+ */
+export function bindConfirmDialog({ dialog, trigger, confirmBtn, onConfirm }) {
+  if (trigger) trigger.addEventListener("click", () => { dialog.open = true; });
+  confirmBtn.addEventListener("click", () => withLoadingBtn(confirmBtn, async () => {
+    const ok = await onConfirm();
+    if (ok !== false) dialog.open = false;
+  }));
+}
+
+/** Render Previous / Page X of Y / Next controls into `container` and wire them. */
+export function renderPagination(container, { page, total, limit, onPageChange }) {
+  if (total <= limit) return;
+  const row = document.createElement("div");
+  row.className = "wa-cluster wa-gap-s wa-justify-content-center pagination-row";
+  row.innerHTML = `
+    <wa-button size="small" variant="neutral" ${page <= 1 ? "disabled" : ""} data-page-prev aria-label="Previous page">Previous</wa-button>
+    <span>Page ${page} of ${Math.ceil(total / limit)}</span>
+    <wa-button size="small" variant="neutral" ${page * limit >= total ? "disabled" : ""} data-page-next aria-label="Next page">Next</wa-button>
+  `;
+  row.querySelector("[data-page-prev]").addEventListener("click", () => onPageChange(page - 1));
+  row.querySelector("[data-page-next]").addEventListener("click", () => onPageChange(page + 1));
+  container.append(row);
 }
 
 /** Debounced search input with wa-clear support. */

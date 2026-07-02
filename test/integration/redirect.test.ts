@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../../src/index";
 import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
@@ -115,21 +115,30 @@ describe("Redirect engine – GET /:slug", () => {
     });
   });
 
-  // ── Click stats (D1 link_stats table) ────────────────────────────────
-  // Note: waitUntil is mocked, so background tasks (incrementClickStats)
-  // won't actually run. We test incrementClickStats directly in unit tests.
+  // ── Daily aggregate (link_stats) ─────────────────────────────────────
 
-  describe("Click stats", () => {
-    it("redirect succeeds even though waitUntil is mocked", async () => {
-      await createTestLink(env.DB, {
-        slug: "stats-redirect",
-        destinationUrl: "https://example.com/stats",
+  describe("Click stats aggregation", () => {
+    it("upserts the daily link_stats row for each redirect", async () => {
+      const link = await createTestLink(env.DB, {
+        slug: "stats-agg",
+        destinationUrl: "https://example.com/agg",
         userId: auth.user.id,
       });
 
-      const res = await app.request("/stats-redirect", {}, env, mockExecutionCtx());
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://example.com/stats");
+      const first = await app.request("/stats-agg", {}, env, mockExecutionCtx());
+      expect(first.status).toBe(302);
+      const second = await app.request("/stats-agg", {}, env, mockExecutionCtx());
+      expect(second.status).toBe(302);
+
+      // The upsert runs via waitUntil, so poll until the background write lands
+      await vi.waitFor(async () => {
+        const row = await env.DB.prepare(
+          "SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?"
+        )
+          .bind(link.id, new Date().toISOString().slice(0, 10))
+          .first<{ clicks: number }>();
+        expect(row?.clicks).toBe(2);
+      });
     });
   });
 });

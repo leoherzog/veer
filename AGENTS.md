@@ -46,10 +46,10 @@ A single Hono app wires every route. Order matters:
 The SPA shell is served through `run_worker_first: true` so Worker routes (including `/:slug`) always win over static files.
 
 ### Data layer
-- `src/db/schema.ts` is the single Drizzle schema — Better Auth tables (`user`, `session`, `account`, `verification`, `passkey`) live alongside product tables (`links`, `link_stats`, `campaigns`, `link_targets`, `domain_config`, `api_keys`, `public_reports`, `teams`, `team_members`, `team_invites`).
+- `src/db/schema.ts` is the single Drizzle schema — Better Auth tables (`user`, `session`, `account`, `verification`, `passkey`) live alongside product tables (`links`, `link_stats`, `campaigns`, `link_campaigns`, `link_targets`, `domain_config`, `domain_access`, `api_keys`, `public_reports`, `teams`, `team_members`, `team_invites`).
 - `getDb(env.DB)` in `src/db/index.ts` returns a cached Drizzle client.
 - Migrations are authored with `drizzle-kit generate` and applied by Wrangler (`d1 migrations apply`). Never edit an already-applied migration; create a new one.
-- Two migrations share the number `0004` (`0004_simplified_domains.sql` from M5, `0004_api_keys.sql` from M6). Continue numbering from `0005+` for new migrations.
+- Migrations are numbered sequentially (`0000_initial.sql`, …). Use the next unused number for new migrations.
 - Slug uniqueness is domain-scoped: same slug can exist on different domains. Enforced by a composite unique index `(slug, domainHostname)` **plus** a partial unique index `idx_links_slug_default WHERE domainHostname IS NULL` (SQLite treats NULLs as distinct in composite indexes, so the partial index is load-bearing). Any manual uniqueness check must mirror both.
 
 ### Auth (`src/auth/index.ts`)
@@ -65,7 +65,7 @@ Better Auth is instantiated per-`Env` and memoized in a `WeakMap`. Social provid
 - 60 req/min per API key on `requireAuthOrApiKey` routes via `rateLimitApiKey`. Session requests bypass it.
 - `rateLimitSession` applies to session-only routes (`/api/teams`, `/api/admin`).
 - 30 req/min IP-based on `/api/public-report/:token` (inline in `index.ts` via `checkRateLimit`).
-- Public endpoints accepting user input (password gate, etc.) use KV keys of the form `ratelimit:{type}:{ip}` with `expirationTtl` for auto-cleanup.
+- Public endpoints accepting user input (password gate, etc.) use KV keys of the form `rl:{type}:…:{windowEpoch}` (e.g. `rl:pw:{linkId}:{ip}:{window}`, `rl:pub:{ip}:{window}`) with `expirationTtl` for auto-cleanup.
 
 ### Redirect engine (`src/routes/redirect.ts`)
 The hot path: slug lookup, password/expiry/max-click gates, optional campaign/A-B target resolution, click write to Analytics Engine, daily aggregate upsert to `link_stats`, then 301/302. Uses `src/services/kv-cache.ts` to avoid D1 reads on every request and falls through to the SPA for unknown slugs.
@@ -74,13 +74,13 @@ The hot path: slug lookup, password/expiry/max-click gates, optional campaign/A-
 
 **Hot-path invariants**:
 - `AnalyticsEngineDataset.writeDataPoint()` is **synchronous** — do NOT wrap in `waitUntil`.
-- D1 writes on the redirect path (stats upserts, password rate-limit counters) MUST use `c.executionCtx.waitUntil()` to keep latency off the response.
+- D1 writes on the redirect path (the daily `link_stats` upsert via `upsertDailyStats()`) MUST use `c.executionCtx.waitUntil()` to keep latency off the response.
 - Bot/OG-meta detection runs **before** the password gate so social previews work on protected links.
 - `isSafeRedirectUrl()` validates `rootRedirect` / `notFoundRedirect` before `c.redirect()` — defense in depth against open redirect via `domain_config`.
 
 ### Analytics (`src/services/analytics.ts`)
 Dual-storage stats:
-- **Writes:** Analytics Engine via the `ANALYTICS` binding. The AE blob schema is a fixed positional layout documented at the top of `analytics.ts` (index1=linkId, blob1=slug, blob2=country, blob3=user-agent, blob4=referer, blob5=city, blob6=destinationUrl, blob7=region, double1=timestamp). Any reader in `src/routes/api/stats.ts` must stay in sync with this layout.
+- **Writes:** `trackClick()` in `redirect.ts` writes each click twice — to Analytics Engine via the `ANALYTICS` binding (synchronous), and a daily-aggregate D1 upsert to `link_stats` via `upsertDailyStats()` inside `waitUntil`. The AE blob schema is a fixed positional layout documented at the top of `analytics.ts` (index1=linkId, blob1=slug, blob2=country, blob3=user-agent, blob4=referer, blob5=city, blob6=destinationUrl, blob7=region, double1=timestamp). Any reader in `src/routes/api/stats.ts` must stay in sync with this layout.
 - **Reads:** Worker-side `fetch()` to the Cloudflare Analytics Engine SQL REST API using `CF_ACCOUNT_ID` + `CF_API_TOKEN` (there is no read binding). AE retains detailed events for ~90 days; `link_stats` holds permanent daily aggregates.
 
 ### Frontend (`frontend/src/` → `public/dist/`)
@@ -90,10 +90,10 @@ Dual-storage stats:
 - Charts use Chart.js + `chartjs-chart-geo` + `topojson-client` directly (no WA Pro chart components).
 - `frontend/src/auth-client.js` is the only place that talks to Better Auth from the browser.
 - **Theme**: `wa-light`/`wa-dark` class on `<html>`, persisted to `localStorage`, initialized from `prefers-color-scheme`. Chart colors are read from `--wa-color-*` custom properties so charts auto-theme on toggle — never hardcode chart colors.
-- **Shared UI helpers** in `frontend/src/lib/ui.js` — reuse instead of reinventing: `apiFetch(url, opts)` returns parsed JSON or `null` on failure (callers do `if (!result) return;` — toast + 401 redirect are handled once); `withLoadingBtn(btn, fn)` manages loading state only and does **not** catch errors; plus `shortUrl(link)` (domain-aware), `SPINNER`, `emptyState`, `bindConfirmDialog`, `bindSearchInput`. Other shared modules: `lib/chart-helper.js` (theme-aware Chart.js wrapper), `lib/stats-common.js` (`cardError`, `noData`, `fetchJSON`), `lib/escape.js`.
+- **Shared UI helpers** in `frontend/src/lib/ui.js` — reuse instead of reinventing: `apiFetch(url, opts)` returns parsed JSON or `null` on failure (callers do `if (!result) return;` — toast + 401 redirect are handled once); `withLoadingBtn(btn, fn)` manages loading state only and does **not** catch errors; plus `shortUrl(link)` (domain-aware), `SPINNER`, `emptyState`, `bindConfirmDialog`, `renderPagination(container, { page, total, limit, onPageChange })`, `bindSearchInput`. Other shared modules: `lib/chart-helper.js` (theme-aware Chart.js wrapper), `lib/stats-common.js` (`cardError`, `noData`, `fetchJSON`), `lib/escape.js`.
 
 ### Environment & bindings (`wrangler.jsonc`)
-`DB` (D1), `KV` (namespaces for cache/rate limit/public-report counters), `ANALYTICS` (Analytics Engine dataset `veer_clicks`), and `ASSETS` (static site) are all required. `compatibility_flags: ["nodejs_compat_v2"]` is required for Better Auth dependencies. The `staging` env is pre-wired with separate D1/KV/AE datasets.
+`DB` (D1), `KV` (namespaces for cache/rate limit/public-report counters), `ANALYTICS` (Analytics Engine dataset `veer_clicks`), and `ASSETS` (static site) are all required. `compatibility_flags: ["nodejs_compat_v2"]` is required for Better Auth dependencies. The `staging` and `demo` envs are pre-wired with separate D1/KV/AE datasets; `demo` additionally sets `DEMO_MODE=true`, `INSTANCE_NAME="Veer Demo"`, and a `demo.veer.ing` custom-domain route.
 
 ### Instance branding (`INSTANCE_NAME`)
 `INSTANCE_NAME` is an optional plain `var` in `wrangler.jsonc` (not a secret — it is public branding). When unset or empty it falls back to `"Veer"`. Resolved everywhere via `getInstanceName(env)` in `src/lib/branding.ts` — **never hardcode the brand string.** The frontend reads it from a public `GET /api/config` endpoint (`{ instanceName, demoMode }`) fetched once by `frontend/src/lib/config.js` before the first render; `getInstanceName()` on the client returns the cached value. `public/index.html` ships with an empty `<title>` and is filled in by `loadConfig()`. The passkey `rpName` reads the resolved name at `getAuth()` time — changing `INSTANCE_NAME` after passkey credentials exist only affects new registrations. Shape `/api/config`'s return object so future branding knobs (logo URL, footer text, etc.) slot in without a new endpoint.
@@ -114,6 +114,8 @@ Seed lives in `scripts/seed.ts` and emits `scripts/seed.generated.sql` (gitignor
 src/
   index.ts              # Hono app + route wiring (named `app` export for tests)
   scheduled.ts          # Cron handler (demo synthetic clicks; no-op outside demo)
+  types.ts              # AppEnv (Hono Bindings/Variables) + AuthUser
+  env.d.ts              # Secrets/optional vars not in wrangler.jsonc (merged into Env)
   auth/index.ts         # Better Auth setup
   db/{index,schema}.ts  # Drizzle client + schema
   middleware/           # auth, cors, rate-limit
@@ -206,7 +208,8 @@ Non-obvious rationale behind load-bearing choices. Read these before "cleaning u
 ### Analytics & stats
 - **`link_stats` coexists with Analytics Engine** — AE retains detailed per-click events ~90 days, `link_stats` holds permanent daily aggregates so lifetime totals survive. Stats endpoints fall back to `link_stats` when AE returns no rows.
 - **AE queries go through the REST SQL API, not a binding** — there is no read binding for Analytics Engine; queries use `fetch()` with `CF_ACCOUNT_ID` + `CF_API_TOKEN`. Token stays worker-side, never exposed to the client.
-- **Click stats no longer written to D1 in the redirect handler** — AE is the source of truth; `link_stats` aggregation happens separately. The old inline `incrementClickStats` call was removed in M6.
+- **Every click writes both stores from `trackClick()`** — AE synchronously (detail, ~90-day retention) and a `waitUntil`-deferred `upsertDailyStats()` D1 upsert to `link_stats` (permanence + the `maxClicks` cap). An M6 cleanup removed the D1 write entirely, which silently broke `maxClicks` and lifetime totals on real deployments — it was reinstated later. Don't remove it again.
+- **`link_stats.uniqueClicks` is only populated by the demo cron** — real traffic increments `clicks` only; per-request code cannot know uniqueness. Unique counts for real deployments come from the AE approximation (`uniq(blob3)` distinct user-agents). No production reader consumes `uniqueClicks`.
 
 ### Bulk & public reports
 - **Bulk create is two-phase: validate-all then batch-insert** — per-item error reporting requires the full validation pass before any writes. Domain access checks are cached per-request to avoid repeated D1 reads.

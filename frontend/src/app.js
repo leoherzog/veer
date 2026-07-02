@@ -1,6 +1,7 @@
 // Web Awesome theme and components (bundled by esbuild)
 import "@awesome.me/webawesome/dist/styles/themes/awesome.css";
 import "@awesome.me/webawesome/dist/styles/utilities.css";
+import "@awesome.me/webawesome/dist/components/page/page.js";
 import "@awesome.me/webawesome/dist/components/button/button.js";
 import "@awesome.me/webawesome/dist/components/icon/icon.js";
 import "@awesome.me/webawesome/dist/components/button-group/button-group.js";
@@ -35,7 +36,7 @@ import "./styles/app.css";
 
 import { authClient } from "./auth-client.js";
 import { loadConfig, isDemoMode } from "./lib/config.js";
-import { addRoute, setNotFound, resolve } from "./router.js";
+import { addRoute, setNotFound, resolve, navigate } from "./router.js";
 import { renderNavBar } from "./components/nav-bar.js";
 import { renderHome } from "./views/home.js";
 import { renderLogin } from "./views/login.js";
@@ -98,7 +99,7 @@ async function init() {
     main.innerHTML = "";
     Promise.resolve(viewFn(main)).catch((err) => {
       console.error(err);
-      main.innerHTML = '<div class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Something went wrong</h2><p>Please try again.</p></div>';
+      main.innerHTML = '<div class="wa-stack wa-align-items-center centered-state"><h2>Something went wrong</h2><p>Please try again.</p></div>';
     });
     if (!bootstrapping) main.focus();
   }
@@ -140,7 +141,7 @@ async function init() {
   addRoute("/admin", () => {
     if (!currentUser) return render((el) => renderLogin(el));
     if (!currentUser.isAdmin) {
-      render((el) => { el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Access denied</h2><p>You do not have admin access.</p></div>`; });
+      render((el) => { el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center centered-state"><h2>Access denied</h2><p>You do not have admin access.</p></div>`; });
       return;
     }
     render((el) => renderAdmin(el));
@@ -156,39 +157,34 @@ async function init() {
 
   setNotFound(() => {
     render((el) => {
-      el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center" style="padding:var(--wa-space-3xl);"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
+      el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center centered-state"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
     });
   });
+
+  // Banners render in wa-page's `banner` slot (sticky above the header; the
+  // page measures the slot itself, so no manual body padding is needed).
+  const page = document.querySelector("wa-page");
 
   // Impersonation banner (suppressed in demo mode — impersonation isn't a
   // thing without real users, and stacking with the demo banner clips content)
   if (isImpersonating() && !isDemoMode()) {
-    document.body.insertAdjacentHTML("afterbegin", getImpersonationBanner());
+    page.insertAdjacentHTML("afterbegin", getImpersonationBanner());
     bindImpersonationBanner();
-    document.body.style.paddingTop = "3rem";
   } else if (isDemoMode() && isImpersonating()) {
     sessionStorage.removeItem("veer_impersonating_from");
   }
 
   // Demo mode: banner + body class for CSS-based button hiding.
-  // Body padding is set from the banner's actual height so 2-line wraps on
-  // narrow viewports don't clip content underneath.
   if (isDemoMode()) {
     document.body.classList.add("demo-mode");
-    const banner = `<div class="demo-banner" role="status">
+    const banner = `<div slot="banner" class="demo-banner" role="status">
       <div class="wa-cluster wa-justify-content-center wa-gap-xs">
         <wa-icon name="circle-info"></wa-icon>
         <span>Demo instance — write actions are disabled.
-          <a href="https://github.com/xd1936/veer" target="_blank" rel="noopener noreferrer">Clone the repo</a> to host your own.</span>
+          <a href="https://github.com/leoherzog/veer" target="_blank" rel="noopener noreferrer">Clone the repo</a> to host your own.</span>
       </div>
     </div>`;
-    document.body.insertAdjacentHTML("afterbegin", banner);
-    const bannerEl = document.body.firstElementChild;
-    const applyPadding = () => {
-      document.body.style.paddingTop = `${bannerEl.getBoundingClientRect().height}px`;
-    };
-    applyPadding();
-    new ResizeObserver(applyPadding).observe(bannerEl);
+    page.insertAdjacentHTML("afterbegin", banner);
   }
 
   // Initial resolve. resolve() runs synchronously (including any bootstrap
@@ -203,6 +199,13 @@ document.addEventListener("click", (e) => {
   if (!trigger) return;
   const dialog = trigger.closest("wa-dialog");
   if (dialog) dialog.open = false;
+});
+
+document.addEventListener("click", (e) => {
+  const link = e.target.closest("[data-link]");
+  if (!link) return;
+  e.preventDefault();
+  navigate(link.getAttribute("href"));
 });
 
 init();

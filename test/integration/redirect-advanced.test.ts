@@ -308,9 +308,10 @@ describe("Redirect engine – advanced", () => {
         headers: { Host: "custom-noroot.example.com" },
       }, env, mockExecutionCtx());
 
-      // Falls through to SPA — not a redirect
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
+      // Falls through to the SPA wildcard handler, which serves the built
+      // index.html via the ASSETS binding (200 text/html) — not a redirect.
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
     });
 
     it("GET / with custom domain that has no domain_config record falls through", async () => {
@@ -327,8 +328,10 @@ describe("Redirect engine – advanced", () => {
         headers: { Host: "localhost" },
       }, env, mockExecutionCtx());
 
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
+      // Falls through to the SPA wildcard handler, which serves the built
+      // index.html via the ASSETS binding (200 text/html) — not a redirect.
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
     });
   });
 

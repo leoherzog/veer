@@ -1,21 +1,22 @@
 /* Layout */
-body {
+html, body {
+  min-height: 100%;
+  padding: 0;
   margin: 0;
-  min-height: 100vh;
 }
 
-#app {
-  display: flex;
-  flex-direction: column;
-  min-height: 100vh;
-}
+wa-page::part(main-content) { padding: 0; }
+wa-page > main { padding: 0; }
 
-#main {
-  flex: 1;
-  padding: 0 1rem;
-}
+/* Banners (demo mode, impersonation) render in wa-page's banner slot, sticky
+   above the header. wa-page pads the slotted element itself; each banner owns
+   its padding, and the impersonation callout squares off to span edge-to-edge. */
+wa-page > [slot="banner"] { box-sizing: border-box; }
+wa-page > wa-callout[slot="banner"] { border-radius: 0; }
 
-/* Nav bar */
+/* Nav bar — .nav-bar owns the header gutter, so drop wa-page's slot padding */
+wa-page > [slot="header"] { padding: 0; }
+
 .nav-bar {
   padding: 0.75rem 1rem;
   max-width: 1200px;
@@ -52,9 +53,6 @@ body {
 
 .text-truncate {
   max-width: 300px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Campaign cards */
@@ -74,15 +72,11 @@ body {
   border-bottom: none;
 }
 
-/* Toast container */
 #toast-container {
   position: fixed;
   top: 1rem;
   right: 1rem;
   z-index: 9999;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
   max-width: 400px;
 }
 
@@ -96,23 +90,27 @@ body {
 .home-view {
   max-width: 600px;
   margin: var(--wa-space-3xl) auto;
+  padding: 0 var(--wa-space-l);
   text-align: center;
 }
 
 .login-view {
   max-width: 400px;
   margin: var(--wa-space-3xl) auto;
+  padding: 0 var(--wa-space-l);
   text-align: center;
 }
 
 .link-detail-view {
   max-width: 900px;
   margin: var(--wa-space-2xl) auto;
+  padding: 0 var(--wa-space-l);
 }
 
 .dashboard-view {
   max-width: 960px;
   margin: var(--wa-space-2xl) auto;
+  padding: 0 var(--wa-space-l);
 }
 
 .campaign-detail-view,
@@ -121,6 +119,7 @@ body {
 .admin-view {
   max-width: 960px;
   margin: var(--wa-space-2xl) auto;
+  padding: 0 var(--wa-space-l);
 }
 
 /* Reusable layout helpers */
@@ -128,6 +127,13 @@ body {
 .centered-state-sm { padding: var(--wa-space-l); }
 .tab-panel-content { padding-top: var(--wa-space-m); }
 .pagination-row { margin-top: var(--wa-space-m); }
+.pt-xs { padding-top: var(--wa-space-xs); }
+.py-xs { padding-top: var(--wa-space-xs); padding-bottom: var(--wa-space-xs); }
+.p-m { padding: var(--wa-space-m); }
+.p-2xl { padding: var(--wa-space-2xl); }
+.mt-s { margin-top: var(--wa-space-s); }
+.stats-skeleton { height: 200px; }
+.stats-chart { height: 200px; }
 
 /* OG social preview */
 .og-preview {
@@ -182,11 +188,6 @@ body.demo-mode wa-button-group:has(#new-link-btn) {
 }
 
 .demo-banner {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 1000;
   background: var(--wa-color-brand-fill-loud);
   color: var(--wa-color-brand-on-loud);
   padding: var(--wa-space-s) var(--wa-space-m);

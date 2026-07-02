@@ -1,7 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, emptyState } from "../lib/ui.js";
 
 export async function renderTeamsPanel(container, { teams = null, currentUser = null, onTeamSelect, onTeamsChanged } = {}) {
   container.innerHTML = SPINNER;
@@ -24,10 +24,7 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
 
       <div id="teams-grid">
         ${teams.length === 0
-          ? `<div class="wa-stack wa-gap-m wa-align-items-center centered-state">
-              <wa-icon name="people-group" class="wa-font-size-2xl wa-color-text-quiet"></wa-icon>
-              <p>You're not a member of any teams yet. Create one to get started.</p>
-            </div>`
+          ? emptyState("people-group", "You're not a member of any teams yet. Create one to get started.")
           : `<div class="wa-grid wa-gap-m" style="--min-column-size:280px;">
               ${teams.map(t => `
                 <wa-card class="team-card" data-id="${escapeAttr(t.id)}">

@@ -11,6 +11,25 @@ function api(method: string, path: string, opts: { headers?: Record<string, stri
   return apiRequest(app, method, path, opts);
 }
 
+// Independently-derived date helpers for the public report's 30-day timeseries
+// window. These deliberately duplicate (rather than import) the route's date
+// math so the test can assert real values instead of just "it's an array".
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+function daysAgo(n: number): Date {
+  return new Date(Date.now() - n * 86400000);
+}
+
+/** YYYY-MM-DD (UTC) — matches the `link_stats.date` column format. */
+function isoDate(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+/** "Mon D" (UTC) — matches the public report's timeseries label format. */
+function expectedLabel(d: Date): string {
+  return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -133,8 +152,17 @@ describe("Reports API", () => {
         userId,
         title: "Public Test Link",
       });
-      await insertClickStat(env.DB, link.id, 10, "2026-03-20");
-      await insertClickStat(env.DB, link.id, 5, "2026-03-21");
+      // Two rows inside the rolling 30-day window, in reverse-chronological
+      // insert order (route must sort ascending by date regardless).
+      const twoDaysAgo = daysAgo(2);
+      const oneDayAgo = daysAgo(1);
+      // One row well outside the 30-day window — must count toward the
+      // all-time totalClicks but be excluded from the timeseries.
+      const outsideWindow = daysAgo(40);
+
+      await insertClickStat(env.DB, link.id, 5, isoDate(oneDayAgo));
+      await insertClickStat(env.DB, link.id, 10, isoDate(twoDaysAgo));
+      await insertClickStat(env.DB, link.id, 99, isoDate(outsideWindow));
 
       const createRes = await api("POST", `/api/reports/${link.id}`, { headers });
       const createJson = await createRes.json() as { data: { token: string } };
@@ -152,9 +180,13 @@ describe("Reports API", () => {
       };
       expect(json.data.slug).toBe(link.slug);
       expect(json.data.title).toBe("Public Test Link");
-      expect(json.data.totalClicks).toBe(15);
-      expect(Array.isArray(json.data.timeseries.labels)).toBe(true);
-      expect(Array.isArray(json.data.timeseries.clicks)).toBe(true);
+      // All-time total includes the out-of-window row.
+      expect(json.data.totalClicks).toBe(5 + 10 + 99);
+      // Timeseries is limited to the 30-day window and sorted ascending by
+      // date, so the out-of-window row is excluded and order is flipped
+      // relative to insertion order.
+      expect(json.data.timeseries.labels).toEqual([expectedLabel(twoDaysAgo), expectedLabel(oneDayAgo)]);
+      expect(json.data.timeseries.clicks).toEqual([10, 5]);
     });
 
     it("returns 404 for an invalid token", async () => {

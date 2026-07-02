@@ -443,6 +443,16 @@ describe("Domains API", () => {
       expect(json.data).toContain("new1@test.com");
       expect(json.data).toContain("new2@test.com");
       expect(json.data).not.toContain("old@test.com");
+
+      // Read back persisted state — guards against a PUT that only echoes the input
+      const getRes = await api("GET", `/api/domains/${hostname}/access`, {
+        headers: adminHeaders,
+        env: adminEnvObj,
+      });
+      const getJson = await getRes.json() as { data: string[] };
+      expect(getJson.data).toContain("new1@test.com");
+      expect(getJson.data).toContain("new2@test.com");
+      expect(getJson.data).not.toContain("old@test.com");
     });
 
     it("admin can clear access by setting empty array", async () => {
@@ -458,6 +468,20 @@ describe("Domains API", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { data: string[] };
       expect(json.data).toEqual([]);
+
+      // Read back persisted state — the pre-seeded row must actually be deleted, not just
+      // absent from the echoed response
+      const row = await env.DB.prepare(
+        "SELECT email FROM domain_access WHERE hostname = ? AND email = ?"
+      ).bind(hostname, "someone@test.com").first();
+      expect(row).toBeNull();
+
+      const getRes = await api("GET", `/api/domains/${hostname}/access`, {
+        headers: adminHeaders,
+        env: adminEnvObj,
+      });
+      const getJson = await getRes.json() as { data: string[] };
+      expect(getJson.data).toEqual([]);
     });
 
     it("emails are normalized to lowercase", async () => {

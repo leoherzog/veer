@@ -3,8 +3,8 @@ import type { AppEnv } from "../types";
 import { getDb } from "../db";
 import { links, linkStats, linkTargets, domainConfig } from "../db/schema";
 import { eq, and, sql } from "drizzle-orm";
-import { getCachedRedirect, setCachedRedirect } from "../services/kv-cache";
-import { writeClickEvent } from "../services/analytics";
+import { getCachedRedirect, setCachedRedirect, toCachedRedirect } from "../services/kv-cache";
+import { writeClickEvent, upsertDailyStats } from "../services/analytics";
 import { verifyPassword } from "../services/password";
 import { getAuth } from "../auth";
 import { getInstanceName } from "../lib/branding";
@@ -80,7 +80,7 @@ function isBotRequest(c: Context<AppEnv, "/:slug">): boolean {
   return BOT_UA_PATTERN.test(ua);
 }
 
-function ogMetaPage(slug: string, dest: string, og: { ogTitle: string | null; ogDescription: string | null; ogImage: string | null }, shortUrl: string): Response {
+function ogMetaPage(dest: string, og: { ogTitle: string | null; ogDescription: string | null; ogImage: string | null }, shortUrl: string): Response {
   const tags: string[] = [];
   if (og.ogTitle) tags.push(`<meta property="og:title" content="${escapeHtml(og.ogTitle)}">`);
   if (og.ogDescription) tags.push(`<meta property="og:description" content="${escapeHtml(og.ogDescription)}">`);
@@ -163,27 +163,12 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname?
     const targets = await db.select().from(linkTargets)
       .where(eq(linkTargets.linkId, link.id));
 
-    cached = {
-      url: link.destinationUrl,
-      redirectType: link.redirectType,
-      linkId: link.id,
-      isActive: link.isActive,
-      expiresAt: link.expiresAt ? Math.floor(new Date(link.expiresAt).getTime() / 1000) : null,
-      maxClicks: link.maxClicks ?? null,
-      hasPassword: !!link.password,
-      isInternal: link.isInternal ?? false,
-      ogTitle: link.ogTitle ?? null,
-      ogDescription: link.ogDescription ?? null,
-      ogImage: link.ogImage ?? null,
-      paramForwarding: link.paramForwarding ?? false,
-      targets: targets.length > 0 ? targets.map(t => ({
-        type: t.type as "geo" | "device" | "ab",
-        matchValue: t.matchValue,
-        destinationUrl: t.destinationUrl,
-        priority: t.priority,
-      })) : null,
-      domainHostname: link.domainHostname ?? null,
-    };
+    cached = toCachedRedirect(link, targets.length > 0 ? targets.map(t => ({
+      type: t.type as "geo" | "device" | "ab",
+      matchValue: t.matchValue,
+      destinationUrl: t.destinationUrl,
+      priority: t.priority,
+    })) : null);
 
     c.executionCtx.waitUntil(
       setCachedRedirect(c.env.KV, slug, cached, hostname)
@@ -258,9 +243,16 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
       const abTargets = resolved.targets.filter(t => t.type === "ab");
       if (abTargets.length > 0) {
         const weights = abTargets.map(t => Math.max(1, Math.min(99, parseInt(t.matchValue) || 0)));
-        const defaultWeight = Math.max(1, 100 - weights.reduce((s, w) => s + w, 0));
-        const roll = Math.random() * (defaultWeight + weights.reduce((s, w) => s + w, 0));
-        let cumulative = defaultWeight;
+        const totalWeight = weights.reduce((s, w) => s + w, 0);
+        // Weights are validated to sum to < 100; the remainder goes to the
+        // default destination. Math.max(1, …) floors the default share so it
+        // stays selectable even if malformed data pushes the sum to >= 100.
+        const defaultWeight = Math.max(1, 100 - totalWeight);
+        const roll = Math.random() * (defaultWeight + totalWeight);
+        // Variants occupy [0, totalWeight); the default is the fall-through
+        // tail [totalWeight, totalWeight + defaultWeight), so destinationUrl
+        // stays resolved.url when no variant bucket matches.
+        let cumulative = 0;
         for (let i = 0; i < abTargets.length; i++) {
           cumulative += weights[i];
           if (roll < cumulative) {
@@ -290,15 +282,18 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
   return destinationUrl;
 }
 
-/** Fire analytics and increment stats in the background. */
+/** Fire analytics (sync) and upsert the permanent daily aggregate (background). */
 function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, destinationUrl: string) {
-  if (!c.env.ANALYTICS) return;
-  writeClickEvent(c.env.ANALYTICS, {
-    linkId,
-    slug,
-    destinationUrl,
-    request: c.req.raw,
-  });
+  if (c.env.ANALYTICS) {
+    writeClickEvent(c.env.ANALYTICS, {
+      linkId,
+      slug,
+      destinationUrl,
+      request: c.req.raw,
+    });
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  c.executionCtx.waitUntil(upsertDailyStats(getDb(c.env.DB), linkId, today, 1));
 }
 
 export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
@@ -330,7 +325,7 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
   const hasOg = resolved.ogTitle || resolved.ogDescription || resolved.ogImage;
   if (hasOg && isBotRequest(c)) {
     const shortUrl = new URL(`/${slug}`, c.req.url).href;
-    return ogMetaPage(slug, destinationUrl, resolved, shortUrl);
+    return ogMetaPage(destinationUrl, resolved, shortUrl);
   }
 
   // Password gate — serve the form on GET
@@ -365,27 +360,12 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   // Build resolved shape for checkConstraints and resolveDestination
   const targets = await db.select().from(linkTargets)
     .where(eq(linkTargets.linkId, link.id));
-  const resolved = {
-    url: link.destinationUrl,
-    redirectType: link.redirectType,
-    linkId: link.id,
-    isActive: link.isActive,
-    expiresAt: link.expiresAt ? Math.floor(new Date(link.expiresAt).getTime() / 1000) : null,
-    maxClicks: link.maxClicks ?? null,
-    hasPassword: true,
-    isInternal: link.isInternal ?? false,
-    ogTitle: link.ogTitle ?? null,
-    ogDescription: link.ogDescription ?? null,
-    ogImage: link.ogImage ?? null,
-    paramForwarding: link.paramForwarding ?? false,
-    targets: targets.length > 0 ? targets.map(t => ({
-      type: t.type as "geo" | "device" | "ab",
-      matchValue: t.matchValue,
-      destinationUrl: t.destinationUrl,
-      priority: t.priority,
-    })) : null,
-    domainHostname: link.domainHostname ?? null,
-  };
+  const resolved = toCachedRedirect(link, targets.length > 0 ? targets.map(t => ({
+    type: t.type as "geo" | "device" | "ab",
+    matchValue: t.matchValue,
+    destinationUrl: t.destinationUrl,
+    priority: t.priority,
+  })) : null);
 
   // Check constraints before processing password
   const blocked = await checkConstraints(c, resolved);

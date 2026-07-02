@@ -38,10 +38,13 @@ describe("API Keys", () => {
 
     it("returns created keys without full key value", async () => {
       const auth = await setupAuth(env);
-      await api("POST", "/api/keys", {
+      const createRes = await api("POST", "/api/keys", {
         headers: auth.headers,
         body: { name: "My Key" },
       });
+      const created = await createRes.json() as { data: { key: string } };
+      const plaintextKey = created.data.key;
+      expect(plaintextKey).toMatch(/^veer_/);
 
       const res = await api("GET", "/api/keys", { headers: auth.headers });
       expect(res.status).toBe(200);
@@ -49,7 +52,10 @@ describe("API Keys", () => {
       expect(json.data).toHaveLength(1);
       expect(json.data[0].name).toBe("My Key");
       expect(json.data[0].prefix).toBeDefined();
-      // Full key must NOT be returned in list
+      // The plaintext key must not appear anywhere in the list response...
+      expect(JSON.stringify(json)).not.toContain(plaintextKey);
+      // ...while the safe, non-secret fields are still present.
+      expect(json.data[0].prefix).toBe(plaintextKey.slice(0, 12));
       expect(json.data[0].key).toBeUndefined();
     });
 

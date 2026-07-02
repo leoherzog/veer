@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, and, inArray } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { links } from "../../db/schema";
 import { validateSlug } from "../../services/slug";

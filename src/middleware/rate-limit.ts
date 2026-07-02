@@ -5,14 +5,43 @@ import type { Context } from "hono";
 const RATE_LIMIT = 60;
 const WINDOW_SECONDS = 60;
 
+export interface RateLimitState {
+  /** True when the stored counter has already reached the limit. */
+  exceeded: boolean;
+  /** Seconds until the current fixed window rolls over. */
+  secondsRemaining: number;
+  /** Current counter value (0 when the key is unset). */
+  count: number;
+  /** Raw stored value, or null when the key is unset (used to gate TTL on first write). */
+  stored: string | null;
+}
+
 /**
- * Shared KV rate-limit implementation. Reads the counter, checks the limit,
- * increments, sets X-RateLimit-* headers, then calls next().
+ * Standalone advisory rate-limit check for non-middleware callers. Reads the
+ * counter, parses it, and reports whether the limit is exceeded plus the
+ * seconds left in the window. Callers own their own responses and increments
+ * (typically a non-blocking `waitUntil(kv.put(...))`).
  *
  * NOTE: KV does not support atomic increment. Under high concurrency,
  * concurrent requests may read the same counter value and all pass through.
  * This makes the limit advisory, not strict. For strict enforcement,
  * use Cloudflare's native Rate Limiting API binding instead.
+ */
+export async function checkRateLimit(
+  kv: KVNamespace,
+  key: string,
+  limit: number,
+  windowSecs: number,
+): Promise<RateLimitState> {
+  const stored = await kv.get(key);
+  const count = stored ? parseInt(stored, 10) : 0;
+  const secondsRemaining = windowSecs - (Math.floor(Date.now() / 1000) % windowSecs);
+  return { exceeded: count >= limit, secondsRemaining, count, stored };
+}
+
+/**
+ * Shared KV rate-limit implementation. Reads the counter, checks the limit,
+ * increments, sets X-RateLimit-* headers, then calls next().
  */
 async function rateLimit(
   kv: KVNamespace,
@@ -22,11 +51,9 @@ async function rateLimit(
   c: Context,
   next: () => Promise<void | Response>
 ): Promise<Response | void> {
-  const stored = await kv.get(key);
-  const count = stored ? parseInt(stored, 10) : 0;
-  const secondsRemaining = windowSecs - (Math.floor(Date.now() / 1000) % windowSecs);
+  const { exceeded, secondsRemaining, count, stored } = await checkRateLimit(kv, key, limit, windowSecs);
 
-  if (count >= limit) {
+  if (exceeded) {
     c.header("Retry-After", String(secondsRemaining));
     c.header("X-RateLimit-Limit", String(limit));
     c.header("X-RateLimit-Remaining", "0");
