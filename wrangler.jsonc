@@ -44,35 +44,6 @@
     "logs": { "head_sampling_rate": 1 }
   },
   "env": {
-    "staging": {
-      "vars": {
-        "WORKER_NAME": "veer-staging",
-        "BETTER_AUTH_URL": "https://veer-staging.example",
-        "INSTANCE_NAME": "",
-        "DEMO_MODE": ""
-      },
-      "triggers": {
-        "crons": ["0 * * * *"]
-      },
-      "d1_databases": [
-        {
-          "binding": "DB",
-          "database_name": "veer-db-staging",
-          "migrations_dir": "drizzle/migrations"
-        }
-      ],
-      "kv_namespaces": [
-        {
-          "binding": "KV"
-        }
-      ],
-      "analytics_engine_datasets": [
-        {
-          "binding": "ANALYTICS",
-          "dataset": "veer_clicks_staging"
-        }
-      ]
-    },
     "demo": {
       "name": "veer-demo",
       "vars": {

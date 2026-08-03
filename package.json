@@ -21,24 +21,24 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@awesome.me/webawesome": "^3.10.0",
-    "@better-auth/passkey": "^1.6.23",
+    "@awesome.me/webawesome": "^3.11.0",
+    "@better-auth/passkey": "^1.6.25",
     "@opentelemetry/api": "^1.9.1",
-    "better-auth": "^1.6.23",
+    "better-auth": "^1.6.25",
     "chart.js": "^4.5.1",
     "chartjs-chart-geo": "^4.3.6",
     "drizzle-orm": "^0.45.2",
-    "hono": "^4.12.27",
+    "hono": "^4.12.34",
     "topojson-client": "^3.1.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.17.0",
-    "concurrently": "^10.0.3",
+    "@cloudflare/vitest-pool-workers": "^0.20.1",
+    "concurrently": "^10.0.4",
     "drizzle-kit": "^0.31.9",
     "esbuild": "^0.28.1",
-    "tsx": "^4.22.4",
-    "typescript": "^6.0.2",
-    "vitest": "^4.1.9",
-    "wrangler": "^4.106.0"
+    "tsx": "^4.23.5",
+    "typescript": "^7.0.2",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.118.0"
   }
 }
