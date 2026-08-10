@@ -6,11 +6,11 @@ export function renderQrCode(container, shortUrl) {
       <wa-qr-code value="${escapeAttr(shortUrl)}" size="150" label="QR code for short URL" error-correction="H"></wa-qr-code>
       <div class="wa-cluster wa-gap-s wa-align-items-center">
         <span class="wa-caption-xs">QR</span>
-        <wa-color-picker id="qr-fill-color" value="#000000" without-format-toggle size="small"></wa-color-picker>
+        <wa-color-picker id="qr-fill-color" value="#000000" without-format-toggle size="s"></wa-color-picker>
         <span class="wa-caption-xs">BG</span>
-        <wa-color-picker id="qr-bg-color" value="#ffffff" without-format-toggle size="small"></wa-color-picker>
+        <wa-color-picker id="qr-bg-color" value="#ffffff" without-format-toggle size="s"></wa-color-picker>
       </div>
-      <wa-button size="small" appearance="outlined" id="qr-download-png" aria-label="Download QR code as PNG">
+      <wa-button size="s" appearance="outlined" id="qr-download-png" aria-label="Download QR code as PNG">
         <wa-icon slot="start" name="download"></wa-icon>
         PNG
       </wa-button>

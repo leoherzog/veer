@@ -13,10 +13,10 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
   }
 
   container.innerHTML = `
-    <div class="teams-view wa-stack wa-gap-l">
+    <div class="wa-stack wa-gap-l">
       <div class="wa-split">
         <h1>Teams</h1>
-        <wa-button variant="brand" id="create-team-btn">
+        <wa-button variant="brand" id="create-team-btn" data-dialog="open create-team-dialog">
           <wa-icon slot="start" name="plus"></wa-icon>
           Create Team
         </wa-button>
@@ -70,12 +70,9 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
 
   // Create team dialog
   const dialog = container.querySelector("#create-team-dialog");
-  const createBtn = container.querySelector("#create-team-btn");
   const confirmBtn = container.querySelector("#confirm-create-team");
   const nameInput = container.querySelector("#team-name-input");
   const slugInput = container.querySelector("#team-slug-input");
-
-  createBtn.addEventListener("click", () => { dialog.open = true; });
 
   // Auto-generate slug from name
   nameInput.addEventListener("input", () => {

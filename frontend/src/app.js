@@ -1,4 +1,5 @@
 // Web Awesome theme and components (bundled by esbuild)
+import "@awesome.me/webawesome/dist/styles/native.css";
 import "@awesome.me/webawesome/dist/styles/themes/awesome.css";
 import "@awesome.me/webawesome/dist/styles/utilities.css";
 import "@awesome.me/webawesome/dist/components/page/page.js";
@@ -6,6 +7,7 @@ import "@awesome.me/webawesome/dist/components/button/button.js";
 import "@awesome.me/webawesome/dist/components/icon/icon.js";
 import "@awesome.me/webawesome/dist/components/button-group/button-group.js";
 import "@awesome.me/webawesome/dist/components/input/input.js";
+import "@awesome.me/webawesome/dist/components/number-input/number-input.js";
 import "@awesome.me/webawesome/dist/components/card/card.js";
 import "@awesome.me/webawesome/dist/components/details/details.js";
 import "@awesome.me/webawesome/dist/components/avatar/avatar.js";
@@ -29,7 +31,11 @@ import "@awesome.me/webawesome/dist/components/tab-group/tab-group.js";
 import "@awesome.me/webawesome/dist/components/tab/tab.js";
 import "@awesome.me/webawesome/dist/components/tab-panel/tab-panel.js";
 import "@awesome.me/webawesome/dist/components/tooltip/tooltip.js";
+import "@awesome.me/webawesome/dist/components/pagination/pagination.js";
+import "@awesome.me/webawesome/dist/components/toast/toast.js";
+import "@awesome.me/webawesome/dist/components/toast-item/toast-item.js";
 import "@awesome.me/webawesome/dist/components/relative-time/relative-time.js";
+import "@awesome.me/webawesome/dist/components/format-number/format-number.js";
 import "@awesome.me/webawesome/dist/components/color-picker/color-picker.js";
 
 import "./styles/app.css";
@@ -38,6 +44,7 @@ import { authClient } from "./auth-client.js";
 import { loadConfig, isDemoMode } from "./lib/config.js";
 import { addRoute, setNotFound, resolve, navigate } from "./router.js";
 import { renderNavBar } from "./components/nav-bar.js";
+import { showNotice } from "./components/toast.js";
 import { renderHome } from "./views/home.js";
 import { renderLogin } from "./views/login.js";
 import { renderDashboard } from "./views/dashboard.js";
@@ -99,7 +106,7 @@ async function init() {
     main.innerHTML = "";
     Promise.resolve(viewFn(main)).catch((err) => {
       console.error(err);
-      main.innerHTML = '<div class="wa-stack wa-align-items-center centered-state"><h2>Something went wrong</h2><p>Please try again.</p></div>';
+      main.innerHTML = '<div class="wa-stack wa-align-items-center"><h2>Something went wrong</h2><p>Please try again.</p></div>';
     });
     if (!bootstrapping) main.focus();
   }
@@ -141,7 +148,7 @@ async function init() {
   addRoute("/admin", () => {
     if (!currentUser) return render((el) => renderLogin(el));
     if (!currentUser.isAdmin) {
-      render((el) => { el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center centered-state"><h2>Access denied</h2><p>You do not have admin access.</p></div>`; });
+      render((el) => { el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center"><h2>Access denied</h2><p>You do not have admin access.</p></div>`; });
       return;
     }
     render((el) => renderAdmin(el));
@@ -157,7 +164,7 @@ async function init() {
 
   setNotFound(() => {
     render((el) => {
-      el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center centered-state"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
+      el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
     });
   });
 
@@ -174,17 +181,14 @@ async function init() {
     sessionStorage.removeItem("veer_impersonating_from");
   }
 
-  // Demo mode: banner + body class for CSS-based button hiding.
+  // Demo mode: persistent notice + body class for CSS-based button hiding.
   if (isDemoMode()) {
     document.body.classList.add("demo-mode");
-    const banner = `<div slot="banner" class="demo-banner" role="status">
-      <div class="wa-cluster wa-justify-content-center wa-gap-xs">
-        <wa-icon name="circle-info"></wa-icon>
-        <span>Demo instance — write actions are disabled.
-          <a href="https://github.com/leoherzog/veer" target="_blank" rel="noopener noreferrer">Clone the repo</a> to host your own.</span>
-      </div>
-    </div>`;
-    page.insertAdjacentHTML("afterbegin", banner);
+    showNotice(
+      `Demo instance — write actions are disabled.
+       <a href="https://github.com/leoherzog/veer" target="_blank" rel="noopener noreferrer">Clone the repo</a> to host your own.`,
+      "brand",
+    );
   }
 
   // Initial resolve. resolve() runs synchronously (including any bootstrap
@@ -195,17 +199,20 @@ async function init() {
 }
 
 document.addEventListener("click", (e) => {
-  const trigger = e.target.closest('[data-dialog="close"]');
-  if (!trigger) return;
-  const dialog = trigger.closest("wa-dialog");
-  if (dialog) dialog.open = false;
-});
-
-document.addEventListener("click", (e) => {
   const link = e.target.closest("[data-link]");
   if (!link) return;
   e.preventDefault();
   navigate(link.getAttribute("href"));
 });
 
-init();
+// Drop the FOUCE cloak once the app has booted. `.wa-cloak:has(:not(:defined))`
+// hides the entire document for 2s every time it starts matching, and nothing
+// else removes the class — we import components individually instead of using
+// WA's loader, which is what normally clears it. All components this bundle
+// registers are defined by the time the module finishes evaluating, so the
+// cloak has done its job; leaving it on would re-hide the whole app on any
+// later navigation that introduces an element we forgot to import. `finally`
+// so a failed boot can't strand the page behind the cloak.
+init().finally(() => {
+  document.documentElement.classList.remove("wa-cloak");
+});

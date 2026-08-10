@@ -9,9 +9,6 @@ const options = {
   minify: process.argv.includes("--minify"),
   sourcemap: process.argv.includes("--watch"),
   target: "esnext",
-  loader: {
-    ".css": "css",
-  },
 };
 
 if (process.argv.includes("--watch")) {

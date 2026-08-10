@@ -1,5 +1,4 @@
 import { showToast } from "../components/toast.js";
-import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { SPINNER, apiFetch, withLoadingBtn, emptyState } from "../lib/ui.js";
 
@@ -14,42 +13,31 @@ export async function renderCampaignsPanel(container) {
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
         <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="solid" class="wa-color-text-quiet wa-font-size-s" style="cursor:help;"></wa-icon></h1>
-        <wa-button variant="brand" id="new-campaign-btn">
+        <wa-button variant="brand" id="new-campaign-btn" data-dialog="open new-campaign-dialog">
           <wa-icon slot="start" name="plus"></wa-icon>
           New Campaign
         </wa-button>
       </div>
       <wa-tooltip for="campaigns-help">Group related links together to track aggregate click stats across a promotion or project.</wa-tooltip>
-      <div id="create-section" style="display:none;">
-        <wa-card>
-          <form id="campaign-form" class="wa-stack wa-gap-m">
-            <wa-input name="name" label="Campaign Name" required placeholder="Summer Sale 2026"></wa-input>
-            <wa-textarea name="description" label="Description (optional)" rows="2" placeholder="Group links for the summer promotion"></wa-textarea>
-            <div class="wa-cluster wa-gap-s">
-              <wa-button type="submit" variant="brand">Create Campaign</wa-button>
-              <wa-button variant="neutral" id="cancel-create-btn">Cancel</wa-button>
-            </div>
-          </form>
-        </wa-card>
-      </div>
       <div id="campaigns-list"></div>
+
+      <wa-dialog id="new-campaign-dialog" label="New Campaign" light-dismiss>
+        <form id="campaign-form" class="wa-stack wa-gap-m">
+          <wa-input name="name" label="Campaign Name" required placeholder="Summer Sale 2026"></wa-input>
+          <wa-textarea name="description" label="Description (optional)" rows="2" placeholder="Group links for the summer promotion"></wa-textarea>
+        </form>
+        <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="brand" type="submit" form="campaign-form" id="create-campaign-btn">Create Campaign</wa-button>
+      </wa-dialog>
     </div>
   `;
 
   renderCampaignList(container.querySelector("#campaigns-list"), campaigns);
 
-  const createSection = container.querySelector("#create-section");
-  container.querySelector("#new-campaign-btn").addEventListener("click", () => {
-    createSection.style.display = createSection.style.display === "none" ? "block" : "none";
-  });
-  container.querySelector("#cancel-create-btn").addEventListener("click", () => {
-    createSection.style.display = "none";
-  });
-
+  const createBtn = container.querySelector("#create-campaign-btn");
   container.querySelector("#campaign-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('wa-button[type="submit"]');
-    await withLoadingBtn(btn, async () => {
+    await withLoadingBtn(createBtn, async () => {
       const res = await apiFetch("/api/campaigns", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -73,19 +61,18 @@ function renderCampaignList(container, campaigns) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-m">
       ${campaigns.map(c => `
-        <wa-card class="campaign-card" data-id="${escapeAttr(c.id)}">
-          <div class="wa-split">
-            <div class="wa-stack wa-gap-2xs">
-              <strong>${escapeHtml(c.name)}</strong>
-              ${c.description ? `<span class="wa-body-s wa-color-text-quiet">${escapeHtml(c.description)}</span>` : ""}
+        <a href="/campaigns/${escapeAttr(c.id)}" data-link class="wa-link-plain">
+          <wa-card >
+            <div class="wa-split">
+              <div class="wa-stack wa-gap-2xs">
+                <strong>${escapeHtml(c.name)}</strong>
+                ${c.description ? `<span class="wa-body-s wa-color-text-quiet">${escapeHtml(c.description)}</span>` : ""}
+              </div>
+              <wa-badge variant="neutral" pill>${c.linkCount ?? 0} link${(c.linkCount ?? 0) === 1 ? "" : "s"}</wa-badge>
             </div>
-            <wa-badge variant="neutral" pill>${c.linkCount ?? 0} link${(c.linkCount ?? 0) === 1 ? "" : "s"}</wa-badge>
-          </div>
-        </wa-card>
+          </wa-card>
+        </a>
       `).join("")}
     </div>
   `;
-  container.querySelectorAll(".campaign-card").forEach(card => {
-    card.addEventListener("click", () => navigate(`/campaigns/${card.dataset.id}`));
-  });
 }

@@ -4,7 +4,7 @@ import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
-import { SPINNER, apiFetch, shortUrl, bindConfirmDialog } from "../lib/ui.js";
+import { SPINNER, apiFetch, shortUrl, bindConfirmDialog, renderTable } from "../lib/ui.js";
 
 function buildBadges(link) {
   const badges = [];
@@ -14,7 +14,7 @@ function buildBadges(link) {
     if (expired) {
       badges.push(`<wa-badge variant="danger" pill>Expired</wa-badge>`);
     } else {
-      badges.push(`<wa-badge variant="warning" pill>Expires ${new Date(link.expiresAt).toLocaleString()}</wa-badge>`);
+      badges.push(`<wa-badge variant="warning" pill>Expires <wa-relative-time date="${escapeAttr(link.expiresAt)}"></wa-relative-time></wa-badge>`);
     }
   }
 
@@ -48,16 +48,14 @@ function buildOgPreview(link) {
   const safeOgImage = link.ogImage && /^https?:\/\//.test(link.ogImage) ? link.ogImage : null;
   return `
     <wa-card>
-      <div class="wa-stack wa-gap-s">
-        <h3>Social Preview</h3>
-        <div class="og-preview">
-          ${safeOgImage ? `<img src="${escapeAttr(safeOgImage)}" alt="OG preview">` : ""}
-          <div class="og-preview-body">
-            ${link.ogTitle ? `<div class="wa-font-weight-bold">${escapeHtml(link.ogTitle)}</div>` : ""}
-            ${link.ogDescription ? `<div class="wa-body-s wa-color-text-quiet" style="margin-top:var(--wa-space-3xs);">${escapeHtml(link.ogDescription)}</div>` : ""}
-          </div>
+      <h3 slot="header">Social Preview</h3>
+      <wa-card>
+        ${safeOgImage ? `<div slot="media" class="wa-frame:landscape"><img src="${escapeAttr(safeOgImage)}" alt="OG preview"></div>` : ""}
+        <div class="wa-stack wa-gap-3xs">
+          ${link.ogTitle ? `<div class="wa-font-weight-bold">${escapeHtml(link.ogTitle)}</div>` : ""}
+          ${link.ogDescription ? `<div class="wa-body-s wa-color-text-quiet">${escapeHtml(link.ogDescription)}</div>` : ""}
         </div>
-      </div>
+      </wa-card>
     </wa-card>
   `;
 }
@@ -67,29 +65,19 @@ function buildTargetingRules(targets) {
   if (!filtered.length) return "";
   return `
     <wa-card>
-      <div class="wa-stack wa-gap-s">
-        <h3>Targeting Rules</h3>
-        <table class="link-table" aria-label="Targeting rules">
-          <thead>
-            <tr>
-              <th>Type</th>
-              <th>Match</th>
-              <th>Destination</th>
-              <th>Priority</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${filtered.map(t => `
-              <tr>
-                <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
-                <td>${escapeHtml(t.matchValue)}</td>
-                <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
-                <td>${t.priority}</td>
-              </tr>
-            `).join("")}
-          </tbody>
-        </table>
-      </div>
+      <h3 slot="header">Targeting Rules</h3>
+      ${renderTable({
+        label: "Targeting rules",
+        columns: ["Type", "Match", "Destination", "Priority"],
+        rows: filtered.map(t => `
+          <tr>
+            <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
+            <td>${escapeHtml(t.matchValue)}</td>
+            <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
+            <td>${t.priority}</td>
+          </tr>
+        `),
+      })}
     </wa-card>
   `;
 }
@@ -101,30 +89,27 @@ function buildAbTestCard(targets, link) {
   const defaultWeight = Math.max(1, 100 - totalWeight);
   return `
     <wa-card>
+      <h3 slot="header">A/B Test</h3>
+      <wa-badge slot="header-actions" variant="brand" pill>Active</wa-badge>
       <div class="wa-stack wa-gap-s">
-        <div class="wa-split">
-          <h3>A/B Test</h3>
-          <wa-badge variant="brand" pill>Active</wa-badge>
-        </div>
-        <table class="link-table" aria-label="A/B test variants">
-          <thead>
-            <tr><th>Variant</th><th>Destination</th><th>Weight</th></tr>
-          </thead>
-          <tbody>
-            <tr>
+        ${renderTable({
+          label: "A/B test variants",
+          columns: ["Variant", "Destination", "Weight"],
+          rows: [
+            `<tr>
               <td><wa-badge variant="neutral" pill>Control</wa-badge></td>
               <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
               <td>${defaultWeight}%</td>
-            </tr>
-            ${abTargets.map((t, i) => `
+            </tr>`,
+            ...abTargets.map((t, i) => `
               <tr>
                 <td><wa-badge variant="brand" pill>Variant ${String.fromCharCode(66 + i)}</wa-badge></td>
                 <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
                 <td>${escapeHtml(t.matchValue)}%</td>
               </tr>
-            `).join("")}
-          </tbody>
-        </table>
+            `),
+          ],
+        })}
         <div id="ab-stats-container"></div>
       </div>
     </wa-card>
@@ -136,17 +121,15 @@ function buildPublicReportCard(report) {
   const reportUrl = `${location.origin}/r/${report.token}`;
   return `
     <wa-card>
+      <h3 slot="header">Public Report</h3>
+      <wa-switch slot="header-actions" id="report-toggle" ${report.isEnabled ? "checked" : ""}><span class="wa-visually-hidden">Enable public report</span></wa-switch>
       <div class="wa-stack wa-gap-s">
-        <div class="wa-split">
-          <h3>Public Report</h3>
-          <wa-switch id="report-toggle" ${report.isEnabled ? "checked" : ""}></wa-switch>
-        </div>
         <p class="wa-body-s wa-color-text-quiet">Share your analytics dashboard with others via a public link.</p>
         <div id="report-link-container" class="wa-cluster wa-gap-2xs" style="display: ${report.isEnabled ? "flex" : "none"};">
-          <wa-input readonly value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
-          <wa-copy-button value="${escapeAttr(reportUrl)}"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
-          <wa-button variant="neutral" appearance="outlined" data-href="${escapeAttr(reportUrl)}">
-            <wa-icon name="arrow-up-right-from-square"></wa-icon>
+          <wa-input readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
+          <wa-copy-button value="${escapeAttr(reportUrl)}"></wa-copy-button>
+          <wa-button variant="neutral" appearance="outlined" href="${escapeAttr(reportUrl)}" target="_blank" rel="noopener">
+            <wa-icon name="arrow-up-right-from-square" label="Open public report"></wa-icon>
           </wa-button>
         </div>
       </div>
@@ -182,11 +165,11 @@ export async function renderLinkDetail(container, { id }) {
     : "";
 
   container.innerHTML = `
-    <div class="link-detail-view wa-stack wa-gap-l">
+    <div class="wa-stack wa-gap-l">
       <div class="wa-split">
         <h1>/${escapeHtml(link.slug)}</h1>
         <div class="wa-cluster wa-gap-xs">
-          <wa-button variant="brand" id="edit-link-btn">
+          <wa-button variant="brand" id="edit-link-btn" data-dialog="open edit-link-dialog">
             <wa-icon slot="start" name="pen-to-square"></wa-icon>
             Edit
           </wa-button>
@@ -198,17 +181,17 @@ export async function renderLinkDetail(container, { id }) {
       </div>
 
       <wa-card>
-        <div class="wa-flank wa-gap-l wa-align-items-start">
+        <div class="wa-flank:end wa-gap-l wa-align-items-start">
           <div class="wa-stack wa-gap-s">
             <div class="wa-cluster wa-gap-2xs">
               <strong>Short URL:</strong>
               <a href="${escapeAttr(linkShortUrl)}" target="_blank" rel="noopener">${escapeHtml(linkShortUrl)}</a>
-              <wa-copy-button value="${escapeAttr(linkShortUrl)}"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(linkShortUrl)}"></wa-copy-button>
             </div>
             <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
-            <div><strong>Lifetime Clicks:</strong> ${link.totalClicks}</div>
+            <div><strong>Lifetime Clicks:</strong> <wa-format-number value="${link.totalClicks}"></wa-format-number></div>
             ${maxClicksInfo}
-            <div><strong>Created:</strong> ${new Date(link.createdAt).toLocaleString()}</div>
+            <div><strong>Created:</strong> <wa-relative-time date="${escapeAttr(link.createdAt)}"></wa-relative-time></div>
             ${link.paramForwarding ? `<div><strong>Query Params:</strong> Forwarded to destination</div>` : ""}
             ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:var(--wa-space-3xs);">${badges}</div>` : ""}
           </div>
@@ -221,13 +204,11 @@ export async function renderLinkDetail(container, { id }) {
       ${buildAbTestCard(targets, link)}
       ${buildOgPreview(link)}
 
-      <div id="edit-section" style="display:none;">
-        <wa-card>
-          <div id="edit-form"></div>
-        </wa-card>
-      </div>
-
       ${link.totalClicks > 0 ? '<div id="stats-container"></div>' : ''}
+
+      <wa-dialog id="edit-link-dialog" label="Edit Link" light-dismiss style="--width:640px;">
+        <div id="edit-form"></div>
+      </wa-dialog>
 
       <wa-dialog id="delete-link-dialog" label="Delete Link">
         <p>Are you sure you want to delete <strong>/${escapeHtml(link.slug)}</strong>? This cannot be undone.</p>
@@ -259,17 +240,16 @@ export async function renderLinkDetail(container, { id }) {
     });
   }
 
-  const editSection = container.querySelector("#edit-section");
-  const editBtn = container.querySelector("#edit-link-btn");
-  editBtn.addEventListener("click", () => {
-    const visible = editSection.style.display !== "none";
-    editSection.style.display = visible ? "none" : "block";
-    if (!visible) {
-      renderLinkForm(container.querySelector("#edit-form"), {
-        link,
-        onSuccess: () => renderLinkDetail(container, { id }),
-      });
-    }
+  const editDialog = container.querySelector("#edit-link-dialog");
+  editDialog.addEventListener("wa-show", (e) => {
+    if (e.target !== editDialog) return;
+    renderLinkForm(container.querySelector("#edit-form"), {
+      link,
+      onSuccess: () => {
+        editDialog.open = false;
+        renderLinkDetail(container, { id });
+      },
+    });
   });
 
   bindConfirmDialog({

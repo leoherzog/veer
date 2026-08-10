@@ -1,6 +1,5 @@
-import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { shortUrl, emptyState, renderPagination } from "../lib/ui.js";
+import { shortUrl, emptyState, renderPagination, renderTable } from "../lib/ui.js";
 
 const COLUMNS = [
   { key: "slug", label: "Short URL" },
@@ -21,38 +20,33 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
     return;
   }
 
-  container.innerHTML = `
-    <table class="link-table" aria-label="Your links">
-      <thead>
-        <tr>
-          ${COLUMNS.map((col) => `<th data-sort="${col.key}">${col.label}${sortIndicator(col.key, sort)}</th>`).join("")}
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        ${links.map((link) => `
-          <tr>
-            <td>
-              <div class="wa-cluster wa-gap-2xs">
-                <span>/${escapeHtml(link.slug)}</span>
-                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
-                ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
-              </div>
-            </td>
-            <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
-            <td>${escapeHtml(link.title || "")}</td>
-            <td>${new Date(link.createdAt).toLocaleDateString()}</td>
-            <td>
-              <div class="wa-cluster wa-gap-2xs">
-                <wa-button size="small" variant="neutral" appearance="plain" pill data-edit="/links/${escapeAttr(link.id)}"><wa-icon name="pen-to-square" label="Edit"></wa-icon></wa-button>
-                <wa-button size="small" variant="neutral" appearance="plain" pill data-href="${escapeAttr(shortUrl(link))}"><wa-icon name="arrow-up-right-from-square" label="Visit"></wa-icon></wa-button>
-              </div>
-            </td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
+  container.innerHTML = renderTable({
+    label: "Your links",
+    columns: [
+      ...COLUMNS.map((col) => ({ label: col.label, sortKey: col.key, html: sortIndicator(col.key, sort) })),
+      "",
+    ],
+    rows: links.map((link) => `
+      <tr>
+        <td>
+          <div class="wa-cluster wa-gap-2xs">
+            <span>/${escapeHtml(link.slug)}</span>
+            <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
+            ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
+          </div>
+        </td>
+        <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
+        <td>${escapeHtml(link.title || "")}</td>
+        <td><wa-relative-time date="${escapeAttr(link.createdAt)}"></wa-relative-time></td>
+        <td>
+          <div class="wa-cluster wa-gap-2xs">
+            <wa-button size="s" variant="neutral" appearance="plain" pill href="/links/${escapeAttr(link.id)}" data-link><wa-icon name="pen-to-square" label="Edit"></wa-icon></wa-button>
+            <wa-button size="s" variant="neutral" appearance="plain" pill href="${escapeAttr(shortUrl(link))}" target="_blank" rel="noopener"><wa-icon name="arrow-up-right-from-square" label="Visit"></wa-icon></wa-button>
+          </div>
+        </td>
+      </tr>
+    `),
+  });
 
   renderPagination(container, {
     page: pagination.page,
@@ -68,13 +62,5 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
       const newDir = sort.by === col && sort.dir === "desc" ? "asc" : "desc";
       onSort(col, newDir);
     });
-  });
-
-  container.querySelectorAll("[data-edit]").forEach((el) => {
-    el.addEventListener("click", () => navigate(el.dataset.edit));
-  });
-
-  container.querySelectorAll("[data-href]").forEach((el) => {
-    el.addEventListener("click", () => window.open(el.dataset.href, "_blank", "noopener"));
   });
 }

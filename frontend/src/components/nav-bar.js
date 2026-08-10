@@ -25,12 +25,13 @@ export function renderNavBar(container, user) {
   const avatarAttrs = user
     ? `${user.image ? `image="${escapeAttr(user.image)}"` : ""} initials="${escapeAttr(getInitials(user.name))}" label="${escapeAttr(user.name || "")}"`
     : "";
+  // #nav is slotted straight into wa-page's `header`, which already supplies
+  // display:flex, align-items:center, justify-content:space-between, gap and padding.
   container.innerHTML = `
-    <nav class="nav-bar wa-split">
-      <div class="nav-left wa-cluster wa-gap-m">
-        <a href="${user ? "/links" : "/"}" class="nav-logo" data-link>${escapeHtml(getInstanceName())}</a>
+      <div class="wa-cluster wa-gap-m">
+        <a href="${user ? "/links" : "/"}" class="wa-link-plain wa-font-size-l wa-font-weight-bold" data-link>${escapeHtml(getInstanceName())}</a>
       </div>
-      <div class="nav-right wa-cluster wa-gap-m">
+      <div class="wa-cluster wa-gap-m">
         ${user
           ? `
             <wa-dropdown placement="bottom-end">
@@ -61,12 +62,11 @@ export function renderNavBar(container, user) {
             </wa-dropdown>
           `
           : `
-            <wa-button id="theme-toggle" size="small" variant="neutral" appearance="plain" pill><wa-icon name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}" label="${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
-            <wa-button size="small" variant="brand" id="login-btn">Login</wa-button>
+            <wa-button id="theme-toggle" size="s" variant="neutral" appearance="plain" pill><wa-icon name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}" label="${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
+            <wa-button size="s" variant="brand" id="login-btn">Login</wa-button>
           `
         }
       </div>
-    </nav>
   `;
 
   // Avatar dropdown menu

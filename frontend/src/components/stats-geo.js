@@ -1,5 +1,5 @@
-import { SKELETON, noData, fetchJSON, cardError } from "../lib/stats-common.js";
-import { createChart, destroyChart } from "../lib/chart-helper.js";
+import { CHART_SKELETON, noData, fetchJSON, statsCard } from "../lib/stats-common.js";
+import { createChart, destroyChart, getThemeColors } from "../lib/chart-helper.js";
 import { Chart } from "chart.js";
 import { feature } from "topojson-client";
 
@@ -49,7 +49,7 @@ function buildClickMap(countries) {
 }
 
 export async function renderStatsGeo(container, linkId, days = 30) {
-  container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Geographic</h3>${SKELETON}</div></wa-card>`;
+  container.innerHTML = statsCard("Geographic", CHART_SKELETON);
 
   try {
     const { data } = await fetchJSON(`/api/stats/${linkId}/geo?days=${days}`);
@@ -58,23 +58,20 @@ export async function renderStatsGeo(container, linkId, days = 30) {
     const cities = data.cities ?? [];
 
     if (!countries.length && !cities.length) {
-      container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Geographic</h3>${noData("No geographic data yet")}</div></wa-card>`;
+      container.innerHTML = statsCard("Geographic", noData("No geographic data yet"));
       return;
     }
 
     (container._charts || []).forEach(destroyChart);
 
     const hasMap = countries.length > 0;
-    container.innerHTML = `
-      <wa-card>
-        <div class="wa-stack wa-gap-m">
-          <h3>Geographic</h3>
-          ${hasMap ? `<div style="position:relative;height:320px;"><canvas id="geo-map"></canvas></div>` : ""}
-          ${countries.length ? `<div class="wa-frame:landscape"><canvas id="geo-countries"></canvas></div>` : ""}
-          ${cities.length ? `<div class="wa-frame:landscape"><canvas id="geo-cities"></canvas></div>` : ""}
-        </div>
-      </wa-card>
-    `;
+    container.innerHTML = statsCard("Geographic", `
+      <div class="wa-stack wa-gap-m">
+        ${hasMap ? `<div class="wa-frame:landscape"><canvas id="geo-map"></canvas></div>` : ""}
+        ${countries.length ? `<div class="wa-frame:landscape"><canvas id="geo-countries"></canvas></div>` : ""}
+        ${cities.length ? `<div class="wa-frame:landscape"><canvas id="geo-cities"></canvas></div>` : ""}
+      </div>
+    `);
 
     const charts = [];
 
@@ -87,12 +84,7 @@ export async function renderStatsGeo(container, linkId, days = 30) {
 
         const mapCanvas = container.querySelector("#geo-map");
         if (mapCanvas) {
-          const style = getComputedStyle(document.documentElement);
-          const brandColor = style.getPropertyValue("--wa-color-brand-fill-loud").trim() || "#7c3aed";
-          const isDark = document.documentElement.classList.contains("wa-dark");
-          const bgColor = isDark ? "#1a1a2e" : "#e8ecf1";
-          const borderColor = isDark ? "#333" : "#ccc";
-          const textColor = style.getPropertyValue("--wa-color-text-normal").trim() || (isDark ? "#e5e5e5" : "#333");
+          const { brand: brandColor, border: borderColor, fill: bgColor } = getThemeColors();
 
           const chart = new Chart(mapCanvas, {
             type: "choropleth",
@@ -165,7 +157,7 @@ export async function renderStatsGeo(container, linkId, days = 30) {
     makeBar("geo-cities", cities, "name");
     container._charts = charts;
   } catch {
-    container.innerHTML = cardError("Failed to load geographic data");
+    container.innerHTML = statsCard("Geographic", noData("Failed to load geographic data"));
   }
 }
 

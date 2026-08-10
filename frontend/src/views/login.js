@@ -18,7 +18,7 @@ function renderButtons(container, providers) {
   }
 
   wrapper.innerHTML = providers.map((p) => `
-    <wa-button variant="neutral" appearance="outlined" size="large" style="width:100%;" data-provider="${p.id}">
+    <wa-button variant="neutral" appearance="outlined" size="l" data-provider="${p.id}">
       <wa-icon slot="start" name="${p.icon}" family="brands" label="${p.name}"></wa-icon>
       Continue with ${p.name}
     </wa-button>
@@ -66,16 +66,16 @@ function renderPasskeyButton(container, enabled) {
 
 export function renderLogin(container) {
   container.innerHTML = `
-    <div class="login-view wa-stack wa-gap-l">
+    <div class="wa-stack wa-gap-l wa-text-center">
       <h1>Sign in to ${escapeHtml(getInstanceName())}</h1>
       <p id="login-help">Choose a provider to continue</p>
       <div class="wa-stack wa-gap-s" id="provider-buttons">
-        <wa-skeleton effect="sheen" style="height:44px;width:100%;"></wa-skeleton>
-        <wa-skeleton effect="sheen" style="height:44px;width:100%;"></wa-skeleton>
+        <wa-skeleton effect="sheen" class="wa-size-l" style="height:var(--wa-form-control-height);"></wa-skeleton>
+        <wa-skeleton effect="sheen" class="wa-size-l" style="height:var(--wa-form-control-height);"></wa-skeleton>
       </div>
       <div id="passkey-section" style="display:none;">
         <wa-divider></wa-divider>
-        <wa-button id="passkey-signin" variant="brand" size="large" style="width:100%;">
+        <wa-button id="passkey-signin" variant="brand" size="l" style="width:100%;">
           <wa-icon slot="start" name="key" label="Passkey"></wa-icon>
           Sign in with passkey
         </wa-button>

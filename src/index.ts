@@ -47,7 +47,8 @@ app.use("*", async (c, next) => {
     "script-src 'self' 'sha256-6lEELWNMgHrMCgR7XoJHO/mczPvz9siUa+la3S+ZogI=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='",
     "style-src 'self' 'unsafe-inline' https://fonts.bunny.net",
     "img-src 'self' data: https:",
-    "connect-src 'self' https://ka-f.fontawesome.com",
+    // `data:` — wa-icon fetches the system icon library's data: URIs, so connect-src governs them, not img-src.
+    "connect-src 'self' data: https://ka-f.fontawesome.com",
     "font-src 'self' https://cdn.jsdelivr.net https://fonts.bunny.net",
   ].join("; "));
 });

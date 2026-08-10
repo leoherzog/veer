@@ -1,8 +1,8 @@
-import { SKELETON, noData, fetchJSON, cardError } from "../lib/stats-common.js";
+import { CHART_SKELETON, noData, fetchJSON, statsCard } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 
 export async function renderStatsDevices(container, linkId, days = 30) {
-  container.innerHTML = `<wa-card><div class="wa-stack wa-gap-m"><h3>Devices &amp; Browsers</h3>${SKELETON}</div></wa-card>`;
+  container.innerHTML = statsCard("Devices & Browsers", CHART_SKELETON);
 
   try {
     const { data } = await fetchJSON(`/api/stats/${linkId}/devices?days=${days}`);
@@ -14,18 +14,13 @@ export async function renderStatsDevices(container, linkId, days = 30) {
     const nd = noData();
     (container._charts || []).forEach(destroyChart);
 
-    container.innerHTML = `
-      <wa-card>
-        <div class="wa-stack wa-gap-m">
-          <h3>Devices &amp; Browsers</h3>
-          <div class="wa-grid" style="--min-column-size:200px;">
-            <div>${browsers.length ? `<div class="wa-frame:square"><canvas id="browsers-chart"></canvas></div>` : nd}</div>
-            <div>${os.length ? `<div class="wa-frame:square"><canvas id="os-chart"></canvas></div>` : nd}</div>
-            <div>${devices.length ? `<div class="wa-frame:square"><canvas id="device-chart"></canvas></div>` : nd}</div>
-          </div>
-        </div>
-      </wa-card>
-    `;
+    container.innerHTML = statsCard("Devices & Browsers", `
+      <div class="wa-grid" style="--min-column-size:200px;">
+        <div>${browsers.length ? `<div class="wa-frame:square"><canvas id="browsers-chart"></canvas></div>` : nd}</div>
+        <div>${os.length ? `<div class="wa-frame:square"><canvas id="os-chart"></canvas></div>` : nd}</div>
+        <div>${devices.length ? `<div class="wa-frame:square"><canvas id="device-chart"></canvas></div>` : nd}</div>
+      </div>
+    `);
 
     const charts = [];
     function makeDoughnut(id, items) {
@@ -44,6 +39,6 @@ export async function renderStatsDevices(container, linkId, days = 30) {
     makeDoughnut("device-chart", devices);
     container._charts = charts;
   } catch {
-    container.innerHTML = cardError("Failed to load device data");
+    container.innerHTML = statsCard("Devices & Browsers", noData("Failed to load device data"));
   }
 }

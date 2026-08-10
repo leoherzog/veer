@@ -1,7 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, shortUrl, emptyState } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, shortUrl, emptyState, statCard, renderTable } from "../lib/ui.js";
 
 export async function renderCampaignDetail(container, { id }) {
   container.innerHTML = SPINNER;
@@ -22,7 +22,7 @@ export async function renderCampaignDetail(container, { id }) {
   } catch { /* stats are best-effort */ }
 
   container.innerHTML = `
-    <div class="campaign-detail-view wa-stack wa-gap-l">
+    <div class="wa-stack wa-gap-l">
       <div class="wa-split">
         <div class="wa-cluster wa-gap-s wa-align-items-center">
           <wa-button variant="neutral" appearance="plain" pill id="back-btn" aria-label="Back to campaigns">
@@ -31,7 +31,7 @@ export async function renderCampaignDetail(container, { id }) {
           <h1 id="campaign-name">${escapeHtml(campaign.name)}</h1>
         </div>
         <div class="wa-cluster wa-gap-xs">
-          <wa-button variant="neutral" id="edit-campaign-btn">
+          <wa-button variant="neutral" id="edit-campaign-btn" data-dialog="open edit-campaign-dialog">
             <wa-icon slot="start" name="pen-to-square"></wa-icon>
             Edit
           </wa-button>
@@ -44,37 +44,14 @@ export async function renderCampaignDetail(container, { id }) {
 
       ${campaign.description ? `<p class="wa-color-text-quiet">${escapeHtml(campaign.description)}</p>` : ""}
 
-      <div id="edit-section" style="display:none;">
-        <wa-card>
-          <form id="edit-campaign-form" class="wa-stack wa-gap-m">
-            <wa-input name="name" label="Campaign Name" required value="${escapeAttr(campaign.name)}"></wa-input>
-            <wa-textarea name="description" label="Description (optional)" rows="2"></wa-textarea>
-            <div class="wa-cluster wa-gap-s">
-              <wa-button type="submit" variant="brand">Save Changes</wa-button>
-              <wa-button variant="neutral" id="cancel-edit-btn">Cancel</wa-button>
-            </div>
-          </form>
-        </wa-card>
-      </div>
-
-      <div class="wa-split wa-gap-m">
-        <wa-card>
-          <div class="wa-stack wa-gap-2xs wa-align-items-center">
-            <span class="wa-heading-xl" id="campaign-link-count">${campaignLinks.length}</span>
-            <span class="wa-caption-s wa-color-text-quiet">Links</span>
-          </div>
-        </wa-card>
-        <wa-card>
-          <div class="wa-stack wa-gap-2xs wa-align-items-center">
-            <span class="wa-heading-xl">${totalClicks}</span>
-            <span class="wa-caption-s wa-color-text-quiet">Total Clicks</span>
-          </div>
-        </wa-card>
+      <div class="wa-grid wa-gap-m">
+        ${statCard("Links", `<wa-format-number id="campaign-link-count" value="${campaignLinks.length}"></wa-format-number>`)}
+        ${statCard("Total Clicks", `<wa-format-number value="${totalClicks}"></wa-format-number>`)}
       </div>
 
       <div class="wa-split">
         <h2>Links</h2>
-        <wa-button variant="brand" size="small" id="add-links-btn">
+        <wa-button variant="brand" size="s" id="add-links-btn">
           <wa-icon slot="start" name="plus"></wa-icon>
           Add Links
         </wa-button>
@@ -85,6 +62,21 @@ export async function renderCampaignDetail(container, { id }) {
         <div id="available-links-list" class="wa-stack wa-gap-s"></div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Close</wa-button>
       </wa-dialog>
+
+      <wa-dialog id="edit-campaign-dialog" label="Edit Campaign" light-dismiss>
+        <form id="edit-campaign-form" class="wa-stack wa-gap-m">
+          <wa-input name="name" label="Campaign Name" required value="${escapeAttr(campaign.name)}"></wa-input>
+          <wa-textarea name="description" label="Description (optional)" rows="2" value="${escapeAttr(campaign.description || "")}"></wa-textarea>
+        </form>
+        <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="brand" type="submit" form="edit-campaign-form" id="save-campaign-btn">Save Changes</wa-button>
+      </wa-dialog>
+
+      <wa-dialog id="delete-campaign-dialog" label="Delete Campaign" light-dismiss>
+        <p>Are you sure you want to delete <strong>${escapeHtml(campaign.name)}</strong>? Links will not be deleted, only unlinked from the campaign.</p>
+        <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
+        <wa-button slot="footer" variant="danger" id="confirm-delete-campaign">Delete</wa-button>
+      </wa-dialog>
     </div>
   `;
 
@@ -93,24 +85,11 @@ export async function renderCampaignDetail(container, { id }) {
   // Back button
   container.querySelector("#back-btn").addEventListener("click", () => navigate("/campaigns"));
 
-  // Edit toggle
-  const editSection = container.querySelector("#edit-section");
-  container.querySelector("#edit-campaign-btn").addEventListener("click", () => {
-    editSection.style.display = editSection.style.display === "none" ? "block" : "none";
-    if (editSection.style.display !== "none") {
-      const descTextarea = editSection.querySelector('[name="description"]');
-      if (descTextarea) descTextarea.value = campaign.description || "";
-    }
-  });
-  container.querySelector("#cancel-edit-btn").addEventListener("click", () => {
-    editSection.style.display = "none";
-  });
-
   // Edit submit
+  const saveBtn = container.querySelector("#save-campaign-btn");
   container.querySelector("#edit-campaign-form").addEventListener("submit", async (e) => {
     e.preventDefault();
-    const btn = e.target.querySelector('wa-button[type="submit"]');
-    await withLoadingBtn(btn, async () => {
+    await withLoadingBtn(saveBtn, async () => {
       const res = await apiFetch(`/api/campaigns/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
@@ -126,12 +105,16 @@ export async function renderCampaignDetail(container, { id }) {
   });
 
   // Delete campaign
-  container.querySelector("#delete-campaign-btn").addEventListener("click", async () => {
-    if (!confirm("Delete this campaign? Links will not be deleted, only unlinked from the campaign.")) return;
-    const res = await apiFetch(`/api/campaigns/${id}`, { method: "DELETE" });
-    if (!res) return;
-    showToast("Campaign deleted", "success");
-    navigate("/campaigns");
+  bindConfirmDialog({
+    dialog: container.querySelector("#delete-campaign-dialog"),
+    trigger: container.querySelector("#delete-campaign-btn"),
+    confirmBtn: container.querySelector("#confirm-delete-campaign"),
+    onConfirm: async () => {
+      const res = await apiFetch(`/api/campaigns/${id}`, { method: "DELETE" });
+      if (!res) return false;
+      showToast("Campaign deleted", "success");
+      navigate("/campaigns");
+    },
   });
 
   // Add links dialog
@@ -148,37 +131,27 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
     return;
   }
 
-  container.innerHTML = `
-    <table class="link-table" aria-label="Campaign links">
-      <thead>
-        <tr>
-          <th>Short URL</th>
-          <th>Destination</th>
-          <th>Clicks</th>
-          <th></th>
-        </tr>
-      </thead>
-      <tbody>
-        ${links.map(link => `
-          <tr>
-            <td>
-              <div class="wa-cluster wa-gap-2xs">
-                <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
-                <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
-              </div>
-            </td>
-            <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
-            <td>${link.totalClicks || 0}</td>
-            <td>
-              <wa-button size="small" variant="danger" appearance="plain" pill class="remove-link-btn" data-link-id="${escapeAttr(link.id)}" aria-label="Remove from campaign">
-                <wa-icon name="xmark"></wa-icon>
-              </wa-button>
-            </td>
-          </tr>
-        `).join("")}
-      </tbody>
-    </table>
-  `;
+  container.innerHTML = renderTable({
+    label: "Campaign links",
+    columns: ["Short URL", "Destination", "Clicks", ""],
+    rows: links.map(link => `
+      <tr>
+        <td>
+          <div class="wa-cluster wa-gap-2xs">
+            <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
+            <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
+          </div>
+        </td>
+        <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
+        <td>${link.totalClicks || 0}</td>
+        <td>
+          <wa-button size="s" variant="danger" appearance="plain" pill class="remove-link-btn" data-link-id="${escapeAttr(link.id)}" aria-label="Remove from campaign">
+            <wa-icon name="xmark"></wa-icon>
+          </wa-button>
+        </td>
+      </tr>
+    `),
+  });
 
   // [data-link] anchors are handled by a global delegate in app.js.
 
@@ -193,7 +166,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
         if (idx !== -1) links.splice(idx, 1);
         renderCampaignLinks(container, links, campaignId, rootContainer);
         const countEl = rootContainer.querySelector("#campaign-link-count");
-        if (countEl) countEl.textContent = links.length;
+        if (countEl) countEl.value = links.length;
       });
     });
   });
@@ -212,7 +185,7 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
   const available = allLinks.filter(l => !existingIds.has(l.id));
 
   if (!available.length) {
-    container.innerHTML = `<p class="wa-stack wa-align-items-center wa-color-text-quiet p-m">All your links are already in this campaign.</p>`;
+    container.innerHTML = `<p class="wa-stack wa-align-items-center wa-color-text-quiet">All your links are already in this campaign.</p>`;
     return;
   }
 
@@ -224,7 +197,7 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
             <strong>${escapeHtml(link.slug)}</strong>
             <span class="text-truncate wa-text-truncate wa-body-s wa-color-text-quiet">${escapeHtml(link.destinationUrl)}</span>
           </div>
-          <wa-button size="small" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
+          <wa-button size="s" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
         </div>
       `).join("")}
     </div>
@@ -248,7 +221,7 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
         const linksContainer = rootContainer.querySelector("#campaign-links-list");
         if (linksContainer) renderCampaignLinks(linksContainer, existingLinks, campaignId, rootContainer);
         const countEl = rootContainer.querySelector("#campaign-link-count");
-        if (countEl) countEl.textContent = existingLinks.length;
+        if (countEl) countEl.value = existingLinks.length;
         // Close dialog
         const dlg = rootContainer.querySelector("#add-links-dialog");
         if (dlg) dlg.open = false;

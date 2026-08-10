@@ -1,7 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { authClient } from "../auth-client.js";
-import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable } from "../lib/ui.js";
 
 /* ── API Keys helpers ─────────────────────────────────────────────── */
 
@@ -17,7 +17,7 @@ function renderKeyRow(key) {
       <td>${lastUsed}</td>
       <td>${expires}</td>
       <td>
-        <wa-button size="small" variant="danger" appearance="outlined" class="delete-key-btn" data-id="${escapeAttr(key.id)}" data-name="${escapeAttr(key.name)}">
+        <wa-button size="s" variant="danger" appearance="outlined" class="delete-key-btn" data-id="${escapeAttr(key.id)}" data-name="${escapeAttr(key.name)}">
           <wa-icon slot="start" name="trash"></wa-icon>
           Delete
         </wa-button>
@@ -26,17 +26,28 @@ function renderKeyRow(key) {
   `;
 }
 
+function renderKeysList(keys) {
+  return keys.length === 0
+    ? `<p class="wa-color-text-quiet">No API keys yet.</p>`
+    : renderTable({
+      label: "API keys",
+      columns: ["Name", "Prefix", "Created", "Last Used", "Expires", "Actions"],
+      rows: keys.map(k => renderKeyRow(k)),
+      tbodyId: "keys-tbody",
+    });
+}
+
 function renderApiKeysPanel(keys) {
   return `
     <wa-tab-panel name="api-keys">
-      <div class="wa-stack wa-gap-l tab-panel-content">
+      <div class="wa-stack wa-gap-l">
         <wa-card>
+          <h3 slot="header">Create API Key</h3>
           <div class="wa-stack wa-gap-m">
-            <h3>Create API Key</h3>
             <form id="create-key-form" class="wa-cluster wa-gap-s wa-align-items-end">
-              <wa-input id="key-name" name="name" label="Name" placeholder="e.g. CI deploy" required style="flex:1;min-width:180px;"></wa-input>
+              <wa-input id="key-name" name="name" label="Name" placeholder="e.g. CI deploy" required pattern=".*\\S.*" title="Name is required" style="flex:1;min-width:180px;"></wa-input>
               <wa-input id="key-expires" name="expiresAt" type="date" label="Expires (optional)" style="min-width:160px;"></wa-input>
-              <wa-button type="submit" variant="brand" size="small">
+              <wa-button type="submit" variant="brand" size="s">
                 <wa-icon slot="start" name="plus"></wa-icon>
                 Create
               </wa-button>
@@ -46,28 +57,9 @@ function renderApiKeysPanel(keys) {
         </wa-card>
 
         <wa-card>
-          <div class="wa-stack wa-gap-m">
-            <h3>Existing Keys</h3>
-            ${keys.length === 0
-              ? `<p class="wa-color-text-quiet">No API keys yet.</p>`
-              : `
-                <table class="link-table" aria-label="API keys">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Prefix</th>
-                      <th>Created</th>
-                      <th>Last Used</th>
-                      <th>Expires</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="keys-tbody">
-                    ${keys.map(k => renderKeyRow(k)).join("")}
-                  </tbody>
-                </table>
-              `
-            }
+          <h3 slot="header">Existing Keys</h3>
+          <div id="existing-keys">
+            ${renderKeysList(keys)}
           </div>
         </wa-card>
       </div>
@@ -112,7 +104,7 @@ function renderPasskeyRow(pk) {
       <td><code>${escapeHtml(pk.credentialID?.slice(0, 16) || pk.id.slice(0, 8))}…</code></td>
       <td>${created}</td>
       <td>
-        <wa-button size="small" variant="danger" appearance="outlined" class="delete-passkey-btn" data-id="${escapeAttr(pk.id)}" data-name="${escapeAttr(pk.name || "Unnamed")}">
+        <wa-button size="s" variant="danger" appearance="outlined" class="delete-passkey-btn" data-id="${escapeAttr(pk.id)}" data-name="${escapeAttr(pk.name || "Unnamed")}">
           <wa-icon slot="start" name="trash"></wa-icon>
           Delete
         </wa-button>
@@ -124,14 +116,14 @@ function renderPasskeyRow(pk) {
 function renderPasskeyPanel(passkeys) {
   return `
     <wa-tab-panel name="passkeys">
-      <div class="wa-stack wa-gap-l tab-panel-content">
+      <div class="wa-stack wa-gap-l">
         <wa-card>
+          <h3 slot="header">Register Passkey</h3>
           <div class="wa-stack wa-gap-m">
-            <h3>Register Passkey</h3>
             <p class="wa-color-text-quiet">Passkeys let you sign in securely without a password using your device's biometrics or security key.</p>
             <form id="register-passkey-form" class="wa-cluster wa-gap-s wa-align-items-end">
-              <wa-input id="passkey-name" name="name" label="Passkey Name" placeholder="e.g. MacBook Touch ID" required style="flex:1;min-width:200px;"></wa-input>
-              <wa-button type="submit" variant="brand" size="small">
+              <wa-input id="passkey-name" name="name" label="Passkey Name" placeholder="e.g. MacBook Touch ID" required pattern=".*\\S.*" title="Name is required" style="flex:1;min-width:200px;"></wa-input>
+              <wa-button type="submit" variant="brand" size="s">
                 <wa-icon slot="start" name="key"></wa-icon>
                 Register
               </wa-button>
@@ -140,27 +132,16 @@ function renderPasskeyPanel(passkeys) {
         </wa-card>
 
         <wa-card>
-          <div class="wa-stack wa-gap-m">
-            <h3>Registered Passkeys</h3>
-            ${passkeys.length === 0
-              ? `<p class="wa-color-text-quiet">No passkeys registered yet.</p>`
-              : `
-                <table class="link-table" aria-label="Passkeys">
-                  <thead>
-                    <tr>
-                      <th>Name</th>
-                      <th>Credential</th>
-                      <th>Created</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="passkeys-tbody">
-                    ${passkeys.map(pk => renderPasskeyRow(pk)).join("")}
-                  </tbody>
-                </table>
-              `
-            }
-          </div>
+          <h3 slot="header">Registered Passkeys</h3>
+          ${passkeys.length === 0
+            ? `<p class="wa-color-text-quiet">No passkeys registered yet.</p>`
+            : renderTable({
+              label: "Passkeys",
+              columns: ["Name", "Credential", "Created", "Actions"],
+              rows: passkeys.map(pk => renderPasskeyRow(pk)),
+              tbodyId: "passkeys-tbody",
+            })
+          }
         </wa-card>
       </div>
 
@@ -182,7 +163,6 @@ function bindPasskeyRegister(container) {
     const nameInput = form.querySelector("#passkey-name");
     const submitBtn = form.querySelector('wa-button[type="submit"]');
     const name = nameInput.value.trim();
-    if (!name) { showToast("Name is required", "warning"); return; }
 
     await withLoadingBtn(submitBtn, async () => {
       try {
@@ -242,7 +222,7 @@ function bindPasskeyDelete(container) {
 
 function renderDomainRow(domain) {
   return `
-    <tr class="domain-row" data-hostname="${escapeAttr(domain.hostname)}">
+    <tr>
       <td>${escapeHtml(domain.hostname)}</td>
       <td class="text-truncate wa-text-truncate">${escapeHtml(domain.rootRedirect || "—")}</td>
       <td class="text-truncate wa-text-truncate">${escapeHtml(domain.notFoundRedirect || "—")}</td>
@@ -253,7 +233,7 @@ function renderDomainRow(domain) {
       </td>
       <td>
         <div class="wa-cluster wa-gap-2xs">
-          <wa-button size="small" variant="neutral" appearance="outlined" class="edit-domain-btn" data-hostname="${escapeAttr(domain.hostname)}">
+          <wa-button size="s" variant="neutral" appearance="outlined" class="edit-domain-btn" data-hostname="${escapeAttr(domain.hostname)}">
             <wa-icon slot="start" name="pen-to-square"></wa-icon>
             Edit
           </wa-button>
@@ -265,9 +245,9 @@ function renderDomainRow(domain) {
 
 function renderEditRow(domain) {
   return `
-    <tr class="domain-edit-row" data-edit-for="${escapeAttr(domain.hostname)}">
+    <tr class="domain-edit-row">
       <td colspan="5">
-        <form class="wa-stack wa-gap-s edit-domain-form py-xs" data-hostname="${escapeAttr(domain.hostname)}">
+        <form class="wa-stack wa-gap-s edit-domain-form" data-hostname="${escapeAttr(domain.hostname)}">
           <div class="wa-cluster wa-gap-s wa-align-items-end">
             <wa-input name="rootRedirect" label="Root Redirect" placeholder="https://example.com" value="${escapeAttr(domain.rootRedirect || "")}" style="flex:1;min-width:200px;"></wa-input>
             <wa-input name="notFoundRedirect" label="404 Redirect" placeholder="https://example.com/404" value="${escapeAttr(domain.notFoundRedirect || "")}" style="flex:1;min-width:200px;"></wa-input>
@@ -277,11 +257,11 @@ function renderEditRow(domain) {
             </wa-select>
           </div>
           <div class="access-emails-section" style="display:${domain.accessMode === "restricted" ? "block" : "none"};">
-            <wa-textarea name="accessEmails" label="Allowed Emails (one per line)" rows="3" placeholder="user@example.com"></wa-textarea>
+            <wa-textarea name="accessEmails" label="Allowed Emails (one per line)" rows="3" placeholder="user@example.com" value="${escapeAttr((domain.accessEmails || []).join("\n")).replace(/\n/g, "&#10;")}"></wa-textarea>
           </div>
           <div class="wa-cluster wa-gap-s">
-            <wa-button type="submit" variant="brand" size="small">Save</wa-button>
-            <wa-button variant="neutral" size="small" class="cancel-edit-btn">Cancel</wa-button>
+            <wa-button type="submit" variant="brand" size="s">Save</wa-button>
+            <wa-button variant="neutral" size="s" class="cancel-edit-btn">Cancel</wa-button>
           </div>
         </form>
       </td>
@@ -334,45 +314,31 @@ export async function renderSettings(container) {
 
   const domainsPanel = isAdmin ? `
     <wa-tab-panel name="domains">
-      <div class="wa-stack wa-gap-l tab-panel-content">
+      <div class="wa-stack wa-gap-l">
         <wa-card>
-          <div class="wa-stack wa-gap-m">
-            <div class="wa-split">
-              <h3>Configured Domains</h3>
-              <wa-button id="sync-domains-btn" variant="brand" size="small">
-                <wa-icon slot="start" name="arrows-rotate"></wa-icon>
-                Sync from Cloudflare
-              </wa-button>
-            </div>
-            ${domains.length === 0
-              ? `<p class="wa-color-text-quiet">No domains configured. Click "Sync from Cloudflare" to import domains routed to this worker.</p>`
-              : `
-                <table class="link-table" aria-label="Custom domains">
-                  <thead>
-                    <tr>
-                      <th>Hostname</th>
-                      <th>Root Redirect</th>
-                      <th>404 Redirect</th>
-                      <th>Access</th>
-                      <th>Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody id="domains-tbody">
-                    ${domains.map(d => renderDomainRow(d)).join("")}
-                  </tbody>
-                </table>
-              `
-            }
-          </div>
+          <h3 slot="header">Configured Domains</h3>
+          <wa-button slot="header-actions" id="sync-domains-btn" variant="brand" size="s">
+            <wa-icon slot="start" name="arrows-rotate"></wa-icon>
+            Sync from Cloudflare
+          </wa-button>
+          ${domains.length === 0
+            ? `<p class="wa-color-text-quiet">No domains configured. Click "Sync from Cloudflare" to import domains routed to this worker.</p>`
+            : renderTable({
+              label: "Custom domains",
+              columns: ["Hostname", "Root Redirect", "404 Redirect", "Access", "Actions"],
+              rows: domains.map(d => renderDomainRow(d)),
+              tbodyId: "domains-tbody",
+            })
+          }
         </wa-card>
       </div>
     </wa-tab-panel>
   ` : "";
 
   container.innerHTML = `
-    <div class="settings-view wa-stack wa-gap-l">
+    <div class="wa-stack wa-gap-l">
       <h1>Settings</h1>
-      <wa-tab-group>
+      <wa-tab-group without-scroll-controls>
         <wa-tab panel="api-keys">API Keys</wa-tab>
         ${passkeysTab}
         ${domainsTab}
@@ -398,7 +364,6 @@ export async function renderSettings(container) {
       const expiresInput = createKeyForm.querySelector("#key-expires");
 
       const name = nameInput.value.trim();
-      if (!name) { showToast("Name is required", "warning"); return; }
 
       const body = { name };
       const expiresVal = expiresInput.value;
@@ -421,7 +386,7 @@ export async function renderSettings(container) {
             <strong>Copy your API key now — it will not be shown again.</strong>
             <div class="wa-cluster wa-gap-xs" style="margin-top:var(--wa-space-xs);">
               <code style="word-break:break-all;">${escapeHtml(result.data.key)}</code>
-              <wa-copy-button value="${escapeAttr(result.data.key)}"><wa-icon slot="copy-icon" name="copy"></wa-icon><wa-icon slot="success-icon" name="check"></wa-icon></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(result.data.key)}"></wa-copy-button>
             </div>
           </wa-callout>
         `;
@@ -433,33 +398,9 @@ export async function renderSettings(container) {
         // Re-fetch and update the keys table
         const keysResult = await apiFetch("/api/keys").catch(() => null);
         if (keysResult?.data) {
-          const updatedKeys = keysResult.data;
-          const keysCard = container.querySelectorAll("wa-tab-panel[name='api-keys'] wa-card")[1];
-          if (keysCard) {
-            const inner = keysCard.querySelector(".wa-stack");
-            inner.innerHTML = `
-              <h3>Existing Keys</h3>
-              ${updatedKeys.length === 0
-                ? `<p class="wa-color-text-quiet">No API keys yet.</p>`
-                : `
-                  <table class="link-table" aria-label="API keys">
-                    <thead>
-                      <tr>
-                        <th>Name</th>
-                        <th>Prefix</th>
-                        <th>Created</th>
-                        <th>Last Used</th>
-                        <th>Expires</th>
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody id="keys-tbody">
-                      ${updatedKeys.map(k => renderKeyRow(k)).join("")}
-                    </tbody>
-                  </table>
-                `
-              }
-            `;
+          const list = container.querySelector("#existing-keys");
+          if (list) {
+            list.innerHTML = renderKeysList(keysResult.data);
             bindDeleteKeyButtons(container);
           }
         }
@@ -510,10 +451,6 @@ export async function renderSettings(container) {
       row.insertAdjacentHTML("afterend", renderEditRow(domainDetail));
 
       const editForm = container.querySelector(`.edit-domain-form[data-hostname="${CSS.escape(hostname)}"]`);
-
-      // Set textarea value programmatically (HTML attribute doesn't work for wa-textarea)
-      const emailsTextarea = editForm.querySelector('[name="accessEmails"]');
-      if (emailsTextarea) emailsTextarea.value = (domainDetail.accessEmails || []).join("\n");
 
       // Toggle email section visibility based on access mode
       const accessSelect = editForm.querySelector('[name="accessMode"]');

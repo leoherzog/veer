@@ -1,7 +1,7 @@
 import { showToast } from "./toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr } from "../lib/escape.js";
-import { apiFetch, withLoadingBtn } from "../lib/ui.js";
+import { apiFetch, withLoadingBtn, setTeamOptions } from "../lib/ui.js";
 
 function toLocalDatetime(isoStr) {
   if (!isoStr) return "";
@@ -21,7 +21,7 @@ function createTargetRow(target = {}) {
     </wa-select>
     <wa-input name="targetMatch" label="Match" placeholder="US" hint="Country code or device type" value="${escapeAttr(target.matchValue || "")}" style="min-width:120px;"></wa-input>
     <wa-input name="targetUrl" label="Destination" type="url" placeholder="https://..." value="${escapeAttr(target.destinationUrl || "")}" style="flex:1;"></wa-input>
-    <wa-input name="targetPriority" label="Priority" type="number" value="${escapeAttr(target.priority != null ? String(target.priority) : "0")}" style="max-width:80px;"></wa-input>
+    <wa-number-input name="targetPriority" label="Priority" without-steppers value="${escapeAttr(target.priority != null ? String(target.priority) : "0")}" style="max-width:80px;"></wa-number-input>
     <wa-button variant="danger" appearance="plain" pill class="remove-target-btn" aria-label="Remove rule">
       <wa-icon name="xmark"></wa-icon>
     </wa-button>
@@ -35,7 +35,7 @@ function createAbRow(variant = {}) {
   row.className = "ab-variant wa-cluster wa-gap-s wa-align-items-end";
   row.innerHTML = `
     <wa-input name="abUrl" label="Variant URL" type="url" placeholder="https://..." value="${escapeAttr(variant.destinationUrl || "")}" style="flex:1;"></wa-input>
-    <wa-input name="abWeight" label="Weight %" type="number" min="1" max="99" value="${escapeAttr(variant.matchValue || "50")}" style="max-width:100px;"></wa-input>
+    <wa-number-input name="abWeight" label="Weight %" without-steppers min="1" max="99" value="${escapeAttr(variant.matchValue || "50")}" style="max-width:100px;"></wa-number-input>
     <wa-button variant="danger" appearance="plain" pill class="remove-ab-btn" aria-label="Remove variant">
       <wa-icon name="xmark"></wa-icon>
     </wa-button>
@@ -77,15 +77,12 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
   const hasPassword = isEdit && link.hasPassword;
   const hasTeams = teams.length > 0;
   const currentTeamId = link?.teamId || "";
-  const currentTeamName = link?.teamName || teams.find(t => t.id === currentTeamId)?.name || "";
   container.innerHTML = `
     <form id="link-form" class="wa-stack wa-gap-m">
       ${hasTeams ? `
         <wa-select name="teamId" label="Owner" ${isEdit ? "disabled" : ""}>
           <wa-icon slot="start" name="${currentTeamId ? "people-group" : "user"}" class="wa-font-size-s"></wa-icon>
           <wa-option value="" ${!currentTeamId ? "selected" : ""}>Me</wa-option>
-          ${teams.length ? `<wa-divider></wa-divider><small>Teams</small>` : ""}
-          ${teams.map(t => `<wa-option value="${escapeAttr(t.id)}" ${t.id === currentTeamId ? "selected" : ""}>${escapeAttr(t.name)}</wa-option>`).join("")}
         </wa-select>
       ` : ""}
       <wa-input
@@ -112,7 +109,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
         value="${escapeAttr(link?.title || "")}"
       ></wa-input>
       <wa-details summary="Advanced Options">
-        <div class="wa-stack wa-gap-m pt-xs">
+        <div class="wa-stack wa-gap-m">
           <wa-radio-group label="Redirect Type" name="redirectType" value="${link?.redirectType || 302}" orientation="horizontal">
             <wa-radio value="302">302 Temporary</wa-radio>
             <wa-radio value="301">301 Permanent</wa-radio>
@@ -124,14 +121,13 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
             value="${escapeAttr(toLocalDatetime(link?.expiresAt))}"
             hint="Link will stop redirecting after this date"
           ></wa-input>
-          <wa-input
+          <wa-number-input
             name="maxClicks"
             label="Max Clicks"
-            type="number"
             min="1"
             value="${escapeAttr(link?.maxClicks != null ? String(link.maxClicks) : "")}"
             hint="Link will stop redirecting after this many clicks"
-          ></wa-input>
+          ></wa-number-input>
           <wa-input
             name="password"
             label="Password Protection"
@@ -153,7 +149,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
           <div class="wa-stack wa-gap-s">
             <div class="wa-split">
               <strong>Targeting Rules</strong>
-              <wa-button size="small" variant="neutral" id="add-target-btn">
+              <wa-button size="s" variant="neutral" id="add-target-btn">
                 <wa-icon slot="start" name="plus"></wa-icon>
                 Add Rule
               </wa-button>
@@ -165,7 +161,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
           <div class="wa-stack wa-gap-s">
             <div class="wa-split">
               <strong>A/B Test Variants</strong>
-              <wa-button size="small" variant="neutral" id="add-ab-btn">
+              <wa-button size="s" variant="neutral" id="add-ab-btn">
                 <wa-icon slot="start" name="plus"></wa-icon>
                 Add Variant
               </wa-button>
@@ -185,6 +181,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
             label="OG Description"
             placeholder="Custom social preview description"
             rows="2"
+            value="${escapeAttr(link?.ogDescription || "")}"
           ></wa-textarea>
           <wa-input
             name="ogImage"
@@ -200,13 +197,10 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     </form>
   `;
 
-  // wa-textarea ignores the `value` HTML attribute — set it programmatically.
-  const ogDescTextarea = container.querySelector('[name="ogDescription"]');
-  if (ogDescTextarea) ogDescTextarea.value = link?.ogDescription || "";
-
-  // Update owner icon when selection changes
+  // Populate the owner select and keep its icon in sync with the selection
   const ownerSelect = container.querySelector('[name="teamId"]');
   if (ownerSelect) {
+    setTeamOptions(ownerSelect, teams, { selected: currentTeamId });
     ownerSelect.addEventListener("change", () => {
       const icon = ownerSelect.querySelector('wa-icon[slot="start"]');
       if (icon) icon.name = ownerSelect.value ? "people-group" : "user";
@@ -239,18 +233,13 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
       opt.textContent = d.hostname;
       domainSelect.appendChild(opt);
     }
-    if (link?.domainHostname) {
-      const match = domainSelect.querySelector(`wa-option[value="${CSS.escape(link.domainHostname)}"]`);
-      if (match) match.selected = true;
-    }
+    if (link?.domainHostname) domainSelect.value = link.domainHostname;
   }).catch(() => {});
 
   // Populate existing targeting rules
   const targetsList = container.querySelector("#targets-list");
-  if (link?.targets && link.targets.length) {
-    for (const t of link.targets) {
-      targetsList.appendChild(createTargetRow(t));
-    }
+  for (const t of (link?.targets || []).filter(t => t.type !== "ab")) {
+    targetsList.appendChild(createTargetRow(t));
   }
 
   // Add target button
@@ -276,17 +265,28 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
   const passwordInput = container.querySelector('[name="password"]');
   passwordInput.addEventListener("input", () => { passwordTouched = true; });
 
+  // Several constrained fields (Max Clicks' `min="1"`, etc.) live inside the
+  // collapsed "Advanced Options" <wa-details>. Native interactive validation
+  // refuses to submit but can't focus or anchor its bubble on a control that
+  // isn't rendered, so the user just sees the button do nothing. Catch the
+  // `invalid` event (fired on the form-associated host, capture phase since it
+  // doesn't bubble), expand the section holding the field, and name the problem
+  // in a toast — one per submit attempt, not one per invalid control.
+  let invalidReported = false;
+  container.querySelector("#link-form").addEventListener("invalid", (e) => {
+    const field = e.target;
+    const details = field.closest?.("wa-details");
+    if (details) details.open = true;
+    if (invalidReported) return;
+    invalidReported = true;
+    setTimeout(() => { invalidReported = false; }, 0);
+    showToast(field.validationMessage || "Please correct the highlighted field", "danger");
+    if (details) field.focus?.();
+  }, true);
+
   container.querySelector("#link-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
-
-    const maxClicksInput = form.querySelector('[name="maxClicks"]');
-    const maxClicksVal = maxClicksInput.value;
-    if (maxClicksVal !== "" && (!Number.isInteger(Number(maxClicksVal)) || Number(maxClicksVal) < 1)) {
-      showToast("Max clicks must be a positive integer", "danger");
-      maxClicksInput.focus();
-      return;
-    }
 
     // Validate targeting rules
     const targets = [...collectTargets(container), ...collectAbVariants(container)];
@@ -311,6 +311,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     const submitBtn = form.querySelector('wa-button[type="submit"]');
     await withLoadingBtn(submitBtn, async () => {
       const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
+      const maxClicksVal = form.querySelector('[name="maxClicks"]').value;
       const passwordVal = passwordInput.value;
       const campaignIdsVal = form.querySelector('[name="campaignIds"]').value || [];
       const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;

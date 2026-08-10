@@ -1,6 +1,7 @@
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 import { escapeHtml } from "../lib/escape.js";
 import { getInstanceName } from "../lib/config.js";
+import { errorCallout } from "../lib/ui.js";
 
 let chart;
 
@@ -8,7 +9,7 @@ export async function renderReport(container, { token }) {
   if (chart) { destroyChart(chart); chart = null; }
 
   container.innerHTML = `
-    <div class="report-view wa-stack wa-gap-l" style="max-width:48rem;margin:0 auto;padding:var(--wa-space-l);">
+    <div class="wa-stack wa-gap-l">
       <div id="report-loading" class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-2xl);">
         <wa-spinner class="wa-font-size-2xl"></wa-spinner>
         <p>Loading report…</p>
@@ -23,12 +24,7 @@ export async function renderReport(container, { token }) {
     if (!res.ok) {
       container.querySelector("#report-loading").style.display = "none";
       container.querySelector("#report-error").style.display = "block";
-      container.querySelector("#report-error").innerHTML = `
-        <wa-callout variant="danger">
-          <wa-icon slot="icon" name="circle-xmark"></wa-icon>
-          This report is not available.
-        </wa-callout>
-      `;
+      container.querySelector("#report-error").innerHTML = errorCallout("This report is not available.");
       return;
     }
 
@@ -46,7 +42,7 @@ export async function renderReport(container, { token }) {
         <wa-card>
           <div class="wa-stack wa-gap-s wa-align-items-center">
             <span class="wa-color-text-quiet">Total Clicks</span>
-            <span class="wa-font-size-2xl wa-font-weight-bold">${(data.totalClicks ?? 0).toLocaleString()}</span>
+            <span class="wa-font-size-2xl wa-font-weight-bold"><wa-format-number value="${data.totalClicks ?? 0}"></wa-format-number></span>
           </div>
         </wa-card>
         ${data.timeseries.labels.length > 0 ? `
@@ -61,7 +57,7 @@ export async function renderReport(container, { token }) {
         ` : `
           <wa-callout variant="neutral">No click data yet.</wa-callout>
         `}
-        <p class="wa-color-text-quiet wa-body-s" style="text-align:center;">
+        <p class="wa-color-text-quiet wa-body-s wa-text-center">
           Powered by ${escapeHtml(getInstanceName())}
         </p>
       </div>
@@ -90,11 +86,6 @@ export async function renderReport(container, { token }) {
     if (contentEl) contentEl.style.display = "none";
     container.querySelector("#report-loading").style.display = "none";
     container.querySelector("#report-error").style.display = "block";
-    container.querySelector("#report-error").innerHTML = `
-      <wa-callout variant="danger">
-        <wa-icon slot="icon" name="circle-xmark"></wa-icon>
-        Failed to load report.
-      </wa-callout>
-    `;
+    container.querySelector("#report-error").innerHTML = errorCallout("Failed to load report.");
   }
 }

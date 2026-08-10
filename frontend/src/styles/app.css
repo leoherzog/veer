@@ -1,170 +1,25 @@
-/* Layout */
-html, body {
-  min-height: 100%;
-  padding: 0;
-  margin: 0;
-}
+/* Every rule here exists because WebAwesome ships no equivalent. If an upstream
+   component, utility class, or native.css rule can do it, it is not in this file. */
 
-wa-page::part(main-content) { padding: 0; }
-wa-page > main { padding: 0; }
+/* wa-card's header doesn't reset slotted margins, and native.css gives a heading
+   a block-end margin whenever a sibling follows it (`&:has(+ *)`). */
+wa-card > [slot="header"] { margin: 0; }
 
-/* Banners (demo mode, impersonation) render in wa-page's banner slot, sticky
-   above the header. wa-page pads the slotted element itself; each banner owns
-   its padding, and the impersonation callout squares off to span edge-to-edge. */
-wa-page > [slot="banner"] { box-sizing: border-box; }
-wa-page > wa-callout[slot="banner"] { border-radius: 0; }
+/* wa-tab-panel ships `--padding: 0`, so panel content butts against the tab bar. */
+wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
 
-/* Nav bar — .nav-bar owns the header gutter, so drop wa-page's slot padding */
-wa-page > [slot="header"] { padding: 0; }
-
-.nav-bar {
-  padding: 0.75rem 1rem;
-  max-width: 1200px;
-  margin: 0 auto;
-  width: 100%;
-  box-sizing: border-box;
-}
-
-.nav-logo {
-  font-size: 1.25rem;
-  font-weight: 700;
-  text-decoration: none;
-  color: var(--wa-color-brand-fill-loud);
-}
-
-/* Link table */
-.link-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-
+/* native.css covers table layout, borders, and cell padding. It sets
+   `vertical-align: top`; every cell here holds a button cluster. */
 .link-table th,
-.link-table td {
-  padding: 0.75rem;
-  text-align: left;
-  border-bottom: 1px solid var(--wa-color-neutral-border-normal);
-}
+.link-table td { vertical-align: middle; }
 
-.link-table th {
-  font-weight: 600;
-  color: var(--wa-color-text-quiet);
-  font-size: 0.875rem;
-}
+/* Sort affordance — no utility exists for cursor or user-select. */
+.link-table th[data-sort] { cursor: pointer; user-select: none; }
 
-.text-truncate {
-  max-width: 300px;
-}
+/* Long destination URLs would otherwise blow out the table's intrinsic width.
+   `wa-text-truncate` supplies the ellipsis; this cap is what makes it engage. */
+.text-truncate { max-width: 300px; }
 
-/* Campaign cards */
-.campaign-card,
-.team-card {
-  cursor: pointer;
-}
-
-.campaign-card:hover,
-.team-card:hover {
-  outline: 2px solid var(--wa-color-brand-fill-loud);
-  outline-offset: -2px;
-}
-
-/* Available link rows in dialog — base styles now in view containers section */
-.available-link-row:last-child {
-  border-bottom: none;
-}
-
-#toast-container {
-  position: fixed;
-  top: 1rem;
-  right: 1rem;
-  z-index: 9999;
-  max-width: 400px;
-}
-
-/* Settings */
-.settings-view {
-  max-width: 960px;
-  margin: var(--wa-space-2xl) auto;
-}
-
-/* View containers */
-.home-view {
-  max-width: 600px;
-  margin: var(--wa-space-3xl) auto;
-  padding: 0 var(--wa-space-l);
-  text-align: center;
-}
-
-.login-view {
-  max-width: 400px;
-  margin: var(--wa-space-3xl) auto;
-  padding: 0 var(--wa-space-l);
-  text-align: center;
-}
-
-.link-detail-view {
-  max-width: 900px;
-  margin: var(--wa-space-2xl) auto;
-  padding: 0 var(--wa-space-l);
-}
-
-.dashboard-view {
-  max-width: 960px;
-  margin: var(--wa-space-2xl) auto;
-  padding: 0 var(--wa-space-l);
-}
-
-.campaign-detail-view,
-.teams-view,
-.team-detail-view,
-.admin-view {
-  max-width: 960px;
-  margin: var(--wa-space-2xl) auto;
-  padding: 0 var(--wa-space-l);
-}
-
-/* Reusable layout helpers */
-.centered-state { padding: var(--wa-space-3xl); }
-.centered-state-sm { padding: var(--wa-space-l); }
-.tab-panel-content { padding-top: var(--wa-space-m); }
-.pagination-row { margin-top: var(--wa-space-m); }
-.pt-xs { padding-top: var(--wa-space-xs); }
-.py-xs { padding-top: var(--wa-space-xs); padding-bottom: var(--wa-space-xs); }
-.p-m { padding: var(--wa-space-m); }
-.p-2xl { padding: var(--wa-space-2xl); }
-.mt-s { margin-top: var(--wa-space-s); }
-.stats-skeleton { height: 200px; }
-.stats-chart { height: 200px; }
-
-/* OG social preview */
-.og-preview {
-  border: 1px solid var(--wa-color-neutral-border-normal);
-  border-radius: var(--wa-border-radius-m);
-  overflow: hidden;
-}
-
-.og-preview img {
-  width: 100%;
-  max-height: 200px;
-  object-fit: cover;
-}
-
-.og-preview-body {
-  padding: var(--wa-space-m);
-}
-
-/* Sortable table headers */
-.link-table th[data-sort] {
-  cursor: pointer;
-  user-select: none;
-}
-
-/* Available link rows in dialog */
-.available-link-row {
-  padding: var(--wa-space-xs) 0;
-  border-bottom: 1px solid var(--wa-color-neutral-border-normal);
-}
-
-/* Responsive */
 @media (max-width: 768px) {
   .link-table { font-size: 0.875rem; }
   .text-truncate { max-width: 150px; }
@@ -176,8 +31,14 @@ wa-page > [slot="header"] { padding: 0; }
   .text-truncate { max-width: 100px; }
 }
 
-/* Demo mode: hide top-level create buttons. Mutations still 403 with a
-   friendly toast (see apiFetch), so this is purely UI polish. */
+/* Skeletons must reserve the exact box the real chart renders into, or the page
+   shifts on mount. `height` overrides wa-skeleton's own `height: 100%` so
+   `aspect-ratio` decides the box. */
+.chart-skeleton { height: auto; aspect-ratio: 16 / 9; }
+.stats-skeleton { height: 200px; }
+
+/* Demo mode: hide top-level create buttons. Mutations still 403 with a friendly
+   toast (see apiFetch), so this is purely UI polish. */
 body.demo-mode #new-link-btn,
 body.demo-mode #new-link-dropdown,
 body.demo-mode #bulk-create-btn,
@@ -185,16 +46,4 @@ body.demo-mode #new-campaign-btn,
 body.demo-mode #create-team-btn,
 body.demo-mode wa-button-group:has(#new-link-btn) {
   display: none !important;
-}
-
-.demo-banner {
-  background: var(--wa-color-brand-fill-loud);
-  color: var(--wa-color-brand-on-loud);
-  padding: var(--wa-space-s) var(--wa-space-m);
-  font-size: var(--wa-font-size-s);
-}
-
-.demo-banner a {
-  color: inherit;
-  text-decoration: underline;
 }

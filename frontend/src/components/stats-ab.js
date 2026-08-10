@@ -10,17 +10,14 @@ export async function renderAbStats(container, linkId) {
   if (totalClicks === 0) return;
 
   container.innerHTML = `
-    <div class="wa-stack wa-gap-s mt-s">
+    <div class="wa-stack wa-gap-s">
       <h4>Variant Performance</h4>
-      <canvas id="ab-chart" class="stats-chart"></canvas>
+      <div class="wa-frame:landscape"><canvas id="ab-chart"></canvas></div>
     </div>
   `;
 
   const canvas = container.querySelector("#ab-chart");
-  const labels = variants.map((v, i) => {
-    const url = v.url.length > 40 ? v.url.slice(0, 37) + "..." : v.url;
-    return url;
-  });
+  const labels = variants.map(v => (v.url.length > 40 ? v.url.slice(0, 37) + "..." : v.url));
   const data = variants.map(v => v.clicks);
 
   createChart(canvas, "bar", {

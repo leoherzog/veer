@@ -1,13 +1,10 @@
 import { escapeHtml } from "../lib/escape.js";
-import { SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
+import { SKELETON, CHART_SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
 import { createChart, destroyChart } from "../lib/chart-helper.js";
 import { renderStatsDevices } from "./stats-devices.js";
 import { renderStatsGeo } from "./stats-geo.js";
 import { renderStatsReferrers } from "./stats-referrers.js";
-
-function summaryCard(label, value) {
-  return `<wa-card><div class="wa-stack wa-gap-2xs wa-align-items-center"><div class="wa-caption-s wa-color-text-quiet">${label}</div><div class="wa-heading-xl">${value}</div></div></wa-card>`;
-}
+import { statCard } from "../lib/ui.js";
 
 async function loadSummary(container, linkId, days) {
   const el = container.querySelector("#stats-summary");
@@ -15,10 +12,10 @@ async function loadSummary(container, linkId, days) {
   try {
     const { data } = await fetchJSON(`/api/stats/${linkId}/summary?days=${days}`);
     el.innerHTML =
-      summaryCard("Clicks", data.totalClicks ?? 0) +
-      summaryCard("Unique UAs", data.uniqueUserAgents ?? 0) +
-      summaryCard("Top Country", data.topCountry ? escapeHtml(data.topCountry) : "—") +
-      summaryCard("Top Referrer", data.topReferrer ? escapeHtml(data.topReferrer) : "—");
+      statCard("Clicks", data.totalClicks ?? 0) +
+      statCard("Unique UAs", data.uniqueUserAgents ?? 0) +
+      statCard("Top Country", data.topCountry ? escapeHtml(data.topCountry) : "—") +
+      statCard("Top Referrer", data.topReferrer ? escapeHtml(data.topReferrer) : "—");
   } catch {
     el.innerHTML = `<div class="wa-span-grid wa-stack wa-align-items-center wa-color-text-quiet">Failed to load summary</div>`;
   }
@@ -28,7 +25,7 @@ let timelineChart;
 
 async function loadTimeline(container, linkId, days) {
   const wrap = container.querySelector("#timeline-container");
-  wrap.innerHTML = SKELETON;
+  wrap.innerHTML = CHART_SKELETON;
 
   const period = days <= 1 ? "hour" : "day";
   try {
@@ -55,7 +52,7 @@ async function loadTimeline(container, linkId, days) {
       },
     });
   } catch {
-    wrap.innerHTML = `<div class="wa-stack wa-align-items-center wa-color-text-quiet p-2xl">Failed to load timeline</div>`;
+    wrap.innerHTML = noData("Failed to load timeline");
   }
 }
 
@@ -71,7 +68,7 @@ async function loadAll(container, linkId, days) {
 
 export async function renderStatsCharts(container, linkId) {
   container.innerHTML = `
-    <div class="stats-section wa-stack wa-gap-l">
+    <div class="wa-stack wa-gap-l">
       <wa-radio-group id="period-selector" value="30" label="Time period" orientation="horizontal">
         <wa-radio value="1">24h</wa-radio>
         <wa-radio value="7">7d</wa-radio>
@@ -82,7 +79,7 @@ export async function renderStatsCharts(container, linkId) {
       <div id="stats-summary" class="wa-grid" style="--min-column-size:150px;"></div>
 
       <wa-card>
-        <div id="timeline-container">${SKELETON}</div>
+        <div id="timeline-container">${CHART_SKELETON}</div>
       </wa-card>
 
       <div class="wa-grid" style="--min-column-size:300px;">
