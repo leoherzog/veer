@@ -287,7 +287,12 @@ linkRoutes.post("/", async (c) => {
     expiresAt, maxClicks, password: passwordHash, isInternal, ogTitle, ogDescription, ogImage, paramForwarding,
     domainHostname: body.domainHostname || null,
   }, null);
-  await setCachedRedirect(c.env.KV, body.slug, kvData, body.domainHostname || null);
+  // Deferred, unlike the update paths below, which await. On create there is no
+  // prior cache entry, so a slow or failed write costs at most one extra D1 read
+  // on the first redirect (which refills the cache itself). Awaiting here meant a
+  // KV error — e.g. exhausting the free tier's 1,000 writes/day — threw *after*
+  // the row was already committed, 500ing a link that had in fact been created.
+  c.executionCtx.waitUntil(setCachedRedirect(c.env.KV, body.slug, kvData, body.domainHostname || null));
 
   // Handle campaign associations on create
   const createCampaignIds = body.campaignIds?.length ? body.campaignIds : body.campaignId ? [body.campaignId] : [];

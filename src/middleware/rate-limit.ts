@@ -92,22 +92,3 @@ export const rateLimitApiKey = createMiddleware<AppEnv>(async (c, next) => {
 
   return rateLimit(c.env.KV, kvKey, RATE_LIMIT, WINDOW_SECONDS, c, next);
 });
-
-/**
- * KV-based rate limiting middleware for session-authenticated requests.
- * Keys on the authenticated user's ID. Must be placed AFTER requireAuth
- * so that c.var.user is available.
- */
-export const rateLimitSession = createMiddleware<AppEnv>(async (c, next) => {
-  const userId = c.var.user?.id;
-  if (!userId) {
-    // No user set yet — auth middleware will reject, just pass through
-    await next();
-    return;
-  }
-
-  const windowEpoch = Math.floor(Date.now() / 1000 / WINDOW_SECONDS);
-  const kvKey = `rl:session:${userId}:${windowEpoch}`;
-
-  return rateLimit(c.env.KV, kvKey, RATE_LIMIT, WINDOW_SECONDS, c, next);
-});

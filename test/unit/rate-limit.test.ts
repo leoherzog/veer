@@ -1,24 +1,14 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
-import { rateLimitApiKey, rateLimitSession } from "../../src/middleware/rate-limit";
+import { rateLimitApiKey } from "../../src/middleware/rate-limit";
+import { app as veerApp } from "../../src/index";
+import { setupAuth } from "../helpers";
 import type { AppEnv } from "../../src/types";
 
 function createApp() {
   const app = new Hono<AppEnv>();
   app.use("*", rateLimitApiKey);
-  app.get("/test", (c) => c.json({ ok: true }));
-  return app;
-}
-
-/** App that pre-sets c.var.user, then runs rateLimitSession. */
-function createSessionApp(userId: string | null) {
-  const app = new Hono<AppEnv>();
-  app.use("*", async (c, next) => {
-    if (userId) c.set("user", { id: userId, email: "u@test", name: "T", image: null, isAdmin: false });
-    await next();
-  });
-  app.use("*", rateLimitSession);
   app.get("/test", (c) => c.json({ ok: true }));
   return app;
 }
@@ -110,55 +100,27 @@ describe("rateLimitApiKey middleware", () => {
   });
 });
 
-describe("rateLimitSession middleware", () => {
-  it("passes through when no user is set (auth middleware will reject)", async () => {
-    const app = createSessionApp(null);
-    const res = await app.request("/test", {}, env);
+describe("session-only routes are not rate limited", () => {
+  // Session traffic is deliberately unmetered (see AGENTS.md). A session limiter
+  // would burn one KV write per request against the free tier's 1,000/day.
+  // The request must be AUTHENTICATED to be a real guard: an anonymous request
+  // is rejected by requireAuth before any limiter downstream of it would run,
+  // so it would pass this test even if a session limiter were reintroduced.
+  it("does not meter authenticated requests to /api/teams", async () => {
+    const { headers } = await setupAuth(env);
+
+    const res = await veerApp.request("/api/teams", { headers }, env);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
+    expect(res.headers.get("X-RateLimit-Remaining")).toBeNull();
   });
 
-  it("sets rate limit headers when user is set", async () => {
-    const userId = `session-rl-user-${Date.now()}`;
-    const app = createSessionApp(userId);
-    const res = await app.request("/test", {}, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
-    expect(Number(res.headers.get("X-RateLimit-Remaining"))).toBe(59);
-  });
+  it("does not meter a burst well past the old 60/min session limit", async () => {
+    const { headers } = await setupAuth(env);
 
-  it("decrements remaining count across requests for the same user", async () => {
-    const userId = `session-rl-decr-${Date.now()}`;
-    const app = createSessionApp(userId);
-    const res1 = await app.request("/test", {}, env);
-    const res2 = await app.request("/test", {}, env);
-    expect(Number(res1.headers.get("X-RateLimit-Remaining"))).toBe(59);
-    expect(Number(res2.headers.get("X-RateLimit-Remaining"))).toBe(58);
-  });
-
-  it("returns 429 when the session limit is exceeded", async () => {
-    const userId = `session-rl-block-${Date.now()}`;
-    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-    await env.KV.put(`rl:session:${userId}:${windowEpoch}`, "60", { expirationTtl: 120 });
-
-    const app = createSessionApp(userId);
-    const res = await app.request("/test", {}, env);
-    expect(res.status).toBe(429);
-    expect(res.headers.get("Retry-After")).toBeTruthy();
-    expect(res.headers.get("X-RateLimit-Remaining")).toBe("0");
-  });
-
-  it("different users do not share a counter", async () => {
-    const userA = `session-rl-A-${Date.now()}`;
-    const userB = `session-rl-B-${Date.now()}`;
-    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-    await env.KV.put(`rl:session:${userA}:${windowEpoch}`, "60", { expirationTtl: 120 });
-
-    const appA = createSessionApp(userA);
-    const appB = createSessionApp(userB);
-    const resA = await appA.request("/test", {}, env);
-    const resB = await appB.request("/test", {}, env);
-    expect(resA.status).toBe(429);
-    expect(resB.status).toBe(200);
+    for (let i = 0; i < 65; i++) {
+      const res = await veerApp.request("/api/teams", { headers }, env);
+      expect(res.status).toBe(200);
+    }
   });
 });

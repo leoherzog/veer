@@ -75,8 +75,17 @@ export async function getCachedRedirect(kv: KVNamespace, slug: string, hostname?
   return value as CachedRedirect | null;
 }
 
+/**
+ * Cache TTL is a backstop, not the invalidation mechanism — every mutation path
+ * calls setCachedRedirect/deleteCachedRedirect explicitly, so entries are never
+ * stale-by-expiry in normal operation. It is deliberately long because each
+ * refill costs a KV write, and the free tier allows only 1,000 writes/day: a
+ * 24h TTL caps you at ~1,000 actively-hit slugs, a 7d TTL at ~7,000.
+ */
+const CACHE_TTL_SECONDS = 604800; // 7 days
+
 export async function setCachedRedirect(kv: KVNamespace, slug: string, data: CachedRedirect, hostname?: string | null): Promise<void> {
-  await kv.put(kvKey(slug, hostname), JSON.stringify(data), { expirationTtl: 86400 });
+  await kv.put(kvKey(slug, hostname), JSON.stringify(data), { expirationTtl: CACHE_TTL_SECONDS });
 }
 
 export async function deleteCachedRedirect(kv: KVNamespace, slug: string, hostname?: string | null): Promise<void> {

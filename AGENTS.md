@@ -38,7 +38,7 @@ A single Hono app wires every route. Order matters:
 1. Global error handler returns JSON without leaking internals.
 2. Security headers + CSP applied to every response.
 3. `/api/auth/*` is mounted first and handles its own auth (Better Auth).
-4. `/api/*` routes apply `requireAuth` / `requireAuthOrApiKey` + rate-limit middleware. API-key-capable routes use `rateLimitApiKey`; session-only routes (`/api/teams`, `/api/admin`) use `rateLimitSession`.
+4. `/api/*` routes apply `requireAuth` / `requireAuthOrApiKey` + rate-limit middleware. API-key-capable routes use `rateLimitApiKey`; session-only routes (`/api/teams`, `/api/admin`) are authenticated but **not** metered.
 5. `/api/public-report/:token` is unauthenticated but IP-rate-limited via KV.
 6. `GET /` handles custom-domain root redirects, `GET|POST /:slug` is the redirect engine.
 7. Catch-all serves static assets via the `ASSETS` binding, falling back to `index.html` for SPA routes.
@@ -63,7 +63,7 @@ Better Auth is instantiated per-`Env` and memoized in a `WeakMap`. Social provid
 
 **Rate limits** (all advisory — KV lacks atomic increment):
 - 60 req/min per API key on `requireAuthOrApiKey` routes via `rateLimitApiKey`. Session requests bypass it.
-- `rateLimitSession` applies to session-only routes (`/api/teams`, `/api/admin`).
+- Session-only routes (`/api/teams`, `/api/admin`) are **not** rate limited — see the design decision below.
 - 30 req/min IP-based on `/api/public-report/:token` (inline in `index.ts` via `checkRateLimit`).
 - Public endpoints accepting user input (password gate, etc.) use KV keys of the form `rl:{type}:…:{windowEpoch}` (e.g. `rl:pw:{linkId}:{ip}:{window}`, `rl:pub:{ip}:{window}`) with `expirationTtl` for auto-cleanup.
 
@@ -155,7 +155,7 @@ test/
 ### Backend (Workers)
 - **Verify backend code against the `wrangler` and `workers-best-practices` skills** before considering work complete.
 - `AnalyticsEngineDataset.writeDataPoint()` is synchronous — do NOT wrap in `waitUntil`.
-- D1 writes in the redirect hot path MUST use `c.executionCtx.waitUntil()`. API handler KV writes use `await` (consistency before response); redirect handler KV writes use `waitUntil`.
+- D1 writes in the redirect hot path MUST use `c.executionCtx.waitUntil()`. API handler KV writes use `await` (consistency before response); redirect handler KV writes use `waitUntil`. The one exception is link **create**, which defers via `waitUntil`: there is no prior cache entry to go stale, so the only cost is one extra D1 read on the first redirect, and awaiting it meant a KV failure threw after the D1 row had already committed.
 - Never cache secrets in KV — use boolean flags (e.g. `hasPassword`, not the hash).
 - Use Drizzle types for update objects: `Partial<typeof table.$inferInsert>`, not `Record<string, ...>`.
 - Route handlers behind auth middleware use `c.var.user!` (the variable is typed as optional because middleware doesn't run on every route).
@@ -169,7 +169,7 @@ test/
 
 ### Shared helpers (reuse, don't reinvent)
 - Backend `src/lib/`: `branding.ts` (`getInstanceName`, `isDemoMode`), `demo.ts` (`DEMO_USER`, `DEMO_USER_ID`, `DEMO_BLOCKED_MESSAGE`), `password-params.ts` (PBKDF2 constants — shared between `src/services/password.ts` and `scripts/seed.ts`), `validators.ts` (`validateHttpUrl`, `validateDomainAccess`), `team.ts` (`requireTeamMember`), `request.ts` (`parsePagination`), `errors.ts` (typed HTTP helpers), `crypto.ts` (`hashApiKey`, `generateApiKey`), `date.ts` (`formatDate`, `formatHour`, `formatWeek`).
-- Backend `src/middleware/rate-limit.ts` exports `rateLimitApiKey`, `rateLimitSession`, and standalone `checkRateLimit()` for non-middleware use.
+- Backend `src/middleware/rate-limit.ts` exports `rateLimitApiKey` and standalone `checkRateLimit()` for non-middleware use.
 - Frontend: `lib/ui.js`, `lib/chart-helper.js`, `lib/stats-common.js`, `lib/escape.js` (see the Frontend architecture section above). `lib/config.js` exposes `getInstanceName()` and `isDemoMode()` after `loadConfig()` resolves.
 
 ### Tests
@@ -219,7 +219,7 @@ Non-obvious rationale behind load-bearing choices. Read these before "cleaning u
 
 ### Rate limiting
 - **All rate limits are advisory** — KV lacks atomic increment, so concurrent requests can undercount. Good enough for abuse prevention; use Cloudflare's native Rate Limiting binding if you need strict enforcement.
-- **Session requests bypass rate limits** — the browser UI is implicitly rate-limited by human behavior; strict limits cause UX issues in normal use. Only Bearer-token (API key) traffic is metered.
+- **Session requests bypass rate limits** — the browser UI is implicitly rate-limited by human behavior; strict limits cause UX issues in normal use. Only Bearer-token (API key) traffic is metered. A `rateLimitSession` middleware once contradicted this by metering `/api/teams` and `/api/admin` on every authenticated request. It was removed: it spent one KV write per request — making it the largest consumer of the free tier's 1,000 writes/day — to enforce a limit this design never wanted. Don't reintroduce it; `test/unit/rate-limit.test.ts` guards against it with an authenticated burst past the old 60/min ceiling.
 - **API key rate limit identified by the first 16 chars of the token** — identifies the key in KV without exposing the full secret.
 
 ### Frontend

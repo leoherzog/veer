@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "./types";
 import { corsMiddleware } from "./middleware/cors";
 import { requireAuth, requireAdmin, requireAuthOrApiKey } from "./middleware/auth";
-import { rateLimitApiKey, rateLimitSession, checkRateLimit } from "./middleware/rate-limit";
+import { rateLimitApiKey, checkRateLimit } from "./middleware/rate-limit";
 import authRoutes from "./routes/api/auth";
 import linkRoutes, { checkPassword } from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
@@ -85,14 +85,15 @@ app.get("/api/config", (c) => {
 // Public API endpoint: password check (no auth required)
 app.post("/api/links/:id/check-password", checkPassword);
 
-// Team routes (auth required, session rate limited)
-app.use("/api/teams", requireAuth, rateLimitSession);
-app.use("/api/teams/*", requireAuth, rateLimitSession);
+// Team routes (auth required). Session traffic is deliberately unmetered — see
+// the rate-limiting design decision in AGENTS.md.
+app.use("/api/teams", requireAuth);
+app.use("/api/teams/*", requireAuth);
 app.route("/api/teams", teamRoutes);
 
-// Admin routes (auth + admin required, session rate limited)
-app.use("/api/admin", requireAuth, requireAdmin, rateLimitSession);
-app.use("/api/admin/*", requireAuth, requireAdmin, rateLimitSession);
+// Admin routes (auth + admin required). Session traffic is deliberately unmetered.
+app.use("/api/admin", requireAuth, requireAdmin);
+app.use("/api/admin/*", requireAuth, requireAdmin);
 app.route("/api/admin", adminRoutes);
 
 // Auth middleware for protected API routes (excludes /api/auth/*)
