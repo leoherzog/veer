@@ -28,6 +28,8 @@ Run a single test file or name: `npx vitest run test/integration/links.test.ts` 
 
 Tests run against a real workerd instance via `@cloudflare/vitest-pool-workers`. `test/setup.ts` manually creates the D1 schema before each run (the miniflare D1 does not execute `drizzle/migrations/` automatically) — if you add or change tables, update `test/setup.ts` alongside the new migration file.
 
+**Mirror constraints, not just tables.** `test/setup.ts` is the highest-risk file in the repo: anything it omits is unenforced in every test while still being enforced on D1. This is not hypothetical — it built `link_targets` with no CHECK while the migration constrained `type` to `('geo','device')`, so every A/B test passed locally and A/B link creation would have failed on any real deployment. Indexes, CHECKs, and defaults all count.
+
 `.dev.vars` holds secrets for `wrangler dev`; see `.dev.vars.example` for the required keys (Better Auth secret/URL, admin emails, `CF_ACCOUNT_ID` + `CF_API_TOKEN` for Analytics Engine reads, and at least one OAuth provider pair).
 
 ## Architecture
@@ -50,6 +52,7 @@ The SPA shell is served through `run_worker_first: true` so Worker routes (inclu
 - `getDb(env.DB)` in `src/db/index.ts` returns a cached Drizzle client.
 - Migrations are authored with `drizzle-kit generate` and applied by Wrangler (`d1 migrations apply`). Never edit an already-applied migration; create a new one.
 - Migrations are numbered sequentially (`0000_initial.sql`, …). Use the next unused number for new migrations.
+- **`schema.ts` is the sole source of DDL.** The six pre-1.0 migrations were squashed into `0000_initial.sql` before the first tag, because 0001–0005 had been hand-written: their `meta/` snapshots were missing, `0005` was never added to `_journal.json`, and `db:generate` consequently diffed against the `0000` snapshot and could not emit a correct migration. Everything the hand-written SQL carried — the partial unique index and all three CHECK constraints — is now declared in `schema.ts` (drizzle 0.45 supports both `check()` and `.where()` on indexes, contrary to a stale comment that used to sit in this file). Never hand-write DDL into a migration again; if `schema.ts` can't express it, that's the bug to fix.
 - Slug uniqueness is domain-scoped: same slug can exist on different domains. Enforced by a composite unique index `(slug, domainHostname)` **plus** a partial unique index `idx_links_slug_default WHERE domainHostname IS NULL` (SQLite treats NULLs as distinct in composite indexes, so the partial index is load-bearing). Any manual uniqueness check must mirror both.
 
 ### Auth (`src/auth/index.ts`)
@@ -180,7 +183,7 @@ test/
 Non-obvious rationale behind load-bearing choices. Read these before "cleaning up" anything here — most of this code looks weird for a reason.
 
 ### Auth & API keys
-- **Admin from `ADMIN_EMAILS` env var, not a DB column** — lets ops rotate admins by redeploying; avoids a migration + role-column dance. The original `user.role` column was dropped in M6 as dead schema.
+- **Admin from `ADMIN_EMAILS` env var, not a DB column** — lets ops rotate admins by redeploying; avoids a migration + role-column dance. The original `user.role` column was removed from `schema.ts` in M6 as dead schema — though no migration ever dropped it, so it lingered in every real database until the pre-1.0 squash actually removed it.
 - **API keys hashed with HMAC-SHA256 keyed on `BETTER_AUTH_SECRET`, not plain SHA-256** — prevents offline brute-force if D1 is dumped (attacker needs the secret too).
 - **Key format `veer_` + 43 base62 chars** — ~256 bits entropy, grep-able prefix for secret scanners.
 - **Key management is session-only (`requireAuth`, not `requireAuthOrApiKey`)** — you cannot create or delete API keys using an API key. Blocks privilege escalation via a leaked key.

@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, uniqueIndex, index, primaryKey } from "drizzle-orm/sqlite-core";
+import { sqliteTable, text, integer, uniqueIndex, index, primaryKey, check } from "drizzle-orm/sqlite-core";
+import { sql } from "drizzle-orm";
 
 // Better Auth tables
 export const user = sqliteTable("user", {
@@ -83,18 +84,19 @@ export const teams = sqliteTable("teams", {
 export const teamMembers = sqliteTable("team_members", {
   teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
   userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
-  role: text("role").notNull().default("member"), // "admin" | "member" — CHECK constraint enforced at DB level (0005 migration) + app validation
+  role: text("role").notNull().default("member"), // "admin" | "member" — enforced by the CHECK below + app validation
   joinedAt: integer("joinedAt", { mode: "timestamp" }).notNull(),
 }, (table) => [
   primaryKey({ columns: [table.teamId, table.userId] }),
   index("idx_team_members_userId").on(table.userId),
+  check("team_members_role_check", sql`${table.role} IN ('admin', 'member')`),
 ]);
 
 export const teamInvites = sqliteTable("team_invites", {
   id: text("id").primaryKey(),
   teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
   email: text("email").notNull(),
-  role: text("role").notNull().default("member"), // "admin" | "member" — CHECK constraint enforced at DB level (0005 migration) + app validation
+  role: text("role").notNull().default("member"), // "admin" | "member" — enforced by the CHECK below + app validation
   token: text("token").notNull(),
   expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
@@ -102,6 +104,7 @@ export const teamInvites = sqliteTable("team_invites", {
   index("idx_team_invites_teamId").on(table.teamId),
   uniqueIndex("idx_team_invites_token").on(table.token),
   uniqueIndex("idx_team_invites_teamId_email").on(table.teamId, table.email),
+  check("team_invites_role_check", sql`${table.role} IN ('admin', 'member')`),
 ]);
 
 // Application tables
@@ -141,10 +144,11 @@ export const links = sqliteTable("links", {
   domainHostname: text("domainHostname").references(() => domainConfig.hostname, { onDelete: "set null" }),
   teamId: text("teamId").references(() => teams.id, { onDelete: "set null" }),
 }, (table) => [
-  // NOTE: A partial unique index "idx_links_slug_default" WHERE domainHostname IS NULL
-  // also exists (in migration 0004) to enforce slug uniqueness on the default domain.
-  // Drizzle ORM does not support partial indexes declaratively.
   uniqueIndex("idx_links_slug_domain").on(table.slug, table.domainHostname),
+  // Load-bearing: SQLite treats NULLs as distinct in a composite unique index, so
+  // the index above does NOT constrain primary-domain links. This partial index is
+  // the only thing enforcing slug uniqueness when domainHostname IS NULL.
+  uniqueIndex("idx_links_slug_default").on(table.slug).where(sql`${table.domainHostname} IS NULL`),
   index("idx_links_userId").on(table.userId),
   index("idx_links_domainHostname").on(table.domainHostname),
   index("idx_links_teamId").on(table.teamId),
@@ -172,12 +176,17 @@ export const linkCampaigns = sqliteTable("link_campaigns", {
 export const linkTargets = sqliteTable("link_targets", {
   id: text("id").primaryKey(),
   linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
-  type: text("type").notNull(), // "geo" | "device" — CHECK constraint enforced at DB level (0002 migration) + app validation
+  // "geo" | "device" | "ab". The pre-squash migration (0002) constrained this to
+  // ('geo','device') while the API has always accepted "ab" for A/B variants, so
+  // creating an A/B link failed on a real deployment. Tests never caught it —
+  // test/setup.ts built this table without the CHECK at all.
+  type: text("type").notNull(),
   matchValue: text("matchValue").notNull(),
   destinationUrl: text("destinationUrl").notNull(),
   priority: integer("priority").notNull().default(0),
 }, (table) => [
   index("idx_link_targets_linkId").on(table.linkId),
+  check("link_targets_type_check", sql`${table.type} IN ('geo', 'device', 'ab')`),
 ]);
 
 export const linkStats = sqliteTable("link_stats", {

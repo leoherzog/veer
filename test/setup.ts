@@ -15,7 +15,7 @@ const STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS \`passkey_userId_idx\` ON \`passkey\` (\`userId\`)`,
   `CREATE TABLE IF NOT EXISTS \`session\` (\`id\` text PRIMARY KEY NOT NULL, \`expiresAt\` integer NOT NULL, \`token\` text NOT NULL, \`ipAddress\` text, \`userAgent\` text, \`userId\` text NOT NULL, \`createdAt\` integer NOT NULL, \`updatedAt\` integer NOT NULL, FOREIGN KEY (\`userId\`) REFERENCES \`user\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS \`session_token_idx\` ON \`session\` (\`token\`)`,
-  `CREATE TABLE IF NOT EXISTS \`user\` (\`id\` text PRIMARY KEY NOT NULL, \`name\` text NOT NULL, \`email\` text NOT NULL, \`emailVerified\` integer DEFAULT false NOT NULL, \`image\` text, \`createdAt\` integer NOT NULL, \`updatedAt\` integer NOT NULL, \`role\` text DEFAULT 'user')`,
+  `CREATE TABLE IF NOT EXISTS \`user\` (\`id\` text PRIMARY KEY NOT NULL, \`name\` text NOT NULL, \`email\` text NOT NULL, \`emailVerified\` integer DEFAULT false NOT NULL, \`image\` text, \`createdAt\` integer NOT NULL, \`updatedAt\` integer NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS \`verification\` (\`id\` text PRIMARY KEY NOT NULL, \`identifier\` text NOT NULL, \`value\` text NOT NULL, \`expiresAt\` integer NOT NULL, \`createdAt\` integer, \`updatedAt\` integer)`,
 ];
 
@@ -23,7 +23,10 @@ const STATEMENTS = [
 const M2_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS \`campaigns\` (\`id\` text PRIMARY KEY NOT NULL, \`userId\` text NOT NULL, \`name\` text NOT NULL, \`description\` text, \`createdAt\` integer NOT NULL, \`updatedAt\` integer NOT NULL, FOREIGN KEY (\`userId\`) REFERENCES \`user\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
   `CREATE INDEX IF NOT EXISTS \`idx_campaigns_userId\` ON \`campaigns\` (\`userId\`)`,
-  `CREATE TABLE IF NOT EXISTS \`link_targets\` (\`id\` text PRIMARY KEY NOT NULL, \`linkId\` text NOT NULL, \`type\` text NOT NULL, \`matchValue\` text NOT NULL, \`destinationUrl\` text NOT NULL, \`priority\` integer DEFAULT 0 NOT NULL, FOREIGN KEY (\`linkId\`) REFERENCES \`links\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
+  // The CHECK must stay in sync with 0000_initial.sql. Omitting it here is what
+  // let the pre-squash migration ship a ('geo','device')-only constraint while the
+  // API accepted "ab" — every A/B test passed locally and would have failed on D1.
+  `CREATE TABLE IF NOT EXISTS \`link_targets\` (\`id\` text PRIMARY KEY NOT NULL, \`linkId\` text NOT NULL, \`type\` text NOT NULL CHECK(type IN ('geo', 'device', 'ab')), \`matchValue\` text NOT NULL, \`destinationUrl\` text NOT NULL, \`priority\` integer DEFAULT 0 NOT NULL, FOREIGN KEY (\`linkId\`) REFERENCES \`links\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
   `CREATE INDEX IF NOT EXISTS \`idx_link_targets_linkId\` ON \`link_targets\` (\`linkId\`)`,
   `CREATE TABLE IF NOT EXISTS \`link_campaigns\` (\`linkId\` text NOT NULL, \`campaignId\` text NOT NULL, PRIMARY KEY (\`linkId\`, \`campaignId\`), FOREIGN KEY (\`linkId\`) REFERENCES \`links\`(\`id\`) ON UPDATE no action ON DELETE cascade, FOREIGN KEY (\`campaignId\`) REFERENCES \`campaigns\`(\`id\`) ON UPDATE no action ON DELETE cascade)`,
   `CREATE INDEX IF NOT EXISTS \`idx_link_campaigns_campaignId\` ON \`link_campaigns\` (\`campaignId\`)`,

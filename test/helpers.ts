@@ -44,8 +44,8 @@ export async function setupAuth(
   // Insert user
   await envBindings.DB
     .prepare(
-      `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt, role)
-       VALUES (?, ?, ?, 0, ?, ?, 'user')`
+      `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+       VALUES (?, ?, ?, 0, ?, ?)`
     )
     .bind(id, name, email, now, now)
     .run();

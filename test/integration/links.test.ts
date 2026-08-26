@@ -675,7 +675,26 @@ describe("Links API", () => {
       expect(res.status).toBe(400);
     });
 
-    it("rejects invalid type (not geo/device)", async () => {
+    // Regression: the pre-squash migration constrained link_targets.type to
+    // ('geo','device') while the API has always accepted "ab", so this exact
+    // request returned 500 on a real deployment. It passed locally only because
+    // test/setup.ts built the table without the CHECK. Both now allow "ab".
+    it("persists an A/B target — type 'ab' must satisfy the DB CHECK", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "ab", matchValue: "50", destinationUrl: "https://example.com/variant-b" }] },
+      });
+      expect(res.status).toBe(200);
+
+      const row = await env.DB
+        .prepare("SELECT type, matchValue FROM link_targets WHERE linkId = ? AND type = 'ab'")
+        .bind(targetLinkId)
+        .first<{ type: string; matchValue: string }>();
+      expect(row).not.toBeNull();
+      expect(row!.matchValue).toBe("50");
+    });
+
+    it("rejects invalid type (not geo/device/ab)", async () => {
       const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
         headers,
         body: { targets: [{ type: "browser", matchValue: "chrome", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
