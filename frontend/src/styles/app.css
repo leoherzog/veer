@@ -47,3 +47,14 @@ body.demo-mode #create-team-btn,
 body.demo-mode wa-button-group:has(#new-link-btn) {
   display: none !important;
 }
+
+/* Inline help icon beside a heading. Sized in `em` so it tracks the heading's
+   own font-size — the wa-font-size-* utilities are absolute tokens, so
+   wa-font-size-s pinned this to 14px next to a 41px h1 (--wa-font-size-3xl).
+   Kept inline (no wa-cluster) so wa-icon's built-in `vertical-align: -0.125em`
+   still applies; a flex parent blockifies the icon and discards that nudge,
+   leaving it geometrically centered in the line box and visibly low. */
+.heading-help {
+  font-size: 0.6em;
+  cursor: help;
+}

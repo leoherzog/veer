@@ -12,7 +12,7 @@ export async function renderCampaignsPanel(container) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
-        <h1 class="wa-cluster wa-gap-xs wa-align-items-center">Your Campaigns <wa-icon id="campaigns-help" name="circle-question" variant="solid" class="wa-color-text-quiet wa-font-size-s" style="cursor:help;"></wa-icon></h1>
+        <h1>Your Campaigns <wa-icon id="campaigns-help" name="circle-question" label="About campaigns" class="wa-color-text-quiet heading-help"></wa-icon></h1>
         <wa-button variant="brand" id="new-campaign-btn" data-dialog="open new-campaign-dialog">
           <wa-icon slot="start" name="plus"></wa-icon>
           New Campaign

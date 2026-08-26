@@ -32,7 +32,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
           <div class="wa-cluster wa-gap-2xs">
             <span>/${escapeHtml(link.slug)}</span>
             <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
-            ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
+            ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" label="Team" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
           </div>
         </td>
         <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
