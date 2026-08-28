@@ -207,7 +207,10 @@ linkRoutes.post("/", async (c) => {
   }
 
   const slugCheck = validateSlug(body.slug);
-  if (!slugCheck.valid) throw badRequest(slugCheck.error!);
+  if (!slugCheck.valid) throw badRequest(slugCheck.error);
+  // Store the canonical (lowercased, NFC) form — every lookup normalizes the
+  // same way, so this is what makes slugs case-insensitively unique.
+  const slug = slugCheck.slug;
 
   const redirectType = body.redirectType === 301 ? 301 : 302;
   const title = body.title || null;
@@ -246,8 +249,8 @@ linkRoutes.post("/", async (c) => {
   // Check slug uniqueness within the target domain
   // (SQLite UNIQUE index treats NULLs as distinct, so we must check manually)
   const slugWhereClause = domainHostname
-    ? and(eq(links.slug, body.slug), eq(links.domainHostname, domainHostname))
-    : and(eq(links.slug, body.slug), sql`${links.domainHostname} IS NULL`);
+    ? and(eq(links.slug, slug), eq(links.domainHostname, domainHostname))
+    : and(eq(links.slug, slug), sql`${links.domainHostname} IS NULL`);
   const existing = await db.select({ id: links.id }).from(links).where(slugWhereClause).get();
   if (existing) throw conflict("Slug already taken");
 
@@ -257,7 +260,7 @@ linkRoutes.post("/", async (c) => {
     await db.insert(links).values({
       id,
       userId: user.id,
-      slug: body.slug,
+      slug,
       destinationUrl: body.destinationUrl,
       redirectType,
       title,
@@ -292,7 +295,7 @@ linkRoutes.post("/", async (c) => {
   // on the first redirect (which refills the cache itself). Awaiting here meant a
   // KV error — e.g. exhausting the free tier's 1,000 writes/day — threw *after*
   // the row was already committed, 500ing a link that had in fact been created.
-  c.executionCtx.waitUntil(setCachedRedirect(c.env.KV, body.slug, kvData, body.domainHostname || null));
+  c.executionCtx.waitUntil(setCachedRedirect(c.env.KV, slug, kvData, body.domainHostname || null));
 
   // Handle campaign associations on create
   const createCampaignIds = body.campaignIds?.length ? body.campaignIds : body.campaignId ? [body.campaignId] : [];
@@ -311,7 +314,7 @@ linkRoutes.post("/", async (c) => {
     data: {
       id,
       userId: user.id,
-      slug: body.slug,
+      slug,
       destinationUrl: body.destinationUrl,
       redirectType,
       title,

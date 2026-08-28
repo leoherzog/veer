@@ -4,7 +4,7 @@ The implemented product surface. Each bullet corresponds to shipped code — see
 
 ### 1. URL Management & Shortening
 *   **Custom branded short URLs:** Serve links from any number of your own domains (e.g. `YourBrand.co/keyword`).
-*   **Custom slugs:** Slugs are user-chosen and required — no auto-generated gibberish. Same slug can exist on different domains.
+*   **Custom slugs:** Slugs are user-chosen and required — no auto-generated gibberish. Same slug can exist on different domains. Any URL-safe character works, including non-ASCII and emoji (`/🎉`), and slugs are case-insensitive: `/Blah` resolves to `/blah`, and only one of the two can exist.
 *   **Editable links:** Change the destination URL, title, and settings at any time (the slug itself is immutable).
 *   **Redirect type:** Choose 301 (permanent) or 302 (temporary) per link.
 *   **Bulk creation:** Paste comma-separated lines into the bulk tool or POST a JSON array to the API (up to 50 links per request, with per-item validation errors).

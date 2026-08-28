@@ -145,7 +145,7 @@ test/
 ### Core
 - Never hardcode `veer.ing` or any other hostname in source — everything is driven by `BETTER_AUTH_URL`, `domain_config`, or the request host.
 - Never hardcode the brand string `"Veer"` in user-facing UI or server-rendered HTML. Use `getInstanceName(env)` on the server (`src/lib/branding.ts`) and `getInstanceName()` on the client (`frontend/src/lib/config.js`) — both fall back to `"Veer"` when `INSTANCE_NAME` is empty.
-- Slugs are user-supplied and required. `src/services/slug.ts` only validates; it never generates.
+- Slugs are user-supplied and required. `src/services/slug.ts` only validates and normalizes; it never generates. **Never store or look up a raw slug** — run it through `validateSlug()` (which returns the canonical form) or `normalizeSlug()` first. `validateTeamSlug()` is the narrower ASCII-only variant for team slugs.
 - When adding a table, update `src/db/schema.ts`, generate a migration (`npm run db:generate`), and mirror the new DDL in `test/setup.ts` so tests keep passing.
 - When adding a new AE field, update the blob-index comment in `src/services/analytics.ts` *and* every reader in `src/routes/api/stats.ts`.
 - API routes that should be usable by third-party integrations must go behind `requireAuthOrApiKey` + `rateLimitApiKey`, not `requireAuth`.
@@ -197,6 +197,12 @@ Non-obvious rationale behind load-bearing choices. Read these before "cleaning u
 - **KV key format `{hostname}:{slug}` for custom, bare `{slug}` for primary** — backward-compatible with pre-multi-domain keys so the M5 migration didn't need a KV rewrite.
 - **Composite unique `(slug, domainHostname)` + partial unique `WHERE domainHostname IS NULL`** — SQLite treats NULLs as distinct in composite indexes, so the partial index is the only thing enforcing uniqueness for primary-domain links. Load-bearing.
 - **`cleanupOrphanedTeams` hook on user delete** — promotes or deletes teams when the last admin leaves, keeping referential integrity without CASCADE surprises.
+
+### Slugs
+- **Slugs are stored normalized (percent-decoded → NFC → lowercased), not folded at query time** — one canonical form in the database means the existing unique indexes enforce case-insensitive uniqueness for free, and the redirect hot path stays a plain equality lookup. A `COLLATE NOCASE` index was the alternative, but SQLite's NOCASE only folds ASCII, which would have left `/CAFÉ` and `/café` as separate links.
+- **Non-ASCII slugs are allowed** — a path segment is an IRI segment (RFC 3987), and browsers percent-encode it on the wire, so `/🎉` works. The ASCII character set is RFC 3986 `pchar` minus `%` (ambiguous once escapes are decoded) and `/ ? #` (they end the segment).
+- **`MAX_SLUG_BYTES` (256) exists on top of `MAX_SLUG_LENGTH` (128)** — the KV cache key is `{hostname}:{slug}` and KV caps keys at 512 bytes. Only non-ASCII slugs can hit the byte cap first (an emoji costs 4 bytes).
+- **Team slugs use `validateTeamSlug`, not `validateSlug`** — they are internal identifiers rather than links people type, so they stay ASCII. They are normalized (and therefore case-insensitively unique) all the same.
 
 ### Redirect hot path
 - **`writeDataPoint()` is synchronous** — the binding doesn't return a promise. Wrapping in `waitUntil` is a silent no-op that hides bugs and has bitten this codebase before.

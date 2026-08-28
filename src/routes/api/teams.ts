@@ -3,7 +3,7 @@ import { eq, sql, and } from "drizzle-orm";
 import { getDb } from "../../db";
 import type { Database } from "../../db";
 import { teams, teamMembers, teamInvites, user as userTable } from "../../db/schema";
-import { validateSlug } from "../../services/slug";
+import { validateTeamSlug } from "../../services/slug";
 import { badRequest, notFound, forbidden, conflict } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
 import { requireTeamMember } from "../../lib/team";
@@ -74,15 +74,16 @@ teamRoutes.post("/", async (c) => {
     throw badRequest("slug is required");
   }
 
-  const slugCheck = validateSlug(body.slug);
-  if (!slugCheck.valid) throw badRequest(slugCheck.error!);
+  const slugCheck = validateTeamSlug(body.slug);
+  if (!slugCheck.valid) throw badRequest(slugCheck.error);
+  const slug = slugCheck.slug;
 
   const id = crypto.randomUUID();
   const now = new Date();
 
   try {
     await db.batch([
-      db.insert(teams).values({ id, name: body.name.trim(), slug: body.slug, createdAt: now, updatedAt: now }),
+      db.insert(teams).values({ id, name: body.name.trim(), slug, createdAt: now, updatedAt: now }),
       db.insert(teamMembers).values({ teamId: id, userId: user.id, role: "admin", joinedAt: now }),
     ]);
   } catch (e: unknown) {
@@ -96,7 +97,7 @@ teamRoutes.post("/", async (c) => {
     data: {
       id,
       name: body.name.trim(),
-      slug: body.slug,
+      slug,
       createdAt: now,
       updatedAt: now,
     },

@@ -42,11 +42,19 @@ export function renderTable({ label, columns, rows, tbodyId = "", style = "" }) 
     </table>`;
 }
 
-/** Construct short URL from link object */
+/**
+ * Construct short URL from link object.
+ *
+ * The slug is percent-encoded so the result is safe as an href, a copy target
+ * and QR payload. Slugs are stored lowercased and NFC-normalized by the API, so
+ * this needs no normalization of its own; plain ASCII slugs pass through
+ * unchanged and only emoji/Unicode ones show escapes.
+ */
 export function shortUrl(link) {
+  const slug = encodeURIComponent(link.slug ?? "");
   return link.domainHostname
-    ? `https://${link.domainHostname}/${link.slug}`
-    : `${location.origin}/${link.slug}`;
+    ? `https://${link.domainHostname}/${slug}`
+    : `${location.origin}/${slug}`;
 }
 
 /**

@@ -113,14 +113,18 @@ bulkRoutes.post("/", async (c) => {
       continue;
     }
 
-    const slug = item.slug;
+    const rawSlug = item.slug;
+    // Reported back verbatim on failure so the caller can match rows to input;
+    // replaced by the canonical form once validation succeeds.
+    let slug = rawSlug;
 
     try {
-      const slugCheck = validateSlug(slug);
+      const slugCheck = validateSlug(rawSlug);
       if (!slugCheck.valid) {
-        results[i] = { slug: slug ?? "", success: false, error: slugCheck.error! };
+        results[i] = { slug: rawSlug ?? "", success: false, error: slugCheck.error };
         continue;
       }
+      slug = slugCheck.slug;
 
       try {
         validateHttpUrl(item.destinationUrl, "destinationUrl");
@@ -160,7 +164,7 @@ bulkRoutes.post("/", async (c) => {
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unexpected error";
-      results[i] = { slug: slug ?? "", success: false, error: msg };
+      results[i] = { slug: rawSlug ?? "", success: false, error: msg };
     }
   }
 

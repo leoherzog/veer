@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SLUG_PATTERN, RESERVED_SLUGS } from "../../src/services/slug";
+import { SLUG_PATTERN, RESERVED_SLUGS, validateSlug } from "../../src/services/slug";
 
 describe("SLUG_PATTERN", () => {
   it("is a RegExp", () => {
@@ -18,10 +18,17 @@ describe("SLUG_PATTERN", () => {
       "lower",
       "a".repeat(128),
       "a-b_c-123",
+      "a.b",          // unreserved punctuation
+      "a~b",
+      "hello!",       // sub-delim
+      "te@st",        // pchar
+      "a:b",
+      "caf\u00E9",      // IRI: non-ASCII letters
+      "\u{1F389}",       // IRI: emoji
     ];
 
     for (const slug of valid) {
-      it(`accepts "${slug.length > 20 ? slug.slice(0, 10) + "…" : slug}"`, () => {
+      it(`accepts "${slug.length > 20 ? slug.slice(0, 10) + "\u2026" : slug}"`, () => {
         expect(SLUG_PATTERN.test(slug)).toBe(true);
       });
     }
@@ -31,16 +38,17 @@ describe("SLUG_PATTERN", () => {
     const invalid = [
       "",            // empty
       "a b",         // space
-      "hello!",      // exclamation
       "foo/bar",     // slash
-      "a.b",         // dot
-      "te@st",       // at-sign
       "foo#bar",     // hash
-      "a".repeat(129), // too long
+      "foo?bar",     // question mark
+      "foo%bar",     // percent (escapes are decoded before validation)
+      "foo\\bar",     // backslash
+      "a<b",         // angle bracket
+      "a\u0001b",      // control character
     ];
 
     for (const slug of invalid) {
-      it(`rejects "${slug.length > 20 ? slug.slice(0, 10) + "…(len=" + slug.length + ")" : slug}"`, () => {
+      it(`rejects ${JSON.stringify(slug)}`, () => {
         expect(SLUG_PATTERN.test(slug)).toBe(false);
       });
     }
@@ -51,9 +59,11 @@ describe("SLUG_PATTERN", () => {
     expect(SLUG_PATTERN.test("a")).toBe(true);
   });
 
-  it("enforces maximum length of 128", () => {
-    expect(SLUG_PATTERN.test("a".repeat(128))).toBe(true);
-    expect(SLUG_PATTERN.test("a".repeat(129))).toBe(false);
+  it("does not enforce length — validateSlug does", () => {
+    // Length is checked in code points and UTF-8 bytes by validateSlug(), so the
+    // pattern itself is unbounded. See MAX_SLUG_LENGTH / MAX_SLUG_BYTES.
+    expect(SLUG_PATTERN.test("a".repeat(129))).toBe(true);
+    expect(validateSlug("a".repeat(129)).valid).toBe(false);
   });
 });
 

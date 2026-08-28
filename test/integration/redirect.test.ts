@@ -117,6 +117,64 @@ describe("Redirect engine – GET /:slug", () => {
 
   // ── Daily aggregate (link_stats) ─────────────────────────────────────
 
+  // ── Slug normalization ───────────────────────────────────────────────
+
+  describe("Slug normalization", () => {
+    it("resolves a slug case-insensitively", async () => {
+      await createTestLink(env.DB, {
+        slug: "case-fold",
+        destinationUrl: "https://example.com/case-fold",
+        userId: auth.user.id,
+      });
+
+      for (const path of ["/case-fold", "/Case-Fold", "/CASE-FOLD"]) {
+        const res = await app.request(path, {}, env, mockExecutionCtx());
+        expect(res.status).toBe(302);
+        expect(res.headers.get("Location")).toBe("https://example.com/case-fold");
+      }
+    });
+
+    it("resolves a case variant through the KV cache too", async () => {
+      const link = await createTestLink(env.DB, {
+        slug: "cached-case",
+        destinationUrl: "https://example.com/cached-case",
+        userId: auth.user.id,
+      });
+      await setCachedRedirect(env.KV, "cached-case", {
+        url: "https://example.com/from-cache",
+        redirectType: 302,
+        linkId: link.id,
+        isActive: true,
+        expiresAt: null,
+        maxClicks: null,
+        hasPassword: false,
+        isInternal: false,
+        ogTitle: null,
+        ogDescription: null,
+        ogImage: null,
+        paramForwarding: false,
+        targets: null,
+        domainHostname: null,
+      });
+
+      const res = await app.request("/Cached-Case", {}, env, mockExecutionCtx());
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://example.com/from-cache");
+    });
+
+    it("resolves a percent-encoded emoji slug", async () => {
+      await createTestLink(env.DB, {
+        slug: "\u{1F389}",
+        destinationUrl: "https://example.com/emoji",
+        userId: auth.user.id,
+      });
+
+      const res = await app.request("/%F0%9F%8E%89", {}, env, mockExecutionCtx());
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://example.com/emoji");
+    });
+  });
+
   describe("Click stats aggregation", () => {
     it("upserts the daily link_stats row for each redirect", async () => {
       const link = await createTestLink(env.DB, {

@@ -8,6 +8,7 @@ import { writeClickEvent, upsertDailyStats } from "../services/analytics";
 import { verifyPassword } from "../services/password";
 import { getAuth } from "../auth";
 import { getInstanceName } from "../lib/branding";
+import { normalizeSlug } from "../services/slug";
 
 /** Render a minimal self-contained HTML page. */
 function htmlPage(title: string, bodyHtml: string, instanceName: string): string {
@@ -46,7 +47,7 @@ function passwordGatePage(slug: string, instanceName: string, error?: string): R
   const body = `
 <div class="brand">${escapeHtml(instanceName)}</div>
 <p class="message">This link is password protected</p>
-<form method="POST" action="/${slug}">
+<form method="POST" action="/${escapeHtml(encodeURIComponent(slug))}">
 <input type="password" name="password" placeholder="Enter password" required autofocus>
 <button type="submit">Continue</button>
 ${errorHtml}
@@ -297,7 +298,10 @@ function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, 
 }
 
 export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
-  const slug = c.req.param("slug");
+  // Slugs are stored normalized, so the incoming one is normalized too:
+  // /Blah and /blah resolve to the same link. See services/slug.ts.
+  const slug = normalizeSlug(c.req.param("slug"));
+  if (!slug) return next();
   const { host, isCustomDomain } = resolveHostInfo(c);
 
   const resolved = await resolveSlug(c, slug, isCustomDomain ? host : null);
@@ -338,7 +342,8 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
 }
 
 export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Next) {
-  const slug = c.req.param("slug");
+  const slug = normalizeSlug(c.req.param("slug"));
+  if (!slug) return next();
   const { host, isCustomDomain } = resolveHostInfo(c);
 
   const hostname = isCustomDomain ? host : null;

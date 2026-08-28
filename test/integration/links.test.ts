@@ -156,6 +156,46 @@ describe("Links API", () => {
       expect(res.status).toBe(409);
     });
 
+    it("stores the slug lowercased", async () => {
+      const res = await postLink(
+        { slug: "MixedCase-Slug", destinationUrl: "https://example.com" },
+        headers
+      );
+      expect(res.status).toBe(201);
+      const json = await res.json() as JsonBody;
+      expect((json.data as JsonBody).slug).toBe("mixedcase-slug");
+
+      const row = await env.DB.prepare("SELECT slug FROM links WHERE id = ?")
+        .bind((json.data as JsonBody).id).first<{ slug: string }>();
+      expect(row?.slug).toBe("mixedcase-slug");
+    });
+
+    it("rejects a case variant of an existing slug with 409", async () => {
+      await createTestLink(env.DB, { slug: "case-taken", userId });
+      const res = await postLink(
+        { slug: "Case-TAKEN", destinationUrl: "https://example.com" },
+        headers
+      );
+      expect(res.status).toBe(409);
+    });
+
+    it("accepts an emoji slug and stores it decoded", async () => {
+      const res = await postLink(
+        { slug: "%F0%9F%8E%89-party", destinationUrl: "https://example.com/emoji" },
+        headers
+      );
+      expect(res.status).toBe(201);
+      const json = await res.json() as JsonBody;
+      expect((json.data as JsonBody).slug).toBe("\u{1F389}-party");
+    });
+
+    it("rejects slugs with characters that are not URL-safe", async () => {
+      for (const slug of ["has/slash", "has?query", "has#hash", "has%percent", "has<angle"]) {
+        const res = await postLink({ slug, destinationUrl: "https://example.com" }, headers);
+        expect(res.status).toBe(400);
+      }
+    });
+
     it("rejects oversized body with 413", async () => {
       const bigTitle = "x".repeat(11_000);
       const body = JSON.stringify({ slug: "big", destinationUrl: "https://example.com", title: bigTitle });

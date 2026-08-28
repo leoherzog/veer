@@ -2,6 +2,7 @@ import { showToast } from "./toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr } from "../lib/escape.js";
 import { apiFetch, withLoadingBtn, setTeamOptions } from "../lib/ui.js";
+import { normalizeSlug } from "../lib/slug.js";
 
 function toLocalDatetime(isoStr) {
   if (!isoStr) return "";
@@ -91,7 +92,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
         placeholder="my-link"
         required
         value="${escapeAttr(link?.slug || "")}"
-        hint="Letters, numbers, hyphens, underscores (1-128 chars)"
+        hint="Case-insensitive. Letters, numbers, emoji and URL-safe punctuation (1-128 chars)"
         ${isEdit ? "disabled" : ""}
       ></wa-input>
       <wa-input
@@ -284,6 +285,14 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     if (details) field.focus?.();
   }, true);
 
+  // Reflect the canonical slug back into the field on commit, so the user sees
+  // the lowercase form the API will actually store.
+  const slugInput = container.querySelector('[name="slug"]');
+  slugInput?.addEventListener("change", () => {
+    const normalized = normalizeSlug(slugInput.value);
+    if (normalized !== slugInput.value) slugInput.value = normalized;
+  });
+
   container.querySelector("#link-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     const form = e.target;
@@ -317,7 +326,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
       const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;
 
       const data = {
-        ...(!isEdit && { slug: form.querySelector('[name="slug"]').value.trim() }),
+        ...(!isEdit && { slug: normalizeSlug(form.querySelector('[name="slug"]').value) }),
         destinationUrl: form.querySelector('[name="destinationUrl"]').value.trim(),
         title: form.querySelector('[name="title"]').value.trim() || null,
         redirectType: Number(form.querySelector('[name="redirectType"]').value),
