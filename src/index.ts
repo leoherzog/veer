@@ -172,6 +172,9 @@ app.get("/api/public-report/:token", async (c, next) => {
   await next();
 }, publicReportRoute);
 
+// Unmatched /api/* paths must never reach the SPA shell: API clients get a JSON 404.
+app.all("/api/*", (c) => c.json({ error: "Not found" }, 404));
+
 // Custom domain root redirect (before /:slug to handle bare domain visits)
 app.get("/", handleCustomDomainRoot);
 

@@ -133,16 +133,20 @@ describe("App-level concerns", () => {
       expect(body.error).toBe("Link not found");
     });
 
-    it("non-existent API sub-route falls through to SPA (not a JSON 404)", async () => {
-      // /api/nonexistent is not matched by any API route handler,
-      // so it falls through to the SPA wildcard handler, which serves the
-      // built index.html (200 text/html) rather than a JSON 404 envelope.
+    it("non-existent API path returns a JSON 404, not the SPA shell", async () => {
       const res = await app.request("/api/nonexistent", {}, env);
 
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
-      const body = await res.text();
-      expect(() => JSON.parse(body)).toThrow();
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({ error: "Not found" });
+    });
+
+    it("non-existent nested API path returns a JSON 404 for every method", async () => {
+      for (const method of ["GET", "POST", "DELETE"]) {
+        const res = await app.request("/api/no/such/thing", { method }, env, mockExecutionCtx());
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: "Not found" });
+      }
     });
   });
 
