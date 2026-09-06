@@ -10,9 +10,22 @@ export async function parseJsonBody<T>(c: Context): Promise<T> {
   }
 }
 
+/** Parse a JSON body for endpoints where an absent or empty body is meaningful. Size limit still applies. */
+export async function parseOptionalJsonBody<T>(c: Context): Promise<T | null> {
+  checkBodySize(c.req.header("content-length"));
+  try {
+    return await c.req.json<T>();
+  } catch {
+    return null;
+  }
+}
+
 export function parsePagination(c: Context): { page: number; limit: number; offset: number } {
-  const page = Math.max(1, Number(c.req.query("page")) || 1);
-  const limit = Math.min(100, Math.max(1, Number(c.req.query("limit")) || 20));
+  // Floor before clamping: a fractional page reaches SQLite as a fractional OFFSET.
+  const rawPage = Math.floor(Number(c.req.query("page")) || 1);
+  const page = Number.isFinite(rawPage) ? Math.max(1, rawPage) : 1;
+  const rawLimit = Math.floor(Number(c.req.query("limit")) || 20);
+  const limit = Number.isFinite(rawLimit) ? Math.min(100, Math.max(1, rawLimit)) : 20;
   const offset = (page - 1) * limit;
   return { page, limit, offset };
 }

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { parseJsonBody, parsePagination, stripPassword } from "../../src/lib/request";
+import { parseJsonBody, parseOptionalJsonBody, parsePagination, stripPassword } from "../../src/lib/request";
 import type { AppEnv } from "../../src/types";
 
 describe("parsePagination", () => {
@@ -51,6 +51,29 @@ describe("parsePagination", () => {
     const r = await withQuery("page=abc&limit=xyz");
     expect(r).toEqual({ page: 1, limit: 20, offset: 0 });
   });
+
+  // OFFSET must be an integer; D1 rejects a fractional one with a datatype
+  // mismatch, so a fractional page is floored, not rejected.
+  it("floors a fractional page and limit", async () => {
+    const r = await withQuery("page=1.3&limit=10.9");
+    expect(r).toEqual({ page: 1, limit: 10, offset: 0 });
+    expect(Number.isInteger(r.offset)).toBe(true);
+  });
+
+  it("floors a fractional page above 2", async () => {
+    const r = await withQuery("page=2.7&limit=10");
+    expect(r).toEqual({ page: 2, limit: 10, offset: 10 });
+  });
+
+  it("treats infinite page/limit as defaults", async () => {
+    const r = await withQuery("page=Infinity&limit=Infinity");
+    expect(r).toEqual({ page: 1, limit: 20, offset: 0 });
+  });
+
+  it("floors a fractional limit below 1 up to the minimum", async () => {
+    const r = await withQuery("limit=0.5");
+    expect(r.limit).toBe(1);
+  });
 });
 
 describe("parseJsonBody", () => {
@@ -92,6 +115,47 @@ describe("parseJsonBody", () => {
 
   it("returns 413 when Content-Length exceeds 10_000", async () => {
     const res = await appWithParse().request("/j", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Content-Length": "20000" },
+      body: JSON.stringify({ ok: true }),
+    });
+    expect(res.status).toBe(413);
+  });
+});
+
+describe("parseOptionalJsonBody", () => {
+  function appWithOptionalParse() {
+    const app = new Hono<AppEnv>();
+    app.onError((err, c) => {
+      if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+      return c.json({ error: String(err) }, 500);
+    });
+    app.post("/j", async (c) => {
+      const body = await parseOptionalJsonBody<{ ok?: boolean }>(c);
+      return c.json({ body });
+    });
+    return app;
+  }
+
+  it("returns the parsed body when one is sent", async () => {
+    const res = await appWithOptionalParse().request("/j", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ok: true }),
+    });
+    const json = await res.json<{ body: { ok: boolean } | null }>();
+    expect(json.body).toEqual({ ok: true });
+  });
+
+  it("returns null when no body is sent", async () => {
+    const res = await appWithOptionalParse().request("/j", { method: "POST" });
+    expect(res.status).toBe(200);
+    const json = await res.json<{ body: unknown }>();
+    expect(json.body).toBeNull();
+  });
+
+  it("still returns 413 when Content-Length exceeds 10_000", async () => {
+    const res = await appWithOptionalParse().request("/j", {
       method: "POST",
       headers: { "Content-Type": "application/json", "Content-Length": "20000" },
       body: JSON.stringify({ ok: true }),

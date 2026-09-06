@@ -79,7 +79,7 @@ function bindDeleteKeyButtons(container) {
   });
 }
 
-function bindDeleteKeyDialog(container) {
+function bindDeleteKeyDialog(container, reload) {
   const dialog = container.querySelector("#delete-key-dialog");
   if (!dialog) return;
   bindConfirmDialog({
@@ -89,7 +89,7 @@ function bindDeleteKeyDialog(container) {
       const result = await apiFetch(`/api/keys/${encodeURIComponent(dialog.dataset.keyId)}`, { method: "DELETE" });
       if (!result) return false;
       showToast("API key deleted", "success");
-      renderSettings(container);
+      reload();
     },
   });
 }
@@ -154,7 +154,7 @@ function renderPasskeyPanel(passkeys) {
   `;
 }
 
-function bindPasskeyRegister(container) {
+function bindPasskeyRegister(container, reload) {
   const form = container.querySelector("#register-passkey-form");
   if (!form) return;
 
@@ -172,7 +172,7 @@ function bindPasskeyRegister(container) {
           return;
         }
         showToast("Passkey registered", "success");
-        renderSettings(container);
+        reload();
       } catch (err) {
         // User may have cancelled the WebAuthn prompt
         if (err?.name === "NotAllowedError") {
@@ -185,7 +185,7 @@ function bindPasskeyRegister(container) {
   });
 }
 
-function bindPasskeyDelete(container) {
+function bindPasskeyDelete(container, reload) {
   const dialog = container.querySelector("#delete-passkey-dialog");
   if (!dialog) return;
 
@@ -209,7 +209,7 @@ function bindPasskeyDelete(container) {
           return false;
         }
         showToast("Passkey deleted", "success");
-        renderSettings(container);
+        reload();
       } catch {
         showToast("Network error", "danger");
         return false;
@@ -223,7 +223,12 @@ function bindPasskeyDelete(container) {
 function renderDomainRow(domain) {
   return `
     <tr>
-      <td>${escapeHtml(domain.hostname)}</td>
+      <td>
+        <div class="wa-cluster wa-gap-2xs">
+          ${escapeHtml(domain.hostname)}
+          ${domain.isPrimary ? `<wa-badge variant="brand" pill>Primary</wa-badge>` : ""}
+        </div>
+      </td>
       <td class="text-truncate wa-text-truncate">${escapeHtml(domain.rootRedirect || "—")}</td>
       <td class="text-truncate wa-text-truncate">${escapeHtml(domain.notFoundRedirect || "—")}</td>
       <td>
@@ -269,7 +274,7 @@ function renderEditRow(domain) {
   `;
 }
 
-export async function renderSettings(container) {
+export async function renderSettings(container, { activeTab = "api-keys" } = {}) {
   container.innerHTML = SPINNER;
 
   const meResult = await apiFetch("/api/me");
@@ -301,6 +306,14 @@ export async function renderSettings(container) {
       passkeys = Array.isArray(pkResult) ? pkResult : (pkResult.data ?? []);
     }
   }
+
+  // Re-render in place, keeping whichever tab the user is looking at.
+  const reload = () => renderSettings(container, {
+    activeTab: container.querySelector("#settings-tabs")?.active || activeTab,
+  });
+
+  const tabs = ["api-keys", ...(passkeyEnabled ? ["passkeys"] : []), ...(isAdmin ? ["domains"] : [])];
+  const openTab = tabs.includes(activeTab) ? activeTab : "api-keys";
 
   const passkeysTab = passkeyEnabled ? `
     <wa-tab panel="passkeys">Passkeys</wa-tab>
@@ -338,7 +351,7 @@ export async function renderSettings(container) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <h1>Settings</h1>
-      <wa-tab-group without-scroll-controls>
+      <wa-tab-group without-scroll-controls id="settings-tabs" active="${escapeAttr(openTab)}">
         <wa-tab panel="api-keys">API Keys</wa-tab>
         ${passkeysTab}
         ${domainsTab}
@@ -367,7 +380,12 @@ export async function renderSettings(container) {
 
       const body = { name };
       const expiresVal = expiresInput.value;
-      if (expiresVal) body.expiresAt = new Date(expiresVal).toISOString();
+      if (expiresVal) {
+        // A date-only value parses as UTC midnight, which is already past for
+        // most of the day. Expire at the end of the chosen local day instead.
+        const [y, m, d] = expiresVal.split("-").map(Number);
+        body.expiresAt = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+      }
 
       await withLoadingBtn(submitBtn, async () => {
         const result = await apiFetch("/api/keys", {
@@ -411,12 +429,12 @@ export async function renderSettings(container) {
   }
 
   bindDeleteKeyButtons(container);
-  bindDeleteKeyDialog(container);
+  bindDeleteKeyDialog(container, reload);
 
   // Passkey event handlers
   if (passkeyEnabled) {
-    bindPasskeyRegister(container);
-    bindPasskeyDelete(container);
+    bindPasskeyRegister(container, reload);
+    bindPasskeyDelete(container, reload);
   }
 
   // Sync domains button
@@ -430,7 +448,7 @@ export async function renderSettings(container) {
         showToast("Domains synced from Cloudflare", "success");
         success = true;
       });
-      if (success) renderSettings(container);
+      if (success) reload();
     });
   }
 
@@ -493,7 +511,7 @@ export async function renderSettings(container) {
           showToast("Domain updated", "success");
           success = true;
         });
-        if (success) renderSettings(container);
+        if (success) reload();
       });
 
       editForm.querySelector(".cancel-edit-btn").addEventListener("click", () => {

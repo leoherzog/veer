@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseUserAgent } from "../../src/services/useragent";
+import { parseUserAgent, parseDevice } from "../../src/services/useragent";
 
 // Real-world UA strings
 const UAs = {
@@ -43,6 +43,16 @@ const UAs = {
     "Mozilla/5.0 (X11; CrOS x86_64 15236.80.0) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.0.0 Safari/537.36",
   googlebot:
     "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+  iPodTouch:
+    "Mozilla/5.0 (iPod touch; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15",
+  operaMini:
+    "Opera/9.80 (J2ME/MIDP; Opera Mini/5.1.21214/28.2725; U; ru) Presto/2.8.119 Version/11.10",
+  ieMobile:
+    "Mozilla/5.0 (compatible; MSIE 10.0; Windows Phone 8.0; Trident/6.0; IEMobile/10.0)",
+  genericTablet:
+    "Mozilla/5.0 (Linux; U; Tablet; en-US) AppleWebKit/537.36",
+  blackberry:
+    "Mozilla/5.0 (BlackBerry; U; BlackBerry 9900; en) AppleWebKit/534.11+ (KHTML, like Gecko) Version/7.1.0.346 Mobile Safari/534.11+",
 };
 
 describe("parseUserAgent — browser detection", () => {
@@ -253,5 +263,47 @@ describe("parseUserAgent — edge cases", () => {
     expect(info).toHaveProperty("browser");
     expect(info).toHaveProperty("os");
     expect(info).toHaveProperty("device");
+  });
+});
+
+// parseDevice is the single classifier behind both device targeting on the
+// redirect path and the device breakdown in stats.
+describe("parseDevice — redirect targeting parity", () => {
+  it("classifies iPod touch as mobile", () => {
+    expect(parseDevice(UAs.iPodTouch)).toBe("mobile");
+  });
+
+  it("classifies Opera Mini as mobile", () => {
+    expect(parseDevice(UAs.operaMini)).toBe("mobile");
+  });
+
+  it("classifies IEMobile as mobile", () => {
+    expect(parseDevice(UAs.ieMobile)).toBe("mobile");
+  });
+
+  it("classifies BlackBerry as mobile", () => {
+    expect(parseDevice(UAs.blackberry)).toBe("mobile");
+  });
+
+  it("classifies a generic Tablet UA as tablet", () => {
+    expect(parseDevice(UAs.genericTablet)).toBe("tablet");
+  });
+
+  it("classifies an Android UA without \"Mobile\" as tablet", () => {
+    expect(parseDevice(UAs.chromeAndroidTablet)).toBe("tablet");
+  });
+
+  it("classifies desktop Chrome as desktop", () => {
+    expect(parseDevice(UAs.chromeWindows)).toBe("desktop");
+  });
+
+  it("classifies an empty UA as desktop", () => {
+    expect(parseDevice("")).toBe("desktop");
+  });
+
+  it("agrees with the device field parseUserAgent reports", () => {
+    for (const ua of Object.values(UAs)) {
+      expect(parseDevice(ua)).toBe(parseUserAgent(ua).device);
+    }
   });
 });

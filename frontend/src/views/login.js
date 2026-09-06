@@ -3,6 +3,16 @@ import { showToast } from "../components/toast.js";
 import { getInstanceName } from "../lib/config.js";
 import { escapeHtml } from "../lib/escape.js";
 
+/**
+ * Where OAuth should return the browser. The login view renders in place on
+ * whatever route required auth, so the current location is the deep link the
+ * user asked for; /login itself would bounce them straight back here.
+ */
+function callbackTarget() {
+  const path = location.pathname + location.search;
+  return path === "/login" || path.startsWith("/login?") ? "/links" : path;
+}
+
 const allProviders = [
   { id: "google", name: "Google", icon: "google" },
   { id: "github", name: "GitHub", icon: "github" },
@@ -30,7 +40,7 @@ function renderButtons(container, providers) {
       try {
         await authClient.signIn.social({
           provider,
-          callbackURL: "/links",
+          callbackURL: callbackTarget(),
         });
       } catch {
         showToast(`Sign in with ${provider} failed`, "danger");
@@ -54,7 +64,7 @@ function renderPasskeyButton(container, enabled) {
       if (result?.error) {
         showToast(result.error.message || "Passkey sign-in failed", "danger");
       } else {
-        window.location.href = "/links";
+        window.location.href = callbackTarget();
       }
     } catch {
       showToast("Passkey sign-in failed", "danger");
@@ -95,7 +105,7 @@ export function renderLogin(container) {
         container.querySelector("#provider-buttons").innerHTML = "";
         authClient.signIn.social({
           provider: providers[0].id,
-          callbackURL: "/links",
+          callbackURL: callbackTarget(),
         }).catch(() => {
           showToast(`Sign in with ${providers[0].name} failed`, "danger");
           renderButtons(container, providers);

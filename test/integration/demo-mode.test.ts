@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { app } from "../../src/index";
-import { createTestLink } from "../helpers";
+import { createTestLink, mockExecutionCtx } from "../helpers";
 import { hashPassword } from "../../src/services/password";
 
 const demoEnv = { ...env, DEMO_MODE: "true" } as unknown as Env;
@@ -86,11 +86,36 @@ describe("Demo mode", () => {
       );
       expect(res.status).toBe(403);
     });
+
+    // There is no login flow in demo mode, so the auth endpoints are blocked too.
+    it.each([
+      "/api/auth/sign-in/social",
+      "/api/auth/sign-out",
+      "/api/auth/sign-up/email",
+    ])("POST %s returns 403 with demoMode flag", async (path) => {
+      const res = await app.request(
+        path,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: "github" }),
+        },
+        demoEnv,
+      );
+      expect(res.status).toBe(403);
+      const body = await res.json<{ error: string; demoMode: boolean }>();
+      expect(body.demoMode).toBe(true);
+    });
+
+    it("GET /api/auth/* is not blocked", async () => {
+      const res = await app.request("/api/auth/get-session", {}, demoEnv);
+      expect(res.status).not.toBe(403);
+    });
   });
 
   describe("allowlist", () => {
-    it("POST /api/links/:id/check-password is NOT blocked", async () => {
-      // Pre-create the demo user row (FK on links.userId).
+    /** Seed the demo user row (FK on links.userId) plus a password-protected link. */
+    async function seedProtectedLink(slug: string) {
       const now = Math.floor(Date.now() / 1000);
       await env.DB
         .prepare(
@@ -100,13 +125,12 @@ describe("Demo mode", () => {
         .bind(now, now)
         .run();
 
-      // Seed a password-protected link so the endpoint has a real linkId to check.
       const passwordHash = await hashPassword("secret");
-      const link = await createTestLink(env.DB, {
-        userId: "demo-user",
-        slug: "demo-protected",
-        password: passwordHash,
-      });
+      return createTestLink(env.DB, { userId: "demo-user", slug, password: passwordHash });
+    }
+
+    it("POST /api/links/:id/check-password verifies the password", async () => {
+      const link = await seedProtectedLink("demo-protected");
 
       const res = await app.request(
         `/api/links/${link.id}/check-password`,
@@ -116,9 +140,45 @@ describe("Demo mode", () => {
           body: JSON.stringify({ password: "secret" }),
         },
         demoEnv,
+        mockExecutionCtx(),
       );
-      // Either 200 (correct password) or 401 (wrong) — anything but 403 demoMode.
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ valid: true });
+    });
+
+    it("POST /api/links/:id/check-password reports a wrong password", async () => {
+      const link = await seedProtectedLink("demo-protected-wrong");
+
+      const res = await app.request(
+        `/api/links/${link.id}/check-password`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: "nope" }),
+        },
+        demoEnv,
+        mockExecutionCtx(),
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ valid: false });
+    });
+
+    it("POST /:slug password form is not blocked and redirects", async () => {
+      await seedProtectedLink("demo-gate");
+
+      const res = await app.request(
+        "/demo-gate",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: "password=secret",
+        },
+        demoEnv,
+        mockExecutionCtx(),
+      );
       expect(res.status).not.toBe(403);
+      expect(res.status).toBe(302);
+      expect(res.headers.get("location")).toBe("https://example.com");
     });
   });
 

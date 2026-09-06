@@ -8,7 +8,14 @@ import { writeClickEvent, upsertDailyStats } from "../services/analytics";
 import { verifyPassword } from "../services/password";
 import { getAuth } from "../auth";
 import { getInstanceName } from "../lib/branding";
-import { normalizeSlug } from "../services/slug";
+import { normalizeSlug, RESERVED_SLUGS } from "../services/slug";
+import { parseDevice } from "../services/useragent";
+import { checkRateLimit } from "../middleware/rate-limit";
+import { PASSWORD_GATE_CSP } from "../lib/csp";
+
+/** Password attempts allowed per IP per link, matching /api/links/:id/check-password. */
+const PW_ATTEMPT_LIMIT = 5;
+const PW_ATTEMPT_WINDOW_SECONDS = 900;
 
 /** Render a minimal self-contained HTML page. */
 function htmlPage(title: string, bodyHtml: string, instanceName: string): string {
@@ -42,7 +49,7 @@ ${bodyHtml}
 </html>`;
 }
 
-function passwordGatePage(slug: string, instanceName: string, error?: string): Response {
+function passwordGatePage(slug: string, instanceName: string, error?: string, status: 200 | 429 = 200): Response {
   const errorHtml = error ? `<p class="error">${escapeHtml(error)}</p>` : "";
   const body = `
 <div class="brand">${escapeHtml(instanceName)}</div>
@@ -53,8 +60,13 @@ function passwordGatePage(slug: string, instanceName: string, error?: string): R
 ${errorHtml}
 </form>`;
   return new Response(htmlPage("Password Required", body, instanceName), {
-    status: 200,
-    headers: { "Content-Type": "text/html;charset=utf-8" },
+    status,
+    headers: {
+      "Content-Type": "text/html;charset=utf-8",
+      // Overrides the global policy, whose form-action would block the 302 a
+      // correct password returns. See src/lib/csp.ts.
+      "Content-Security-Policy": PASSWORD_GATE_CSP,
+    },
   });
 }
 
@@ -68,12 +80,6 @@ function gonePage(message: string, instanceName: string): Response {
   });
 }
 
-export function detectDeviceType(ua: string): "mobile" | "tablet" | "desktop" {
-  if (/iPad|Android(?!.*Mobile)|Tablet/i.test(ua)) return "tablet";
-  if (/Mobile|iPhone|iPod|Android.*Mobile|webOS|BlackBerry|Opera Mini|IEMobile/i.test(ua)) return "mobile";
-  return "desktop";
-}
-
 const BOT_UA_PATTERN = /facebookexternalhit|Twitterbot|LinkedInBot|Discordbot|Slackbot|WhatsApp|Telegram|Googlebot|bingbot|Applebot/i;
 
 function isBotRequest(c: Context<AppEnv, "/:slug">): boolean {
@@ -81,22 +87,27 @@ function isBotRequest(c: Context<AppEnv, "/:slug">): boolean {
   return BOT_UA_PATTERN.test(ua);
 }
 
-function ogMetaPage(dest: string, og: { ogTitle: string | null; ogDescription: string | null; ogImage: string | null }, shortUrl: string): Response {
+/**
+ * Crawler preview page. `dest` is null for password-protected links: the meta
+ * refresh is the only place the destination would appear, and it must not leave
+ * the server until the password is verified.
+ */
+function ogMetaPage(dest: string | null, og: { ogTitle: string | null; ogDescription: string | null; ogImage: string | null }, shortUrl: string): Response {
   const tags: string[] = [];
   if (og.ogTitle) tags.push(`<meta property="og:title" content="${escapeHtml(og.ogTitle)}">`);
   if (og.ogDescription) tags.push(`<meta property="og:description" content="${escapeHtml(og.ogDescription)}">`);
   if (og.ogImage) tags.push(`<meta property="og:image" content="${escapeHtml(og.ogImage)}">`);
   tags.push(`<meta property="og:url" content="${escapeHtml(shortUrl)}">`);
+  if (dest) tags.push(`<meta http-equiv="refresh" content="0;url=${escapeHtml(dest)}">`);
 
   const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 ${tags.join("\n")}
-<meta http-equiv="refresh" content="0;url=${escapeHtml(dest)}">
 <title>${escapeHtml(og.ogTitle ?? "Redirecting")}</title>
 </head>
-<body><p>Redirecting...</p></body>
+<body><p>${dest ? "Redirecting..." : "This link is password protected."}</p></body>
 </html>`;
   return new Response(html, {
     status: 200,
@@ -225,7 +236,7 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
     const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf;
     const country = (cf?.country as string) || "";
     const ua = c.req.header("user-agent") || "";
-    const device = detectDeviceType(ua);
+    const device = parseDevice(ua);
 
     const sorted = [...resolved.targets].sort((a, b) => b.priority - a.priority);
     for (const target of sorted) {
@@ -297,14 +308,30 @@ function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, 
   c.executionCtx.waitUntil(upsertDailyStats(getDb(c.env.DB), linkId, today, 1));
 }
 
+/**
+ * Emit a redirect. 302s carry `Cache-Control: private, no-store` because the
+ * destination is decided per request (expiry, max clicks, A/B, geo, password),
+ * so a shared or browser cache must never replay one.
+ */
+function redirectResponse<P extends string>(c: Context<AppEnv, P>, url: string, redirectType: number): Response {
+  if (redirectType === 301) return c.redirect(url, 301);
+  c.header("Cache-Control", "private, no-store");
+  return c.redirect(url, 302);
+}
+
 export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
   // Slugs are stored normalized, so the incoming one is normalized too:
   // /Blah and /blah resolve to the same link. See services/slug.ts.
   const slug = normalizeSlug(c.req.param("slug"));
   if (!slug) return next();
   const { host, isCustomDomain } = resolveHostInfo(c);
+  // Reserved slugs can never be links (validateSlug rejects them), so skip the
+  // lookup. On the primary host they fall through to the SPA or a static file;
+  // on a custom domain they take the same notFoundRedirect as any unknown slug.
+  const reserved = RESERVED_SLUGS.has(slug);
+  if (reserved && !isCustomDomain) return next();
 
-  const resolved = await resolveSlug(c, slug, isCustomDomain ? host : null);
+  const resolved = reserved ? null : await resolveSlug(c, slug, isCustomDomain ? host : null);
 
   if (!resolved) {
     // Custom domain: check notFoundRedirect before falling through
@@ -313,7 +340,7 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
         .where(eq(domainConfig.hostname, host))
         .get();
       if (domain?.notFoundRedirect && isSafeRedirectUrl(domain.notFoundRedirect)) {
-        return c.redirect(domain.notFoundRedirect, 302);
+        return redirectResponse(c, domain.notFoundRedirect, 302);
       }
     }
     return next();
@@ -323,13 +350,11 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
   const blocked = await checkConstraints(c, resolved);
   if (blocked) return blocked;
 
-  const destinationUrl = resolveDestination(c, resolved);
-
   // Bot/OG check BEFORE password gate — bots should see OG meta tags even for protected links
   const hasOg = resolved.ogTitle || resolved.ogDescription || resolved.ogImage;
   if (hasOg && isBotRequest(c)) {
     const shortUrl = new URL(`/${slug}`, c.req.url).href;
-    return ogMetaPage(destinationUrl, resolved, shortUrl);
+    return ogMetaPage(resolved.hasPassword ? null : resolveDestination(c, resolved), resolved, shortUrl);
   }
 
   // Password gate — serve the form on GET
@@ -337,13 +362,20 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
     return passwordGatePage(slug, getInstanceName(c.env));
   }
 
-  trackClick(c, slug, resolved.linkId, destinationUrl);
-  return c.redirect(destinationUrl, resolved.redirectType as 301 | 302);
+  // Targeting and param forwarding run only once the request is going to
+  // redirect, so a gated link never spends an A/B roll.
+  const destinationUrl = resolveDestination(c, resolved);
+  // Hono routes HEAD to the GET handler; only a real GET is a click.
+  if (c.req.method === "GET") {
+    trackClick(c, slug, resolved.linkId, destinationUrl);
+  }
+  return redirectResponse(c, destinationUrl, resolved.redirectType);
 }
 
 export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Next) {
   const slug = normalizeSlug(c.req.param("slug"));
   if (!slug) return next();
+  if (RESERVED_SLUGS.has(slug)) return next();
   const { host, isCustomDomain } = resolveHostInfo(c);
 
   const hostname = isCustomDomain ? host : null;
@@ -386,6 +418,19 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
     return passwordGatePage(slug, instanceName, "Please enter a password.");
   }
 
+  // Brute-force protection: same limit and KV key shape as
+  // POST /api/links/:id/check-password, the other way to guess this password.
+  const ip = c.req.header("cf-connecting-ip") || "unknown";
+  const windowEpoch = Math.floor(Date.now() / 1000 / PW_ATTEMPT_WINDOW_SECONDS);
+  const rlKey = `rl:pw:${link.id}:${ip}:${windowEpoch}`;
+  const rl = await checkRateLimit(c.env.KV, rlKey, PW_ATTEMPT_LIMIT, PW_ATTEMPT_WINDOW_SECONDS);
+  if (rl.exceeded) {
+    return passwordGatePage(slug, instanceName, "Too many attempts, try again later.", 429);
+  }
+  c.executionCtx.waitUntil(
+    c.env.KV.put(rlKey, String(rl.count + 1), rl.stored === null ? { expirationTtl: PW_ATTEMPT_WINDOW_SECONDS * 2 } : {})
+  );
+
   const valid = await verifyPassword(submittedPassword, link.password);
   if (!valid) {
     return passwordGatePage(slug, instanceName, "Incorrect password. Please try again.");
@@ -394,7 +439,7 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   // Password correct — resolve targeting + param forwarding, then track and redirect
   const destinationUrl = resolveDestination(c, resolved);
   trackClick(c, slug, resolved.linkId, destinationUrl);
-  return c.redirect(destinationUrl, resolved.redirectType as 301 | 302);
+  return redirectResponse(c, destinationUrl, resolved.redirectType);
 }
 
 /** Handle root path on custom domains (rootRedirect). */
@@ -412,7 +457,7 @@ export async function handleCustomDomainRoot(c: Context<AppEnv, "/">, next: Next
   if (!domain) return next();
 
   if (domain.rootRedirect && isSafeRedirectUrl(domain.rootRedirect)) {
-    return c.redirect(domain.rootRedirect, 302);
+    return redirectResponse(c, domain.rootRedirect, 302);
   }
 
   // Custom domain root with no redirect configured — fall through to SPA

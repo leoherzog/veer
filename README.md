@@ -2,7 +2,7 @@
 
 ## What is this?
 
-[Veer](https://demo.veer.ing/) is a self-hostable URL shortener that runs entirely on [Cloudflare Workers](https://workers.cloudflare.com/), with no servers, no containers, no rate-limits, no per-domain costs. It uses D1 for storage, KV for the redirect cache, and Analytics Engine for per-click events — every one of which has a free Cloudflare tier, so a personal instance costs nothing to run. Any hostname you point at the Worker can serve the app or act as a branded short domain.
+[Veer](https://demo.veer.ing/) is a self-hostable URL shortener that runs entirely on [Cloudflare Workers](https://workers.cloudflare.com/), with no servers, no containers, and no per-domain costs. It uses D1 for storage, KV for the redirect cache, and Analytics Engine for per-click events — every one of which has a free Cloudflare tier, so a personal instance costs nothing to run. Any hostname you point at the Worker can serve the app or act as a branded short domain.
 
 ### Features
 
@@ -14,7 +14,7 @@
 - 📱 A QR code for every link, with custom colors and PNG download
 - 👥 Teams with shared link ownership, member roles, and email invitations
 - 🔑 OAuth sign-in with Google, GitHub, Microsoft, and Discord, plus optional passkeys
-- 🤖 A REST API with Bearer keys for links, campaigns, stats, and bulk creation
+- 🤖 A REST API with Bearer keys for links, campaigns, stats, and bulk creation, metered at an advisory 60 requests/minute per key
 - 🎨 Set the branding on the entire instance with one environment variable
 
 ## Self-Hosting
@@ -61,6 +61,9 @@ Both commands print an ID. Open `wrangler.jsonc` and paste them in, then set `BE
 
 > [!IMPORTANT]
 > `BETTER_AUTH_URL` has to exactly match the hostname you serve from, or sign-in cookies and OAuth callbacks won't work.
+
+> [!IMPORTANT]
+> `WORKER_NAME` has to match the `name` field at the top of `wrangler.jsonc`. Domain sync asks the Cloudflare API which hostnames route to the Worker of that name, so a mismatch imports another Worker's hostnames.
 
 Two of the secrets come from Cloudflare, so have them ready before you start — each `wrangler secret put` prompts you to paste the value:
 
@@ -116,6 +119,9 @@ KV has room for roughly 7,000 actively-hit slugs. The other three scale with tra
 
 Point another domain at the Worker as a [custom domain](https://developers.cloudflare.com/workers/configuration/routing/custom-domains/) in the Cloudflare dashboard, then open `Settings → Domains` in Veer and click `Sync`. No other setup required. The same slug will live on different domains, and each domain gets its own root and 404 redirects.
 
+> [!WARNING]
+> `Sync` also removes domains Cloudflare no longer routes to the Worker, **and deletes every link on them**. Move links you want to keep to another domain before you unroute one.
+
 ### Optional Settings
 
 Set these in the `vars` block of `wrangler.jsonc`, or as secrets where noted:
@@ -126,6 +132,16 @@ Set these in the `vars` block of `wrangler.jsonc`, or as secrets where noted:
 | `PASSKEY_ENABLED` | Set to `true` (as a secret) to offer passkey sign-in alongside OAuth |
 | `DEMO_MODE` | Set to `true` to turn the deployment into a public read-only showcase — auth is bypassed, all writes return `403`, and an hourly cron generates synthetic traffic |
 
+### Demo Instance
+
+`wrangler.jsonc` carries a `demo` environment with its own database, KV namespace, and Analytics Engine dataset. Every command aimed at it takes `--env demo`:
+
+```bash
+npx wrangler d1 migrations apply veer-db-demo --remote --env demo
+npm run seed:remote          # generates the fixtures and applies them with --env demo
+npx wrangler deploy --env demo
+```
+
 ### Local Development
 
 ```bash
@@ -134,6 +150,8 @@ npm run dev
 ```
 
 `npm run dev` migrates a local D1, builds the frontend, and starts Wrangler at `http://localhost:8787` with esbuild watching for changes. `npm test` runs the suite against a real workerd instance, and `npm run seed:local` fills your local database with the demo fixtures.
+
+`npm run build` and `npm run typecheck` both run `wrangler types` first, which writes `worker-configuration.d.ts` from `wrangler.jsonc` and your `.dev.vars`. The file is generated and not checked in.
 
 ### Updating
 

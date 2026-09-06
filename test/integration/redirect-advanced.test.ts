@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat } from "../helpers";
+import { setupAuth, mockExecutionCtx, trackedExecutionCtx, createTestLink, createTestDomain, insertClickStat } from "../helpers";
 import { hashPassword } from "../../src/services/password";
+import { setCachedRedirect } from "../../src/services/kv-cache";
 
 const now = Math.floor(Date.now() / 1000);
 
@@ -269,7 +270,7 @@ describe("Redirect engine – advanced", () => {
       expect(res.headers.get("Location")).toBe("https://example.com/og-dest");
     });
 
-    it("bot UA on password-protected link with OG serves OG HTML (bypasses password gate)", async () => {
+    it("bot UA on password-protected link serves og:* tags but never the destination", async () => {
       const res = await app.request("/og-pw-link", {
         headers: { "User-Agent": "Twitterbot/1.0" },
       }, env, mockExecutionCtx());
@@ -277,8 +278,22 @@ describe("Redirect engine – advanced", () => {
       expect(res.status).toBe(200);
       const html = await res.text();
       expect(html).toContain('<meta property="og:title" content="Protected Link">');
-      // Should NOT contain password form
+      // The password gate is skipped for crawlers…
       expect(html).not.toContain("Enter password");
+      // …but the destination must not leak through the meta refresh.
+      expect(html).not.toContain("https://example.com/og-pw-dest");
+      expect(html).not.toContain("http-equiv=\"refresh\"");
+      // og:url still points at the short link.
+      expect(html).toContain('<meta property="og:url" content="http://localhost/og-pw-link">');
+    });
+
+    it("bot UA on an unprotected link still gets the meta refresh", async () => {
+      const res = await app.request("/og-link", {
+        headers: { "User-Agent": "facebookexternalhit/1.1" },
+      }, env, mockExecutionCtx());
+
+      const html = await res.text();
+      expect(html).toContain('<meta http-equiv="refresh" content="0;url=https://example.com/og-dest">');
     });
   });
 
@@ -354,6 +369,24 @@ describe("Redirect engine – advanced", () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/not-found-page");
+    });
+
+    it("GET /login on a custom domain takes notFoundRedirect like any unknown slug", async () => {
+      const res = await app.request("/login", {
+        headers: { Host: "custom-nf.example.com" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://example.com/not-found-page");
+    });
+
+    it("GET /login on the primary host serves the SPA", async () => {
+      const res = await app.request("/login", {
+        headers: { Host: "localhost" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
     });
 
     it("GET /nonexistent with no notFoundRedirect falls through", async () => {
@@ -531,5 +564,107 @@ describe("Redirect engine – advanced", () => {
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/mobile-page");
     });
+  });
+});
+
+describe("Redirect engine – password gate GET", () => {
+  let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+  beforeAll(async () => {
+    owner = await setupAuth(env);
+  });
+
+  it("D1 path: serves the form with no Location header", async () => {
+    await createTestLink(env.DB, {
+      slug: "pw-gate-d1",
+      destinationUrl: "https://example.com/pw-gate-d1-dest",
+      password: await hashPassword("hunter2"),
+      userId: owner.user.id,
+    });
+
+    const res = await app.request("/pw-gate-d1", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Location")).toBeNull();
+    const html = await res.text();
+    expect(html).toContain("This link is password protected");
+    expect(html).toContain('<form method="POST" action="/pw-gate-d1">');
+    expect(html).not.toContain("https://example.com/pw-gate-d1-dest");
+  });
+
+  it("gate CSP omits form-action so Chrome allows the redirect the POST returns", async () => {
+    const res = await app.request("/pw-gate-d1", {}, env, mockExecutionCtx());
+
+    const csp = res.headers.get("Content-Security-Policy") ?? "";
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).not.toContain("form-action");
+    expect(csp).not.toContain("example.com");
+  });
+
+  it("KV-cached path: serves the form with no Location header", async () => {
+    await setCachedRedirect(env.KV, "pw-gate-kv", {
+      url: "https://example.com/pw-gate-kv-dest",
+      redirectType: 302,
+      linkId: "pw-gate-kv-link",
+      isActive: true,
+      expiresAt: null,
+      maxClicks: null,
+      hasPassword: true,
+      isInternal: false,
+      ogTitle: null,
+      ogDescription: null,
+      ogImage: null,
+      paramForwarding: false,
+      targets: null,
+      domainHostname: null,
+    });
+
+    const res = await app.request("/pw-gate-kv", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Location")).toBeNull();
+    const html = await res.text();
+    expect(html).toContain("This link is password protected");
+    expect(html).not.toContain("https://example.com/pw-gate-kv-dest");
+  });
+});
+
+describe("Redirect engine – password POST rate limit", () => {
+  let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+  beforeAll(async () => {
+    owner = await setupAuth(env);
+  });
+
+  it("returns 429 on the sixth attempt in a window", async () => {
+    await createTestLink(env.DB, {
+      slug: "pw-brute",
+      destinationUrl: "https://example.com/pw-brute-dest",
+      password: await hashPassword("correct-horse"),
+      userId: owner.user.id,
+    });
+
+    const attempt = async (password: string) => {
+      const { ctx, settled } = trackedExecutionCtx();
+      const res = await app.request("/pw-brute", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", "CF-Connecting-IP": "203.0.113.7" },
+        body: new URLSearchParams({ password }).toString(),
+      }, env, ctx);
+      // The counter is written in waitUntil; await it so attempts are ordered.
+      await settled();
+      return res;
+    };
+
+    for (let i = 0; i < 5; i++) {
+      const res = await attempt("wrong");
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("Incorrect password");
+    }
+
+    const sixth = await attempt("wrong");
+    expect(sixth.status).toBe(429);
+    expect(await sixth.text()).toContain("Too many attempts");
   });
 });

@@ -1,9 +1,11 @@
 import { Hono } from "hono";
+import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { trimTrailingSlash } from "hono/trailing-slash";
 import type { AppEnv } from "./types";
 import { corsMiddleware } from "./middleware/cors";
 import { requireAuth, requireAdmin, requireAuthOrApiKey } from "./middleware/auth";
-import { rateLimitApiKey, checkRateLimit } from "./middleware/rate-limit";
+import { rateLimitApiKeyCheck, rateLimitApiKeyIncrement, checkRateLimit } from "./middleware/rate-limit";
 import authRoutes from "./routes/api/auth";
 import linkRoutes, { checkPassword } from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
@@ -18,11 +20,26 @@ import { handleRedirect, handleRedirectPost, handleCustomDomainRoot } from "./ro
 import { getInstanceName, isDemoMode } from "./lib/branding";
 import { DEMO_BLOCKED_MESSAGE } from "./lib/demo";
 import { scheduled } from "./scheduled";
+import { CSP } from "./lib/csp";
 
 export const app = new Hono<AppEnv>();
 
-// Global error handler: consistent JSON errors, no internal detail leaks
+/** Security headers every response carries, error responses included. */
+function setSecurityHeaders(c: Context<AppEnv>): void {
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  // A handler that emitted its own policy keeps it — the password gate serves a
+  // CSP without form-action.
+  if (!c.finalized || !c.res.headers.has("Content-Security-Policy")) {
+    c.header("Content-Security-Policy", CSP);
+  }
+}
+
+// Global error handler: consistent JSON errors, no internal detail leaks.
+// It builds a fresh response, so it re-applies the security headers itself.
 app.onError((err, c) => {
+  setSecurityHeaders(c);
   if (err instanceof HTTPException) {
     return c.json({ error: err.message }, err.status);
   }
@@ -38,20 +55,17 @@ app.onError((err, c) => {
 
 // Security headers on all responses
 app.use("*", async (c, next) => {
-  await next();
-  c.header("X-Content-Type-Options", "nosniff");
-  c.header("X-Frame-Options", "DENY");
-  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-  c.header("Content-Security-Policy", [
-    "default-src 'self'",
-    "script-src 'self' 'sha256-6lEELWNMgHrMCgR7XoJHO/mczPvz9siUa+la3S+ZogI=' 'sha256-ZswfTY7H35rbv8WC7NXBoiC7WNu86vSzCDChNWwZZDM='",
-    "style-src 'self' 'unsafe-inline' https://fonts.bunny.net",
-    "img-src 'self' data: https:",
-    // `data:` — wa-icon fetches the system icon library's data: URIs, so connect-src governs them, not img-src.
-    "connect-src 'self' data: https://ka-f.fontawesome.com",
-    "font-src 'self' https://cdn.jsdelivr.net https://fonts.bunny.net",
-  ].join("; "));
+  try {
+    await next();
+  } finally {
+    setSecurityHeaders(c);
+  }
 });
+
+// One canonical URL per path: /foo/ 301s to /foo. `alwaysRedirect` is required
+// because the catch-all serves the SPA with a 200, so the default 404-only mode
+// would never fire.
+app.use("*", trimTrailingSlash({ alwaysRedirect: true }));
 
 // CORS for API routes
 app.use("/api/*", corsMiddleware);
@@ -96,21 +110,24 @@ app.use("/api/admin", requireAuth, requireAdmin);
 app.use("/api/admin/*", requireAuth, requireAdmin);
 app.route("/api/admin", adminRoutes);
 
-// Auth middleware for protected API routes (excludes /api/auth/*)
-app.use("/api/me", requireAuth);
-app.use("/api/links", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/links/*", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/stats/*", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/campaigns", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/campaigns/*", requireAuthOrApiKey, rateLimitApiKey);
+// Auth middleware for protected API routes (excludes /api/auth/*).
+// rateLimitApiKeyCheck runs first: it keys on the bearer prefix alone, so an
+// over-limit key is rejected without spending an HMAC and two D1 queries. The
+// counter is only written after authentication, so an unknown key costs no KV write.
+app.use("/api/me", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/links", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/links/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/stats/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/campaigns", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/campaigns/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 app.use("/api/domains", requireAuth);
 app.use("/api/domains/*", requireAuth);
 app.use("/api/keys", requireAuth);
 app.use("/api/keys/*", requireAuth);
-app.use("/api/bulk", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/bulk/*", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/reports", requireAuthOrApiKey, rateLimitApiKey);
-app.use("/api/reports/*", requireAuthOrApiKey, rateLimitApiKey);
+app.use("/api/bulk", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/bulk/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/reports", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+app.use("/api/reports/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 
 // Admin-only domain management routes (sync, individual config, access)
 app.post("/api/domains/sync", requireAdmin);

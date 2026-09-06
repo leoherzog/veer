@@ -97,6 +97,7 @@ export async function createTestLink(
     ogDescription: string | null;
     ogImage: string | null;
     paramForwarding: boolean;
+    teamId: string | null;
   }> = {}
 ) {
   const id = overrides.id ?? crypto.randomUUID();
@@ -115,17 +116,18 @@ export async function createTestLink(
   const ogDescription = overrides.ogDescription ?? null;
   const ogImage = overrides.ogImage ?? null;
   const paramForwarding = overrides.paramForwarding ? 1 : 0;
+  const teamId = overrides.teamId ?? null;
   const now = Math.floor(Date.now() / 1000);
 
   await db
     .prepare(
-      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, isActive, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, paramForwarding)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, isActive, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, paramForwarding, teamId)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, userId, slug, destinationUrl, redirectType, title, now, now, isActive ? 1 : 0, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, paramForwarding)
+    .bind(id, userId, slug, destinationUrl, redirectType, title, now, now, isActive ? 1 : 0, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, paramForwarding, teamId)
     .run();
 
-  return { id, userId, slug, destinationUrl, redirectType, title, isActive, domainHostname, expiresAt, maxClicks, password, isInternal: !!overrides.isInternal, ogTitle, ogDescription, ogImage, paramForwarding: !!overrides.paramForwarding, createdAt: now, updatedAt: now };
+  return { id, userId, slug, destinationUrl, redirectType, title, isActive, domainHostname, expiresAt, maxClicks, password, isInternal: !!overrides.isInternal, ogTitle, ogDescription, ogImage, paramForwarding: !!overrides.paramForwarding, teamId, createdAt: now, updatedAt: now };
 }
 
 /** Insert a domain_config row directly into D1 for test setup. */
@@ -183,6 +185,22 @@ export function apiRequest(
     init.headers["Content-Type"] = init.headers["Content-Type"] || "application/json";
   }
   return app.request(path, init, env, mockExecutionCtx());
+}
+
+/**
+ * Execution context that keeps its waitUntil promises so a test can await them.
+ * `settled()` resolves once every background task queued so far has finished.
+ */
+export function trackedExecutionCtx(): { ctx: ExecutionContext; settled: () => Promise<unknown[]> } {
+  const pending: Promise<unknown>[] = [];
+  const ctx = {
+    waitUntil: (p: Promise<unknown>) => { pending.push(p.catch(() => {})); },
+    passThroughOnException: () => {},
+    exports: {} as Cloudflare.Exports,
+    props: {},
+    tracing: {} as Tracing,
+  } as ExecutionContext;
+  return { ctx, settled: () => Promise.all(pending) };
 }
 
 /** Mock execution context for app.request() calls that need waitUntil. */

@@ -10,11 +10,11 @@
     "deploy": "npm run build && wrangler deploy",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply veer-db --local",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "wrangler types && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:local": "tsx scripts/seed.ts && wrangler d1 execute veer-db --local --file=scripts/seed.generated.sql",
-    "seed:remote": "tsx scripts/seed.ts && wrangler d1 execute veer-db --remote --file=scripts/seed.generated.sql"
+    "seed:local": "tsx scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db --local --file=scripts/seed.generated.sql",
+    "seed:remote": "tsx scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db-demo --remote --env demo --file=scripts/seed.generated.sql"
   },
   "keywords": [],
   "author": "",

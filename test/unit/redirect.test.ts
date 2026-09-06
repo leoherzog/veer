@@ -3,7 +3,6 @@ import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
 import { setupAuth, mockExecutionCtx } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
-import { detectDeviceType } from "../../src/routes/redirect";
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
@@ -48,38 +47,6 @@ function cfRequest(
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────
-
-describe("detectDeviceType()", () => {
-  it("classifies iPhone UA as mobile", () => {
-    const ua = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-    expect(detectDeviceType(ua)).toBe("mobile");
-  });
-
-  it("classifies Android phone UA as mobile", () => {
-    const ua = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36";
-    expect(detectDeviceType(ua)).toBe("mobile");
-  });
-
-  it("classifies iPad UA as tablet", () => {
-    const ua = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1";
-    expect(detectDeviceType(ua)).toBe("tablet");
-  });
-
-  it("classifies Android tablet UA as tablet", () => {
-    // Android tablet UAs typically have "Android" but NOT "Mobile"
-    const ua = "Mozilla/5.0 (Linux; Android 13; SM-X710) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    expect(detectDeviceType(ua)).toBe("tablet");
-  });
-
-  it("classifies desktop Chrome UA as desktop", () => {
-    const ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-    expect(detectDeviceType(ua)).toBe("desktop");
-  });
-
-  it("classifies empty string as desktop", () => {
-    expect(detectDeviceType("")).toBe("desktop");
-  });
-});
 
 describe("Targeting evaluation via redirect", () => {
   let auth: Awaited<ReturnType<typeof setupAuth>>;
@@ -566,27 +533,5 @@ describe("OG meta page (bot/crawler)", () => {
     const html = await res.text();
     expect(html).toContain('<meta property="og:title"');
     expect(html).not.toContain('property="og:image"');
-  });
-});
-
-describe("detectDeviceType — extra coverage", () => {
-  it("classifies iPod Touch as mobile", () => {
-    const ua = "Mozilla/5.0 (iPod touch; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15";
-    expect(detectDeviceType(ua)).toBe("mobile");
-  });
-
-  it("classifies Opera Mini as mobile", () => {
-    const ua = "Opera/9.80 (J2ME/MIDP; Opera Mini/5.1.21214/28.2725; U; ru) Presto/2.8.119 Version/11.10";
-    expect(detectDeviceType(ua)).toBe("mobile");
-  });
-
-  it("classifies IEMobile UA as mobile (not tablet despite containing 'Mobile')", () => {
-    const ua = "Mozilla/5.0 (compatible; MSIE 10.0; Windows Phone 8.0; Trident/6.0; IEMobile/10.0)";
-    expect(detectDeviceType(ua)).toBe("mobile");
-  });
-
-  it("classifies generic Tablet UA as tablet", () => {
-    const ua = "Mozilla/5.0 (Linux; U; Tablet; en-US) AppleWebKit/537.36";
-    expect(detectDeviceType(ua)).toBe("tablet");
   });
 });

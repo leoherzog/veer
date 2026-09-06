@@ -27,7 +27,7 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
           ? emptyState("people-group", "You're not a member of any teams yet. Create one to get started.")
           : `<div class="wa-grid wa-gap-m" style="--min-column-size:280px;">
               ${teams.map(t => `
-                <wa-card class="team-card" data-id="${escapeAttr(t.id)}">
+                <wa-card class="team-card" data-id="${escapeAttr(t.id)}" role="button" tabindex="0" aria-label="Open team ${escapeAttr(t.name)}">
                   <div class="wa-stack wa-gap-s">
                     <div class="wa-split">
                       <strong>${escapeHtml(t.name)}</strong>
@@ -53,7 +53,7 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
       <wa-dialog id="create-team-dialog" label="Create Team" light-dismiss>
         <div class="wa-stack wa-gap-m">
           <wa-input id="team-name-input" label="Team Name" placeholder="My Team" required></wa-input>
-          <wa-input id="team-slug-input" label="Team Slug" placeholder="my-team" required hint="Used in URLs. Lowercase letters, numbers, and hyphens only."></wa-input>
+          <wa-input id="team-slug-input" label="Team Slug" placeholder="my-team" required hint="Used in URLs. Letters, numbers, hyphens, and underscores only."></wa-input>
         </div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" id="confirm-create-team">Create</wa-button>
@@ -61,9 +61,14 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
     </div>
   `;
 
-  // Navigate to team detail on card click
+  // Navigate to team detail on card click or keyboard activation
   container.querySelectorAll(".team-card").forEach((card) => {
     card.addEventListener("click", () => {
+      onTeamSelect(card.dataset.id);
+    });
+    card.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
       onTeamSelect(card.dataset.id);
     });
   });
@@ -74,10 +79,12 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
   const nameInput = container.querySelector("#team-name-input");
   const slugInput = container.querySelector("#team-slug-input");
 
-  // Auto-generate slug from name
+  // Auto-generate the slug from the name until the user types their own.
+  let slugEdited = false;
+  slugInput.addEventListener("input", () => { slugEdited = true; });
   nameInput.addEventListener("input", () => {
-    const slug = nameInput.value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    slugInput.value = slug;
+    if (slugEdited) return;
+    slugInput.value = nameInput.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "-").replace(/^-|-$/g, "");
   });
 
   confirmBtn.addEventListener("click", async () => {

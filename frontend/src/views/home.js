@@ -4,7 +4,8 @@ import { escapeHtml } from "../lib/escape.js";
 
 export function renderHome(container, user) {
   if (user) {
-    navigate("/links");
+    // Replace so Back doesn't land on a page that immediately redirects again.
+    navigate("/links", true);
     return;
   }
 

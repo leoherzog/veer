@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
+import { setupAuth, createTestLink, createTestDomain, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -659,6 +659,129 @@ describe("Campaigns API", () => {
 
       const res = await api("GET", `/api/campaigns/${otherCampaign.id}/stats`, { headers });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Access filtering on campaign links
+  // -------------------------------------------------------------------------
+  describe("campaign links follow current access", () => {
+    /** Create a team owning one link, with the given user as a member. */
+    async function createTeamWithLink(memberId: string, slug: string) {
+      const teamId = crypto.randomUUID();
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.prepare(
+        "INSERT INTO teams (id, name, slug, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)"
+      ).bind(teamId, `Team ${teamId.slice(0, 8)}`, `team-${teamId.slice(0, 8)}`, now, now).run();
+      await env.DB.prepare(
+        "INSERT INTO team_members (teamId, userId, role, joinedAt) VALUES (?, ?, 'member', ?)"
+      ).bind(teamId, memberId, now).run();
+
+      const ownerAuth = await setupAuth(env, { email: `team-owner-${teamId.slice(0, 8)}@test.com` });
+      const link = await createTestLink(env.DB, { slug, userId: ownerAuth.user.id });
+      await env.DB.prepare("UPDATE links SET teamId = ? WHERE id = ?").bind(teamId, link.id).run();
+
+      return { teamId, link };
+    }
+
+    it("drops a team link from campaign detail once membership ends", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Team Link Campaign" });
+      const { teamId, link } = await createTeamWithLink(userId, `team-camp-${crypto.randomUUID().slice(0, 8)}`);
+
+      const attach = await api("POST", `/api/campaigns/${campaign.id}/links`, {
+        headers,
+        body: { linkIds: [link.id] },
+      });
+      expect(attach.status).toBe(200);
+
+      const before = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
+      const beforeJson = await before.json() as { data: { links: { id: string }[] } };
+      expect(beforeJson.data.links.map((l) => l.id)).toContain(link.id);
+
+      await env.DB.prepare("DELETE FROM team_members WHERE teamId = ? AND userId = ?")
+        .bind(teamId, userId).run();
+
+      const after = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
+      const afterJson = await after.json() as { data: { links: { id: string }[] } };
+      expect(afterJson.data.links.map((l) => l.id)).not.toContain(link.id);
+
+      // The list count uses the same predicate, so it must drop the link too.
+      const list = await api("GET", "/api/campaigns", { headers });
+      const listJson = await list.json() as { data: { id: string; linkCount: number }[] };
+      expect(listJson.data.find((cp) => cp.id === campaign.id)!.linkCount).toBe(0);
+
+      // The association row itself is untouched; only the caller's view of it changed.
+      const row = await env.DB.prepare(
+        "SELECT linkId FROM link_campaigns WHERE campaignId = ? AND linkId = ?"
+      ).bind(campaign.id, link.id).first();
+      expect(row).not.toBeNull();
+    });
+
+    it("excludes inaccessible links from campaign stats", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Team Stats Campaign" });
+      const { teamId, link } = await createTeamWithLink(userId, `team-stats-${crypto.randomUUID().slice(0, 8)}`);
+      await api("POST", `/api/campaigns/${campaign.id}/links`, { headers, body: { linkIds: [link.id] } });
+
+      const recent = new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 10);
+      await insertClickStat(env.DB, link.id, 9, recent, 9);
+
+      const before = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
+      const beforeJson = await before.json() as { data: { totalClicks: number; linkCount: number } };
+      expect(beforeJson.data.linkCount).toBe(1);
+      expect(beforeJson.data.totalClicks).toBe(9);
+
+      await env.DB.prepare("DELETE FROM team_members WHERE teamId = ? AND userId = ?")
+        .bind(teamId, userId).run();
+
+      const after = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
+      const afterJson = await after.json() as { data: { totalClicks: number; linkCount: number } };
+      expect(afterJson.data.linkCount).toBe(0);
+      expect(afterJson.data.totalClicks).toBe(0);
+    });
+
+    it("campaign detail carries domainHostname for custom-domain links", async () => {
+      const hostname = "campaign-domain.example.com";
+      await createTestDomain(env.DB, hostname);
+
+      const campaign = await createTestCampaign(userId, { name: "Domain Links Campaign" });
+      const link = await createTestLink(env.DB, {
+        slug: `camp-dom-${crypto.randomUUID().slice(0, 8)}`,
+        userId,
+        domainHostname: hostname,
+      });
+      await linkToCampaign(link.id, campaign.id);
+
+      const res = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
+      const json = await res.json() as { data: { links: { id: string; domainHostname: string | null }[] } };
+      expect(json.data.links.find((l) => l.id === link.id)!.domainHostname).toBe(hostname);
+    });
+  });
+
+  describe("body type validation", () => {
+    it("rejects a non-string description on create with 400", async () => {
+      const res = await api("POST", "/api/campaigns", {
+        headers,
+        body: { name: "Bad Description", description: { text: "nope" } },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a non-string description on update with 400", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Bad Update Description" });
+      const res = await api("PUT", `/api/campaigns/${campaign.id}`, {
+        headers,
+        body: { description: 42 },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects non-string linkIds entries with 400", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Bad LinkIds Entries" });
+      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
+        headers,
+        body: { linkIds: [123] },
+      });
+      expect(res.status).toBe(400);
     });
   });
 });

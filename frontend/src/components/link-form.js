@@ -12,21 +12,51 @@ function toLocalDatetime(isoStr) {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+const DEVICE_TYPES = ["mobile", "tablet", "desktop"];
+
+/** The match value of a rule row, read from whichever control its type shows. */
+function targetMatchValue(row) {
+  return row.querySelector('[name="targetType"]').value === "device"
+    ? row.querySelector('[name="targetDevice"]').value
+    : row.querySelector('[name="targetCountry"]').value.trim().toUpperCase();
+}
+
+/**
+ * One targeting rule. The match control is constrained to what the API accepts
+ * — a 2-letter ISO country code or one of the known device types — so a rule
+ * cannot fail server validation after the link itself has been saved.
+ */
 function createTargetRow(target = {}) {
+  const type = target.type === "device" ? "device" : "geo";
   const row = document.createElement("div");
   row.className = "target-rule wa-cluster wa-gap-s wa-align-items-end";
   row.innerHTML = `
-    <wa-select name="targetType" label="Type" style="min-width:120px;">
-      <wa-option value="geo" ${(target.type || "geo") === "geo" ? "selected" : ""}>Country</wa-option>
-      <wa-option value="device" ${target.type === "device" ? "selected" : ""}>Device</wa-option>
+    <wa-select name="targetType" label="Type" value="${type}" style="min-width:120px;">
+      <wa-option value="geo">Country</wa-option>
+      <wa-option value="device">Device</wa-option>
     </wa-select>
-    <wa-input name="targetMatch" label="Match" placeholder="US" hint="Country code or device type" value="${escapeAttr(target.matchValue || "")}" style="min-width:120px;"></wa-input>
+    <wa-input name="targetCountry" label="Country" placeholder="US" maxlength="2" hint="2-letter code" value="${escapeAttr(type === "geo" ? target.matchValue || "" : "")}" style="min-width:120px;" ${type === "geo" ? "" : "hidden"}></wa-input>
+    <wa-select name="targetDevice" label="Device" value="${escapeAttr(type === "device" ? target.matchValue || DEVICE_TYPES[0] : DEVICE_TYPES[0])}" style="min-width:140px;" ${type === "device" ? "" : "hidden"}>
+      ${DEVICE_TYPES.map((d) => `<wa-option value="${d}">${d[0].toUpperCase()}${d.slice(1)}</wa-option>`).join("")}
+    </wa-select>
     <wa-input name="targetUrl" label="Destination" type="url" placeholder="https://..." value="${escapeAttr(target.destinationUrl || "")}" style="flex:1;"></wa-input>
     <wa-number-input name="targetPriority" label="Priority" without-steppers value="${escapeAttr(target.priority != null ? String(target.priority) : "0")}" style="max-width:80px;"></wa-number-input>
     <wa-button variant="danger" appearance="plain" pill class="remove-target-btn" aria-label="Remove rule">
       <wa-icon name="xmark"></wa-icon>
     </wa-button>
   `;
+  const typeSelect = row.querySelector('[name="targetType"]');
+  const countryInput = row.querySelector('[name="targetCountry"]');
+  const deviceSelect = row.querySelector('[name="targetDevice"]');
+  typeSelect.addEventListener("change", () => {
+    const isGeo = typeSelect.value === "geo";
+    countryInput.hidden = !isGeo;
+    deviceSelect.hidden = isGeo;
+  });
+  countryInput.addEventListener("input", () => {
+    const upper = countryInput.value.toUpperCase();
+    if (upper !== countryInput.value) countryInput.value = upper;
+  });
   row.querySelector(".remove-target-btn").addEventListener("click", () => row.remove());
   return row;
 }
@@ -50,7 +80,7 @@ function collectTargets(container) {
   const targets = [];
   for (const row of rows) {
     const type = row.querySelector('[name="targetType"]').value;
-    const match = row.querySelector('[name="targetMatch"]').value.trim();
+    const match = targetMatchValue(row);
     const url = row.querySelector('[name="targetUrl"]').value.trim();
     const priority = Number(row.querySelector('[name="targetPriority"]').value) || 0;
     if (match && url) {
@@ -73,11 +103,22 @@ function collectAbVariants(container) {
   return variants;
 }
 
-export function renderLinkForm(container, { link = null, onSuccess, teams = [] } = {}) {
+/**
+ * Link create/edit form. `onSuccess` fires when everything saved; `onPartialSave`
+ * fires when the link row was written but its targeting rules were rejected, so
+ * the caller can refresh once the still-open dialog is closed.
+ */
+export function renderLinkForm(container, { link = null, onSuccess, onPartialSave, teams = [] } = {}) {
   const isEdit = !!link;
   const hasPassword = isEdit && link.hasPassword;
   const hasTeams = teams.length > 0;
   const currentTeamId = link?.teamId || "";
+  const loadedExpiresAt = toLocalDatetime(link?.expiresAt);
+  // Set as soon as the link row exists. A save that got the link in but not its
+  // targeting rules leaves the form open, and the retry must update that row
+  // rather than create a second link.
+  let savedId = link?.id ?? null;
+  let mustSaveTargets = !!link?.targets?.length;
   container.innerHTML = `
     <form id="link-form" class="wa-stack wa-gap-m">
       ${hasTeams ? `
@@ -135,8 +176,9 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
             type="password"
             password-toggle
             value=""
-            hint="${hasPassword ? "Leave empty to keep current password" : "Visitors must enter this password to access the link"}"
+            hint="${hasPassword ? "Leave empty to keep the current password" : "Visitors must enter this password to access the link"}"
           ></wa-input>
+          ${hasPassword ? `<wa-switch name="removePassword" hint="Drops the password when you save">Remove password</wa-switch>` : ""}
           <wa-switch name="isInternal" ${link?.isInternal ? "checked" : ""}>Internal link (hidden from public listings)</wa-switch>
           <wa-divider></wa-divider>
           <wa-switch name="paramForwarding" ${link ? (link.paramForwarding ? "checked" : "") : "checked"}>Forward query parameters to destination</wa-switch>
@@ -228,7 +270,8 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
   apiFetch("/api/domains").then(result => {
     if (!result) return;
     const { data } = result;
-    for (const d of data) {
+    // The primary host holds no links of its own — "Default domain" is it.
+    for (const d of data.filter((d) => !d.isPrimary)) {
       const opt = document.createElement("wa-option");
       opt.value = d.hostname;
       opt.textContent = d.hostname;
@@ -261,10 +304,13 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     abList.appendChild(createAbRow());
   });
 
-  // Track whether password field was touched
-  let passwordTouched = false;
+  // Clearing a password is an explicit act, never inferred from an empty field.
   const passwordInput = container.querySelector('[name="password"]');
-  passwordInput.addEventListener("input", () => { passwordTouched = true; });
+  const removePassword = container.querySelector('[name="removePassword"]');
+  removePassword?.addEventListener("change", () => {
+    passwordInput.disabled = removePassword.checked;
+    if (removePassword.checked) passwordInput.value = "";
+  });
 
   // Several constrained fields (Max Clicks' `min="1"`, etc.) live inside the
   // collapsed "Advanced Options" <wa-details>. Native interactive validation
@@ -301,7 +347,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
     const targets = [...collectTargets(container), ...collectAbVariants(container)];
     const targetRows = container.querySelectorAll(".target-rule");
     for (const row of targetRows) {
-      const match = row.querySelector('[name="targetMatch"]').value.trim();
+      const match = targetMatchValue(row);
       const url = row.querySelector('[name="targetUrl"]').value.trim();
       if ((match && !url) || (!match && url)) {
         showToast("Each targeting rule must have both a match value and destination URL", "danger");
@@ -319,6 +365,7 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
 
     const submitBtn = form.querySelector('wa-button[type="submit"]');
     await withLoadingBtn(submitBtn, async () => {
+      const editing = savedId !== null;
       const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
       const maxClicksVal = form.querySelector('[name="maxClicks"]').value;
       const passwordVal = passwordInput.value;
@@ -326,11 +373,10 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
       const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;
 
       const data = {
-        ...(!isEdit && { slug: normalizeSlug(form.querySelector('[name="slug"]').value) }),
+        ...(!editing && { slug: normalizeSlug(form.querySelector('[name="slug"]').value) }),
         destinationUrl: form.querySelector('[name="destinationUrl"]').value.trim(),
         title: form.querySelector('[name="title"]').value.trim() || null,
         redirectType: Number(form.querySelector('[name="redirectType"]').value),
-        expiresAt: expiresAtVal ? new Date(expiresAtVal).toISOString() : null,
         maxClicks: maxClicksVal ? Number(maxClicksVal) : null,
         isInternal: form.querySelector('[name="isInternal"]').checked,
         paramForwarding: form.querySelector('[name="paramForwarding"]').checked,
@@ -341,25 +387,24 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
         ogImage: form.querySelector('[name="ogImage"]').value.trim() || null,
       };
 
+      // An unchanged expiry is left out entirely: resending an already-past date
+      // fails the API's "must be in the future" check, which would block edits
+      // to anything else on an expired link.
+      if (!editing || expiresAtVal !== loadedExpiresAt) {
+        data.expiresAt = expiresAtVal ? new Date(expiresAtVal).toISOString() : null;
+      }
+
       // Include teamId on create if an owner select exists and a team is selected
-      if (!isEdit) {
+      if (!editing) {
         const teamIdVal = form.querySelector('[name="teamId"]')?.value;
         if (teamIdVal) data.teamId = teamIdVal;
       }
 
-      // Only send password if touched (or on create if non-empty)
-      if (isEdit) {
-        if (passwordTouched) {
-          data.password = passwordVal || null;
-        }
-      } else {
-        if (passwordVal) {
-          data.password = passwordVal;
-        }
-      }
+      if (removePassword?.checked) data.password = null;
+      else if (passwordVal) data.password = passwordVal;
 
-      const url = isEdit ? `/api/links/${link.id}` : "/api/links";
-      const method = isEdit ? "PUT" : "POST";
+      const url = editing ? `/api/links/${savedId}` : "/api/links";
+      const method = editing ? "PUT" : "POST";
       const result = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
@@ -367,17 +412,30 @@ export function renderLinkForm(container, { link = null, onSuccess, teams = [] }
       });
       if (!result) return;
 
+      savedId = result.data.id;
+      if (!editing) {
+        // Slug and owner are fixed once the row exists.
+        slugInput.disabled = true;
+        const ownerSel = form.querySelector('[name="teamId"]');
+        if (ownerSel) ownerSel.disabled = true;
+      }
+
       // Save targeting rules
-      const linkId = result.data.id;
-      if (targets.length > 0 || (isEdit && link?.targets?.length)) {
-        const targetRes = await apiFetch(`/api/links/${linkId}/targets`, {
+      if (targets.length > 0 || mustSaveTargets) {
+        const targetRes = await apiFetch(`/api/links/${savedId}/targets`, {
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ targets }),
         });
         if (!targetRes) {
-          showToast("Link saved, but targeting rules failed to save", "warning");
+          // The link itself is saved. Keep the form and its rules on screen so
+          // the rules can be corrected and submitted again.
+          mustSaveTargets = true;
+          showToast("Link saved, but its targeting rules were not. Correct them and save again.", "warning");
+          if (onPartialSave) onPartialSave(result.data);
+          return;
         }
+        mustSaveTargets = targets.length > 0;
       }
 
       showToast(isEdit ? "Link updated" : "Link created", "success");

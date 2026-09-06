@@ -17,8 +17,16 @@ async function checkSession(c: { env: AppEnv["Bindings"]; req: { raw: Request } 
   const auth = getAuth(c.env);
   const session = await auth.api.getSession({ headers: c.req.raw.headers });
   if (!session?.user) return null;
-  const isAdmin = isAdminUser(c.env, session.user.email);
-  return { ...session.user, isAdmin };
+  // Pick fields explicitly: the Better Auth user carries columns (emailVerified,
+  // createdAt, …) that must not leak through `c.var.user` into API responses.
+  const u = session.user;
+  return {
+    id: u.id,
+    name: u.name,
+    email: u.email,
+    image: u.image ?? null,
+    isAdmin: isAdminUser(c.env, u.email),
+  };
 }
 
 /** Inject the synthetic demo user when DEMO_MODE=true. Returns true if demo bypass fired. */

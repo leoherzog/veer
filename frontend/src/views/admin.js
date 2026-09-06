@@ -75,7 +75,7 @@ export async function renderAdmin(container) {
       <wa-dialog id="edit-user-dialog" label="Edit User" light-dismiss>
         <div class="wa-stack wa-gap-m">
           <p>Editing <strong id="edit-user-name"></strong></p>
-          <wa-input id="edit-user-maxlinks" label="Max Links" type="number" min="0"></wa-input>
+          <wa-input id="edit-user-maxlinks" label="Max Links" type="number" min="1" hint="Leave empty for unlimited"></wa-input>
         </div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" id="confirm-edit-user">Save</wa-button>
@@ -172,7 +172,9 @@ export async function renderAdmin(container) {
     confirmBtn: container.querySelector("#confirm-edit-user"),
     onConfirm: async () => {
       const maxLinksInput = container.querySelector("#edit-user-maxlinks");
-      const maxLinks = maxLinksInput.value === "" ? null : parseInt(maxLinksInput.value, 10);
+      const rawMaxLinks = maxLinksInput.value.trim();
+      // An empty field means unlimited; the API rejects 0.
+      const maxLinks = rawMaxLinks === "" ? null : parseInt(rawMaxLinks, 10);
       const res = await apiFetch(`/api/admin/users/${encodeURIComponent(editDialog.dataset.userId)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },

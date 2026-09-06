@@ -13,8 +13,11 @@ wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
 .link-table th,
 .link-table td { vertical-align: middle; }
 
-/* Sort affordance — no utility exists for cursor or user-select. */
+/* Sort affordance — no utility exists for cursor or user-select. The inner
+   button carries the keyboard affordance; making it fill the cell keeps its
+   focus ring aligned with the header it acts on. */
 .link-table th[data-sort] { cursor: pointer; user-select: none; }
+.link-table th[data-sort] .th-sort { display: block; }
 
 /* Long destination URLs would otherwise blow out the table's intrinsic width.
    `wa-text-truncate` supplies the ellipsis; this cap is what makes it engage. */
@@ -26,8 +29,11 @@ wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
 }
 
 @media (max-width: 480px) {
-  .link-table th:nth-child(3),
-  .link-table td:nth-child(3) { display: none; }
+  /* Scoped to the dashboard links table: its third column is Title, the one
+     column worth dropping on a narrow screen. Every other `.link-table` puts
+     something load-bearing there. */
+  #links-table .link-table th:nth-child(3),
+  #links-table .link-table td:nth-child(3) { display: none; }
   .text-truncate { max-width: 100px; }
 }
 

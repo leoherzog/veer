@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx, trackedExecutionCtx } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
 
 describe("Redirect engine – GET /:slug", () => {
@@ -198,5 +198,144 @@ describe("Redirect engine – GET /:slug", () => {
         expect(row?.clicks).toBe(2);
       });
     });
+  });
+});
+
+describe("Redirect engine – caching headers", () => {
+  let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+  beforeAll(async () => {
+    owner = await setupAuth(env);
+  });
+
+  it("302 carries Cache-Control: private, no-store", async () => {
+    await createTestLink(env.DB, { slug: "cc-302", destinationUrl: "https://example.com/cc-302", userId: owner.user.id });
+
+    const res = await app.request("/cc-302", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Cache-Control")).toBe("private, no-store");
+  });
+
+  it("301 is left cacheable", async () => {
+    await createTestLink(env.DB, { slug: "cc-301", destinationUrl: "https://example.com/cc-301", redirectType: 301, userId: owner.user.id });
+
+    const res = await app.request("/cc-301", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(301);
+    expect(res.headers.get("Cache-Control")).toBeNull();
+  });
+});
+
+describe("Redirect engine – HEAD requests", () => {
+  let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+  beforeAll(async () => {
+    owner = await setupAuth(env);
+  });
+
+  it("HEAD redirects without recording a click", async () => {
+    const link = await createTestLink(env.DB, { slug: "head-slug", destinationUrl: "https://example.com/head", userId: owner.user.id });
+    const today = new Date().toISOString().slice(0, 10);
+
+    const head = trackedExecutionCtx();
+    const res = await app.request("/head-slug", { method: "HEAD" }, env, head.ctx);
+    await head.settled();
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe("https://example.com/head");
+
+    const row = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
+      .bind(link.id, today)
+      .first<{ clicks: number }>();
+    expect(row).toBeNull();
+
+    // The same slug over GET still counts, so the guard is on the method only.
+    const res2 = await app.request("/head-slug", {}, env, mockExecutionCtx());
+    expect(res2.status).toBe(302);
+    await vi.waitFor(async () => {
+      const after = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
+        .bind(link.id, today)
+        .first<{ clicks: number }>();
+      expect(after?.clicks).toBe(1);
+    });
+  });
+});
+
+describe("Redirect engine – reserved slugs", () => {
+  let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+  beforeAll(async () => {
+    owner = await setupAuth(env);
+  });
+
+  it("falls through without a KV or D1 lookup even when a row and cache entry exist", async () => {
+    // validateSlug rejects reserved slugs, so these can only be planted directly.
+    await createTestLink(env.DB, { slug: "settings", destinationUrl: "https://example.com/should-not-redirect", userId: owner.user.id });
+    await setCachedRedirect(env.KV, "settings", {
+      url: "https://example.com/should-not-redirect-cached",
+      redirectType: 302,
+      linkId: "reserved-link",
+      isActive: true,
+      expiresAt: null,
+      maxClicks: null,
+      hasPassword: false,
+      isInternal: false,
+      ogTitle: null,
+      ogDescription: null,
+      ogImage: null,
+      paramForwarding: false,
+      targets: null,
+      domainHostname: null,
+    });
+
+    const res = await app.request("/settings", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Location")).toBeNull();
+  });
+});
+
+describe("Trailing slash", () => {
+  let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+  beforeAll(async () => {
+    owner = await setupAuth(env);
+  });
+
+  it("301s /:slug/ to the canonical /:slug", async () => {
+    await createTestLink(env.DB, { slug: "ts-slug", destinationUrl: "https://example.com/ts", userId: owner.user.id });
+
+    const res = await app.request("/ts-slug/", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(301);
+    expect(new URL(res.headers.get("Location")!).pathname).toBe("/ts-slug");
+  });
+
+  it("301s an unknown path with a trailing slash rather than serving the SPA", async () => {
+    const res = await app.request("/no-such-slug/", {}, env, mockExecutionCtx());
+
+    expect(res.status).toBe(301);
+    expect(new URL(res.headers.get("Location")!).pathname).toBe("/no-such-slug");
+  });
+
+  it("preserves the query string", async () => {
+    const res = await app.request("/ts-slug/?utm_source=x", {}, env, mockExecutionCtx());
+
+    const location = new URL(res.headers.get("Location")!);
+    expect(location.pathname).toBe("/ts-slug");
+    expect(location.search).toBe("?utm_source=x");
+  });
+
+  it("leaves / alone", async () => {
+    const res = await app.request("/", {}, env, mockExecutionCtx());
+
+    expect(res.status).not.toBe(301);
+  });
+
+  it("leaves non-GET requests alone", async () => {
+    const res = await app.request("/ts-slug/", { method: "POST" }, env, mockExecutionCtx());
+
+    expect(res.status).not.toBe(301);
   });
 });

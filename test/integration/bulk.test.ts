@@ -201,6 +201,89 @@ describe("Bulk Links API", () => {
       }
     });
 
+    it("reports the real reason for every item on an unknown domain", async () => {
+      const res = await postBulk({
+        links: [
+          { slug: "bulk-missing-dom-1", destinationUrl: "https://example.com/1", domainHostname: "missing-cache.example.com" },
+          { slug: "bulk-missing-dom-2", destinationUrl: "https://example.com/2", domainHostname: "missing-cache.example.com" },
+        ],
+      }, headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { success: boolean; error?: string }[] };
+      // The cached verdict must carry the first item's message, not a generic access error.
+      expect(json.results[0].error).toBe("Domain not found");
+      expect(json.results[1].error).toBe("Domain not found");
+    });
+
+    it("stores the primary hostname as the default domain", async () => {
+      const res = await postBulk({
+        links: [{ slug: "bulk-primary-host", destinationUrl: "https://example.com/p", domainHostname: "localhost" }],
+      }, headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { success: boolean; id: string }[] };
+      expect(json.results[0].success).toBe(true);
+
+      const row = await env.DB.prepare("SELECT domainHostname FROM links WHERE id = ?")
+        .bind(json.results[0].id).first<{ domainHostname: string | null }>();
+      expect(row!.domainHostname).toBeNull();
+    });
+
+    it("rejects an internal link on a custom domain per item", async () => {
+      await createTestDomain(env.DB, "bulk-internal.example.com", { accessMode: "all" });
+
+      const res = await postBulk({
+        links: [
+          { slug: "bulk-internal-bad", destinationUrl: "https://example.com/i", domainHostname: "bulk-internal.example.com", isInternal: true },
+        ],
+      }, headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { success: boolean; error?: string }[] };
+      expect(json.results[0].success).toBe(false);
+      expect(json.results[0].error).toContain("Internal links");
+    });
+
+    it("rejects a non-string teamId with 400", async () => {
+      const res = await postBulk({
+        teamId: 42,
+        links: [{ slug: "bulk-bad-team", destinationUrl: "https://example.com" }],
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("enforces the creator's maxLinks quota across the batch", async () => {
+      const quotaAuth = await setupAuth(env, { email: "bulk-quota@test.com" });
+      await createTestLink(env.DB, { slug: "bulk-quota-existing", userId: quotaAuth.user.id });
+      await env.DB.prepare("UPDATE user SET maxLinks = 2 WHERE id = ?").bind(quotaAuth.user.id).run();
+
+      const res = await postBulk({
+        links: [
+          { slug: "bulk-quota-1", destinationUrl: "https://example.com/1" },
+          { slug: "bulk-quota-2", destinationUrl: "https://example.com/2" },
+        ],
+      }, quotaAuth.headers);
+      expect(res.status).toBe(400);
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain("link limit");
+
+      const row = await env.DB.prepare("SELECT id FROM links WHERE slug = ?").bind("bulk-quota-1").first();
+      expect(row).toBeNull();
+    });
+
+    it("allows a batch that exactly fills the quota", async () => {
+      const quotaAuth = await setupAuth(env, { email: "bulk-quota-fit@test.com" });
+      await env.DB.prepare("UPDATE user SET maxLinks = 2 WHERE id = ?").bind(quotaAuth.user.id).run();
+
+      const res = await postBulk({
+        links: [
+          { slug: "bulk-fit-1", destinationUrl: "https://example.com/1" },
+          { slug: "bulk-fit-2", destinationUrl: "https://example.com/2" },
+        ],
+      }, quotaAuth.headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { success: boolean }[] };
+      expect(json.results.every(r => r.success)).toBe(true);
+    });
+
     it("returns 401 for unauthenticated request", async () => {
       const res = await app.request("/api/bulk", {
         method: "POST",

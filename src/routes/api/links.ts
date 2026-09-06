@@ -2,13 +2,14 @@ import { Hono, type Context, type MiddlewareHandler } from "hono";
 import { eq, desc, asc, sql, and, or, inArray } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
-import { links, linkStats, linkTargets, linkCampaigns, campaigns, teamMembers, teams, user as userTable } from "../../db/schema";
+import { links, linkStats, linkTargets, linkCampaigns, campaigns, teams, user as userTable } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect, deleteCachedRedirect, toCachedRedirect } from "../../services/kv-cache";
 import { badRequest, notFound, conflict } from "../../lib/errors";
 import { requireTeamMember } from "../../lib/team";
-import { validateHttpUrl, validateDomainAccess } from "../../lib/validators";
-import { parseJsonBody, parsePagination, stripPassword } from "../../lib/request";
+import { canAccessLink, accessibleLinks } from "../../lib/link-access";
+import { validateHttpUrl, validateDomainAccess, getPrimaryHostname, resolveDomainHostname } from "../../lib/validators";
+import { parseJsonBody, parseOptionalJsonBody, parsePagination, stripPassword } from "../../lib/request";
 import { hashPassword, verifyPassword } from "../../services/password";
 import { checkRateLimit } from "../../middleware/rate-limit";
 import type { AppEnv } from "../../types";
@@ -49,16 +50,50 @@ function parseMaxClicks(value: number): number {
   return mc;
 }
 
-/** Strip the password hash from a link record, replacing with hasPassword boolean. */
-/** Check whether a user can access a link: either they own it, or they're a member of the link's team. */
-async function canAccessLink(db: Database, link: { userId: string; teamId: string | null }, userId: string): Promise<boolean> {
-  if (link.userId === userId) return true;
-  if (!link.teamId) return false;
-  const member = await db.select({ role: teamMembers.role })
-    .from(teamMembers)
-    .where(and(eq(teamMembers.teamId, link.teamId), eq(teamMembers.userId, userId)))
-    .get();
-  return !!member;
+const MAX_LINK_ID_LENGTH = 64;
+
+/** Targeting priority: an integer within a range SQLite stores exactly. NaN/Infinity fall back to 0. */
+function parsePriority(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return 0;
+  return Math.min(1000, Math.max(-1000, Math.trunc(value)));
+}
+
+const INTERNAL_ON_CUSTOM_DOMAIN = "Internal links are only supported on the default domain";
+
+/** A session cookie is host-only to the primary host, so an internal link on a custom domain always 403s. */
+function assertInternalAllowed(isInternal: boolean, domainHostname: string | null): void {
+  if (isInternal && domainHostname) throw badRequest(INTERNAL_ON_CUSTOM_DOMAIN);
+}
+
+/** Hash a password field, rejecting non-string values. Empty/null means "no password". */
+async function parsePassword(value: unknown): Promise<string | null> {
+  if (value === undefined || value === null || value === "") return null;
+  if (typeof value !== "string") throw badRequest("password must be a string");
+  return hashPassword(value);
+}
+
+/**
+ * Normalize a campaign id list and reject any id the user does not own.
+ * Runs before the link write so a bad id cannot leave D1 and KV out of step.
+ */
+async function validateCampaignIds(db: Database, raw: unknown, userId: string): Promise<string[]> {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) throw badRequest("campaignIds must be an array");
+  if (raw.some(id => typeof id !== "string")) throw badRequest("campaignIds must contain strings");
+  const ids = [...new Set(raw as string[])];
+  if (ids.length === 0) return [];
+  const owned = await db.select({ id: campaigns.id }).from(campaigns)
+    .where(and(inArray(campaigns.id, ids), eq(campaigns.userId, userId)));
+  if (owned.length !== ids.length) throw badRequest("Campaign not found or does not belong to you");
+  return ids;
+}
+
+/** Map a UNIQUE constraint violation on links(slug, domainHostname) to a 409. */
+function rethrowAsSlugConflict(e: unknown): never {
+  if (e instanceof Error && (e.message.includes("UNIQUE constraint") || (e.cause instanceof Error && e.cause.message.includes("UNIQUE constraint")))) {
+    throw conflict("Slug already taken");
+  }
+  throw e;
 }
 
 type Link = typeof links.$inferSelect;
@@ -111,16 +146,7 @@ linkRoutes.get("/", async (c) => {
   if (teamId) {
     ownerFilter = eq(links.teamId, teamId);
   } else if (scope === "all") {
-    // Fetch user's team IDs
-    const userTeams = await db.select({ teamId: teamMembers.teamId })
-      .from(teamMembers)
-      .where(eq(teamMembers.userId, user.id));
-    const teamIds = userTeams.map(t => t.teamId);
-    if (teamIds.length > 0) {
-      ownerFilter = or(eq(links.userId, user.id), inArray(links.teamId, teamIds))!;
-    } else {
-      ownerFilter = eq(links.userId, user.id);
-    }
+    ownerFilter = accessibleLinks(user.id);
   } else {
     ownerFilter = eq(links.userId, user.id);
   }
@@ -189,21 +215,27 @@ linkRoutes.post("/", async (c) => {
     await requireTeamMember(db, body.teamId, user.id);
   }
 
+  const primaryHost = getPrimaryHostname(c.env.BETTER_AUTH_URL);
+  const domainHostname = resolveDomainHostname(body.domainHostname, primaryHost);
+
+  const isInternal = body.isInternal === true;
+  assertInternalAllowed(isInternal, domainHostname);
+
+  // Validate domain access if provided
+  if (domainHostname) {
+    await validateDomainAccess(db, domainHostname, user.email, user.isAdmin, primaryHost);
+  }
+
   // Enforce maxLinks quota (soft cap — concurrent requests may slightly exceed the limit.
   // D1 does not support SELECT...FOR UPDATE, so this is check-then-act without a transaction.)
   // Note: team-scoped links count against the creator's personal quota intentionally,
   // since the creator (userId) owns the link regardless of team association.
-  const userRow = await db.select({ maxLinks: userTable.maxLinks }).from(userTable).where(eq(userTable.id, user.id)).get();
-  if (userRow?.maxLinks != null) {
-    const [linkCountResult] = await db.select({ count: sql<number>`count(*)` }).from(links).where(eq(links.userId, user.id));
-    if ((linkCountResult?.count ?? 0) >= userRow.maxLinks) {
-      throw badRequest(`You have reached your link limit (${userRow.maxLinks})`);
-    }
-  }
-
-  // Validate domain access if provided
-  if (body.domainHostname) {
-    await validateDomainAccess(db, body.domainHostname, user.email, user.isAdmin);
+  const quota = await db.select({
+    maxLinks: userTable.maxLinks,
+    linkCount: sql<number>`(SELECT count(*) FROM ${links} WHERE ${links.userId} = ${user.id})`,
+  }).from(userTable).where(eq(userTable.id, user.id)).get();
+  if (quota?.maxLinks != null && (quota.linkCount ?? 0) >= quota.maxLinks) {
+    throw badRequest(`You have reached your link limit (${quota.maxLinks})`);
   }
 
   const slugCheck = validateSlug(body.slug);
@@ -225,13 +257,8 @@ linkRoutes.post("/", async (c) => {
     maxClicks = parseMaxClicks(body.maxClicks);
   }
 
-  // Hash password if provided
-  let passwordHash: string | null = null;
-  if (body.password) {
-    passwordHash = await hashPassword(body.password);
-  }
+  const passwordHash = await parsePassword(body.password);
 
-  const isInternal = body.isInternal === true;
   const paramForwarding = body.paramForwarding === true;
 
   const ogTitle = body.ogTitle || null;
@@ -242,20 +269,18 @@ linkRoutes.post("/", async (c) => {
     ogImage = body.ogImage;
   }
 
+  const createCampaignIds = await validateCampaignIds(
+    db,
+    body.campaignIds ?? (body.campaignId ? [body.campaignId] : []),
+    user.id,
+  );
+
   const id = crypto.randomUUID();
   const now = new Date();
-  const domainHostname = body.domainHostname || null;
-
-  // Check slug uniqueness within the target domain
-  // (SQLite UNIQUE index treats NULLs as distinct, so we must check manually)
-  const slugWhereClause = domainHostname
-    ? and(eq(links.slug, slug), eq(links.domainHostname, domainHostname))
-    : and(eq(links.slug, slug), sql`${links.domainHostname} IS NULL`);
-  const existing = await db.select({ id: links.id }).from(links).where(slugWhereClause).get();
-  if (existing) throw conflict("Slug already taken");
-
   const teamId = body.teamId || null;
 
+  // Both uniqueness indexes (composite + partial) raise a UNIQUE constraint error,
+  // so this catch is the only slug-collision check needed.
   try {
     await db.insert(links).values({
       id,
@@ -272,42 +297,31 @@ linkRoutes.post("/", async (c) => {
       ogTitle,
       ogDescription,
       ogImage,
-      domainHostname: body.domainHostname || null,
+      domainHostname,
       teamId,
       createdAt: now,
       updatedAt: now,
     });
   } catch (e: unknown) {
-    if (e instanceof Error && (e.message.includes("UNIQUE constraint") || (e.cause instanceof Error && e.cause.message.includes("UNIQUE constraint")))) {
-      throw conflict("Slug already taken");
-    }
-    throw e;
+    rethrowAsSlugConflict(e);
   }
 
   // Write-through to KV (domain-scoped key)
   const kvData = await buildCachedRedirect(db, {
     id, destinationUrl: body.destinationUrl, redirectType, isActive: true,
     expiresAt, maxClicks, password: passwordHash, isInternal, ogTitle, ogDescription, ogImage, paramForwarding,
-    domainHostname: body.domainHostname || null,
+    domainHostname,
   }, null);
   // Deferred, unlike the update paths below, which await. On create there is no
   // prior cache entry, so a slow or failed write costs at most one extra D1 read
   // on the first redirect (which refills the cache itself). Awaiting here meant a
   // KV error — e.g. exhausting the free tier's 1,000 writes/day — threw *after*
   // the row was already committed, 500ing a link that had in fact been created.
-  c.executionCtx.waitUntil(setCachedRedirect(c.env.KV, slug, kvData, body.domainHostname || null));
+  c.executionCtx.waitUntil(setCachedRedirect(c.env.KV, slug, kvData, domainHostname));
 
-  // Handle campaign associations on create
-  const createCampaignIds = body.campaignIds?.length ? body.campaignIds : body.campaignId ? [body.campaignId] : [];
   if (createCampaignIds.length > 0) {
-    const validCampaigns = await db.select({ id: campaigns.id }).from(campaigns)
-      .where(and(inArray(campaigns.id, createCampaignIds), eq(campaigns.userId, user.id)));
-    const validIds = new Set(validCampaigns.map(c => c.id));
-    const toInsert = createCampaignIds.filter(cid => validIds.has(cid));
-    if (toInsert.length > 0) {
-      await db.insert(linkCampaigns).values(toInsert.map(cid => ({ linkId: id, campaignId: cid })))
-        .onConflictDoNothing();
-    }
+    await db.insert(linkCampaigns).values(createCampaignIds.map(cid => ({ linkId: id, campaignId: cid })))
+      .onConflictDoNothing();
   }
 
   return c.json({
@@ -326,7 +340,7 @@ linkRoutes.post("/", async (c) => {
       ogTitle,
       ogDescription,
       ogImage,
-      domainHostname: body.domainHostname || null,
+      domainHostname,
       teamId,
       createdAt: now,
       updatedAt: now,
@@ -391,13 +405,16 @@ linkRoutes.put("/:id", async (c) => {
   }>(c);
 
   const updates: Partial<typeof links.$inferInsert> = { updatedAt: new Date() };
+  const primaryHost = getPrimaryHostname(c.env.BETTER_AUTH_URL);
+  let domainHostname = existing.domainHostname;
 
   // Handle domain change
   if (body.domainHostname !== undefined) {
-    if (body.domainHostname) {
-      await validateDomainAccess(db, body.domainHostname, user.email, user.isAdmin);
+    const newDomainHostname = resolveDomainHostname(body.domainHostname, primaryHost);
+    if (newDomainHostname) {
+      await validateDomainAccess(db, newDomainHostname, user.email, user.isAdmin, primaryHost);
     }
-    const newDomainHostname = body.domainHostname || null;
+    domainHostname = newDomainHostname;
     // Check slug uniqueness on target domain (exclude current link)
     if (newDomainHostname !== existing.domainHostname) {
       const slugCheck = newDomainHostname
@@ -432,16 +449,13 @@ linkRoutes.put("/:id", async (c) => {
 
   // Handle password: non-empty string = set, null/empty = clear, absent = unchanged
   if (body.password !== undefined) {
-    if (body.password === null || body.password === "") {
-      updates.password = null;
-    } else {
-      updates.password = await hashPassword(body.password);
-    }
+    updates.password = await parsePassword(body.password);
   }
 
   if (body.isInternal !== undefined) {
     updates.isInternal = body.isInternal === true;
   }
+  assertInternalAllowed(updates.isInternal ?? !!existing.isInternal, domainHostname);
 
   // Handle OG fields
   if (body.ogTitle !== undefined) {
@@ -461,31 +475,30 @@ linkRoutes.put("/:id", async (c) => {
     updates.paramForwarding = body.paramForwarding === true;
   }
 
-  await db.update(links).set(updates).where(eq(links.id, id));
+  // Campaign associations are validated before any write: a rejection after the D1
+  // update would leave the row changed and the KV entry stale for up to the cache TTL.
+  const replaceCampaigns = body.campaignIds !== undefined || body.campaignId !== undefined;
+  const updateCampaignIds = replaceCampaigns
+    ? await validateCampaignIds(
+        db,
+        body.campaignIds ?? (body.campaignId ? [body.campaignId] : []),
+        user.id,
+      )
+    : [];
+
+  try {
+    await db.update(links).set(updates).where(eq(links.id, id));
+  } catch (e: unknown) {
+    rethrowAsSlugConflict(e);
+  }
 
   // Delete old domain KV key after D1 commit (if domain changed)
-  if (body.domainHostname !== undefined && existing.domainHostname !== (body.domainHostname || null)) {
+  if (existing.domainHostname !== domainHostname) {
     await deleteCachedRedirect(c.env.KV, existing.slug, existing.domainHostname);
   }
 
-  // Handle campaign association update (supports campaignIds array or legacy campaignId)
-  const hasCampaignIds = body.campaignIds !== undefined;
-  const hasLegacyCampaignId = body.campaignId !== undefined;
-  if (hasCampaignIds || hasLegacyCampaignId) {
-    const updateCampaignIds = hasCampaignIds
-      ? (body.campaignIds || [])
-      : body.campaignId ? [body.campaignId] : [];
-    // Validate all campaign IDs ownership in a single query
-    if (updateCampaignIds.length > 0) {
-      const validCampaigns = await db.select({ id: campaigns.id }).from(campaigns)
-        .where(and(inArray(campaigns.id, updateCampaignIds), eq(campaigns.userId, user.id)));
-      const validIds = new Set(validCampaigns.map(c => c.id));
-      const invalid = updateCampaignIds.filter(cid => !validIds.has(cid));
-      if (invalid.length > 0) throw badRequest("Campaign not found or does not belong to you");
-    }
-    // Remove existing campaign associations
+  if (replaceCampaigns) {
     await db.delete(linkCampaigns).where(eq(linkCampaigns.linkId, id));
-    // Add new associations in a single insert
     if (updateCampaignIds.length > 0) {
       await db.insert(linkCampaigns).values(updateCampaignIds.map(cid => ({ linkId: id, campaignId: cid })));
     }
@@ -507,13 +520,20 @@ linkRoutes.patch("/:id/active", async (c) => {
   const { id } = c.req.param();
   const link = c.var.link;
 
-  // Toggle: if body has explicit isActive use it, otherwise flip current value
+  // An absent body (or an absent isActive) flips the current value; an explicit value wins.
+  const body = await parseOptionalJsonBody<{ isActive?: unknown }>(c);
+  const requested = body?.isActive;
   let isActive: boolean;
-  try {
-    const body = await parseJsonBody<{ isActive?: unknown }>(c);
-    isActive = body.isActive === true || body.isActive === "true" || body.isActive === 1;
-  } catch {
+  if (requested === undefined || requested === null) {
     isActive = !link.isActive;
+  } else if (typeof requested === "boolean") {
+    isActive = requested;
+  } else if (requested === "true" || requested === 1) {
+    isActive = true;
+  } else if (requested === "false" || requested === 0) {
+    isActive = false;
+  } else {
+    throw badRequest("isActive must be a boolean");
   }
 
   await db.update(links).set({ isActive, updatedAt: new Date() }).where(eq(links.id, id));
@@ -607,10 +627,11 @@ linkRoutes.put("/:id/targets", async (c) => {
   const newTargets: CachedTarget[] = [];
   const batchOps: [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]] = [
     db.delete(linkTargets).where(eq(linkTargets.linkId, id)),
+    db.update(links).set({ updatedAt: new Date() }).where(eq(links.id, id)),
   ];
   for (const t of body.targets) {
     const targetId = crypto.randomUUID();
-    const priority = typeof t.priority === "number" ? Math.floor(t.priority) : 0;
+    const priority = parsePriority(t.priority);
     batchOps.push(
       db.insert(linkTargets).values({
         id: targetId,
@@ -643,12 +664,16 @@ linkRoutes.put("/:id/targets", async (c) => {
 export async function checkPassword(c: Context<AppEnv, "/api/links/:id/check-password">) {
   const ip = c.req.header("cf-connecting-ip") || "unknown";
   const id = c.req.param("id");
+  // Link ids are UUIDs; a longer one can only overflow the 512-byte KV key below.
+  if (id.length > MAX_LINK_ID_LENGTH) {
+    return c.json({ error: "Link not found or has no password" }, 404);
+  }
   // Brute-force protection: 5 attempts per 15-minute window per IP+link
   const windowEpoch = Math.floor(Date.now() / 1000 / 900);
   const rlKey = `rl:pw:${id}:${ip}:${windowEpoch}`;
   const rl = await checkRateLimit(c.env.KV, rlKey, 5, 900);
   if (rl.exceeded) {
-    return c.json({ error: "Too many attempts, try again later" }, 429);
+    return c.json({ error: "Too many attempts, try again later." }, 429);
   }
   c.executionCtx.waitUntil(c.env.KV.put(rlKey, String(rl.count + 1), rl.stored === null ? { expirationTtl: 1800 } : {}));
 

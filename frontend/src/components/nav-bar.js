@@ -3,14 +3,21 @@ import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { getInstanceName, isDemoMode } from "../lib/config.js";
 
+/**
+ * Swap the theme class on `<html>` and announce it. WA components re-read their
+ * custom properties on their own; the `theme-change` event exists for consumers
+ * that cache resolved colors, such as `lib/chart-helper.js`.
+ */
 function toggleTheme(iconEl, labelEl) {
   const root = document.documentElement;
   const isDark = root.classList.contains("wa-dark");
+  const theme = isDark ? "wa-light" : "wa-dark";
   root.classList.remove(isDark ? "wa-dark" : "wa-light");
-  root.classList.add(isDark ? "wa-light" : "wa-dark");
-  localStorage.setItem("theme", isDark ? "wa-light" : "wa-dark");
+  root.classList.add(theme);
+  localStorage.setItem("theme", theme);
   if (iconEl) iconEl.name = isDark ? "moon" : "sun";
   if (labelEl) labelEl.textContent = isDark ? "Dark Mode" : "Light Mode";
+  document.dispatchEvent(new CustomEvent("theme-change", { detail: { theme } }));
 }
 
 function getInitials(name) {

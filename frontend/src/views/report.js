@@ -24,7 +24,10 @@ export async function renderReport(container, { token }) {
     if (!res.ok) {
       container.querySelector("#report-loading").style.display = "none";
       container.querySelector("#report-error").style.display = "block";
-      container.querySelector("#report-error").innerHTML = errorCallout("This report is not available.");
+      const message = res.status === 429
+        ? "Too many requests, try again shortly."
+        : "This report is not available.";
+      container.querySelector("#report-error").innerHTML = errorCallout(message);
       return;
     }
 

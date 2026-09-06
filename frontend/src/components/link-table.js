@@ -23,7 +23,13 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
   container.innerHTML = renderTable({
     label: "Your links",
     columns: [
-      ...COLUMNS.map((col) => ({ label: col.label, sortKey: col.key, html: sortIndicator(col.key, sort) })),
+      // The label is wrapped in its own button so the header cell keeps its
+      // columnheader role (and with it a meaningful aria-sort).
+      ...COLUMNS.map((col) => ({
+        label: "",
+        sortKey: col.key,
+        html: `<span class="th-sort" role="button" tabindex="0">${escapeHtml(col.label)}${sortIndicator(col.key, sort)}</span>`,
+      })),
       "",
     ],
     rows: links.map((link) => `
@@ -55,12 +61,17 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
     onPageChange,
   });
 
-  // Sort column click handlers
+  // Sort headers work by pointer and keyboard alike and announce the active
+  // column's direction.
   container.querySelectorAll("th[data-sort]").forEach((th) => {
-    th.addEventListener("click", () => {
-      const col = th.dataset.sort;
-      const newDir = sort.by === col && sort.dir === "desc" ? "asc" : "desc";
-      onSort(col, newDir);
+    const col = th.dataset.sort;
+    th.setAttribute("aria-sort", sort.by === col ? (sort.dir === "asc" ? "ascending" : "descending") : "none");
+    const activate = () => onSort(col, sort.by === col && sort.dir === "desc" ? "asc" : "desc");
+    th.addEventListener("click", activate);
+    th.querySelector(".th-sort")?.addEventListener("keydown", (e) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      activate();
     });
   });
 }

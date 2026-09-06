@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, sql, and } from "drizzle-orm";
+import { eq, sql, and, lt } from "drizzle-orm";
 import { getDb } from "../../db";
 import type { Database } from "../../db";
 import { teams, teamMembers, teamInvites, user as userTable } from "../../db/schema";
@@ -267,6 +267,14 @@ teamRoutes.post("/:id/invite", async (c) => {
   const email = body.email.trim().toLowerCase();
   const role = body.role === "admin" ? "admin" : "member";
 
+  // An expired invite still occupies the unique (teamId, email) slot while being hidden
+  // from the invite list, so it must go before the duplicate check.
+  await db.delete(teamInvites).where(and(
+    eq(teamInvites.teamId, id),
+    eq(teamInvites.email, email),
+    lt(teamInvites.expiresAt, new Date()),
+  ));
+
   // Check for duplicate pending invite
   const existingInvite = await db.select({ id: teamInvites.id })
     .from(teamInvites)
@@ -318,10 +326,12 @@ teamRoutes.get("/:id/invites", async (c) => {
 
   await requireTeamAdmin(db, id, user.id);
 
+  // The token is returned so an admin can re-copy the invite link; the route is admin-only.
   const invites = await db.select({
     id: teamInvites.id,
     email: teamInvites.email,
     role: teamInvites.role,
+    token: teamInvites.token,
     expiresAt: teamInvites.expiresAt,
     createdAt: teamInvites.createdAt,
   }).from(teamInvites).where(and(eq(teamInvites.teamId, id), sql`${teamInvites.expiresAt} > ${Math.floor(Date.now() / 1000)}`));

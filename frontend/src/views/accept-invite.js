@@ -5,7 +5,7 @@ export async function renderAcceptInvite(container, { token }) {
   /** Render a terminal state and wire its action button. `body` is trusted HTML. */
   const showState = ({ icon, tone, title, body, action, onAction }) => {
     container.innerHTML = `
-      <div class="wa-${tone} wa-stack wa-align-items-center wa-gap-m centered-state">
+      <div class="wa-${tone} wa-stack wa-align-items-center wa-gap-m wa-text-center">
         <wa-icon name="${icon}" class="wa-font-size-3xl" style="color: var(--wa-color-on-quiet);"></wa-icon>
         <h2>${escapeHtml(title)}</h2>
         <p>${body}</p>

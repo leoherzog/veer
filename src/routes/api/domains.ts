@@ -7,6 +7,7 @@ import { deleteCachedRedirect } from "../../services/kv-cache";
 import { HTTPException } from "hono/http-exception";
 import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
+import { getPrimaryHostname } from "../../lib/validators";
 import type { AppEnv } from "../../types";
 
 function validateRedirectUrl(url: string | undefined | null): string | null {
@@ -29,10 +30,16 @@ const domainRoutes = new Hono<AppEnv>();
 domainRoutes.get("/", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
+  // The primary host has a config row (redirects, access mode) but cannot hold links:
+  // its links live with domainHostname NULL. Clients use isPrimary to hide it where a
+  // custom domain is being chosen.
+  const primaryHost = getPrimaryHostname(c.env.BETTER_AUTH_URL);
+  const withIsPrimary = <T extends { hostname: string }>(rows: T[]) =>
+    rows.map(row => ({ ...row, isPrimary: row.hostname.toLowerCase() === primaryHost }));
 
   if (user.isAdmin) {
     const rows = await db.select().from(domainConfig);
-    return c.json({ data: rows });
+    return c.json({ data: withIsPrimary(rows) });
   }
 
   // Non-admin: domains where accessMode='all' OR user's email is in domain_access
@@ -44,7 +51,7 @@ domainRoutes.get("/", async (c) => {
         sql`${domainConfig.hostname} IN (SELECT ${domainAccess.hostname} FROM ${domainAccess} WHERE ${domainAccess.email} = ${user.email.toLowerCase()})`
       )
     );
-  return c.json({ data: rows });
+  return c.json({ data: withIsPrimary(rows) });
 });
 
 // Sync domains from Cloudflare API → D1 (admin only, guarded in index.ts)
@@ -90,8 +97,8 @@ domainRoutes.post("/sync", async (c) => {
   }
 
   // Always include the primary hostname
-  const primaryHost = new URL(BETTER_AUTH_URL).hostname;
-  cfHostnames.add(primaryHost.toLowerCase());
+  const primaryHost = getPrimaryHostname(BETTER_AUTH_URL);
+  cfHostnames.add(primaryHost);
 
   const db = getDb(c.env.DB);
   const now = new Date();
@@ -114,16 +121,17 @@ domainRoutes.post("/sync", async (c) => {
     }
   }
 
-  // Delete hostnames no longer in Cloudflare (except primary)
-  // Clean up KV cache entries before deleting (FK cascade will set domainHostname to NULL,
-  // but old hostname:slug KV keys would become orphaned)
+  // Delete hostnames no longer in Cloudflare (except primary), along with their links.
+  // The FK is "set null", which would silently move those links onto the primary host,
+  // where the partial unique index can reject them and fail every later sync.
   for (const row of existing) {
-    if (!cfHostnames.has(row.hostname) && row.hostname !== primaryHost.toLowerCase()) {
+    if (!cfHostnames.has(row.hostname) && row.hostname !== primaryHost) {
       const domainLinks = await db.select({ slug: links.slug }).from(links)
         .where(eq(links.domainHostname, row.hostname));
       await Promise.all(domainLinks.map(link => deleteCachedRedirect(c.env.KV, link.slug, row.hostname)));
       batchOps.push(
-        db.delete(domainConfig).where(eq(domainConfig.hostname, row.hostname))
+        db.delete(links).where(eq(links.domainHostname, row.hostname)),
+        db.delete(domainConfig).where(eq(domainConfig.hostname, row.hostname)),
       );
     }
   }

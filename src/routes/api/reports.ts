@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
 import { eq, and, sql, gte } from "drizzle-orm";
-import { getDb } from "../../db";
+import { getDb, type Database } from "../../db";
 import { publicReports, links, linkStats } from "../../db/schema";
-import { notFound } from "../../lib/errors";
+import { badRequest, notFound } from "../../lib/errors";
+import { parseJsonBody } from "../../lib/request";
+import { canAccessLink } from "../../lib/link-access";
 import { formatDate } from "../../lib/date";
 import type { AppEnv } from "../../types";
 
@@ -11,21 +13,20 @@ function generateReportToken(): string { return "rpt_" + crypto.randomUUID().rep
 
 const reportRoutes = new Hono<AppEnv>();
 
-// POST /api/reports/:linkId — Create report if none exists, or return existing
-reportRoutes.post("/:linkId", async (c) => {
-  const user = c.var.user!;
-  const linkId = c.req.param("linkId");
-  const db = getDb(c.env.DB);
-
-  // Verify ownership
-  const link = await db.select({ id: links.id, userId: links.userId })
+/** Load a link the caller may read, or throw 404. Team members count as callers. */
+async function requireAccessibleLink(db: Database, linkId: string, userId: string) {
+  const link = await db.select({ id: links.id, userId: links.userId, teamId: links.teamId, isInternal: links.isInternal })
     .from(links)
     .where(eq(links.id, linkId))
     .get();
-  if (!link || link.userId !== user.id) throw notFound("Link not found");
+  if (!link) throw notFound("Link not found");
+  if (!(await canAccessLink(db, link, userId))) throw notFound("Link not found");
+  return link;
+}
 
-  // Return existing report if present
-  const existing = await db.select({
+/** Read the report row for a link, or null. */
+function selectReport(db: Database, linkId: string) {
+  return db.select({
     token: publicReports.token,
     isEnabled: publicReports.isEnabled,
     createdAt: publicReports.createdAt,
@@ -33,6 +34,29 @@ reportRoutes.post("/:linkId", async (c) => {
   }).from(publicReports)
     .where(eq(publicReports.linkId, linkId))
     .get();
+}
+
+// GET /api/reports/:linkId — Read-only: the report for a link, or null. Never creates.
+reportRoutes.get("/:linkId", async (c) => {
+  const linkId = c.req.param("linkId");
+  const db = getDb(c.env.DB);
+
+  await requireAccessibleLink(db, linkId, c.var.user!.id);
+
+  const report = await selectReport(db, linkId);
+  return c.json({ data: report ?? null });
+});
+
+// POST /api/reports/:linkId — Create report if none exists, or return existing
+reportRoutes.post("/:linkId", async (c) => {
+  const linkId = c.req.param("linkId");
+  const db = getDb(c.env.DB);
+
+  const link = await requireAccessibleLink(db, linkId, c.var.user!.id);
+  // publicReportRoute 404s an internal link, so a report on one would hand out a dead URL.
+  if (link.isInternal) throw badRequest("Internal links cannot have a public report");
+
+  const existing = await selectReport(db, linkId);
   if (existing) {
     return c.json({ data: existing });
   }
@@ -55,30 +79,28 @@ reportRoutes.post("/:linkId", async (c) => {
   }, 201);
 });
 
-// PUT /api/reports/:linkId — Toggle isEnabled on existing report
+// PUT /api/reports/:linkId — Set isEnabled on an existing report
 reportRoutes.put("/:linkId", async (c) => {
-  const user = c.var.user!;
   const linkId = c.req.param("linkId");
   const db = getDb(c.env.DB);
 
-  // Verify ownership
-  const link = await db.select({ id: links.id, userId: links.userId })
-    .from(links)
-    .where(eq(links.id, linkId))
-    .get();
-  if (!link || link.userId !== user.id) throw notFound("Link not found");
+  const link = await requireAccessibleLink(db, linkId, c.var.user!.id);
+
+  const body = await parseJsonBody<{ isEnabled?: unknown }>(c);
+  if (typeof body.isEnabled !== "boolean") throw badRequest("isEnabled must be a boolean");
+  const isEnabled = body.isEnabled;
+  if (isEnabled && link.isInternal) throw badRequest("Internal links cannot have a public report");
 
   const report = await db.select().from(publicReports)
     .where(eq(publicReports.linkId, linkId))
     .get();
   if (!report) throw notFound("Report not found");
 
-  const newEnabled = !report.isEnabled;
   await db.update(publicReports)
-    .set({ isEnabled: newEnabled })
+    .set({ isEnabled })
     .where(eq(publicReports.id, report.id));
 
-  return c.json({ data: { token: report.token, isEnabled: newEnabled, createdAt: report.createdAt, linkId: report.linkId } });
+  return c.json({ data: { token: report.token, isEnabled, createdAt: report.createdAt, linkId: report.linkId } });
 });
 
 /** Public handler for GET /api/public-report/:token — no auth required. */
@@ -93,6 +115,7 @@ export async function publicReportRoute(c: Context<AppEnv>) {
     slug: links.slug,
     title: links.title,
     isActive: links.isActive,
+    isInternal: links.isInternal,
   }).from(publicReports)
     .innerJoin(links, eq(publicReports.linkId, links.id))
     .where(eq(publicReports.token, token))
@@ -102,8 +125,9 @@ export async function publicReportRoute(c: Context<AppEnv>) {
     return c.json({ error: "Not found" }, 404);
   }
 
-  // Don't expose stats for deactivated links
-  if (!row.isActive) {
+  // Deactivated links expose nothing. Internal links require a session to
+  // redirect, so their stats stay behind auth too.
+  if (!row.isActive || row.isInternal) {
     return c.json({ error: "Not found" }, 404);
   }
 

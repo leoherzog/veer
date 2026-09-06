@@ -4,7 +4,7 @@ import { eq, and, gte } from "drizzle-orm";
 import { getDb } from "../../db";
 import { links, linkStats } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
-import { requireTeamMember } from "../../lib/team";
+import { canAccessLink } from "../../lib/link-access";
 import { queryAnalyticsEngine } from "../../services/analytics";
 import { parseUserAgent } from "../../services/useragent";
 import { formatDate, formatHour, formatWeek } from "../../lib/date";
@@ -29,16 +29,7 @@ statsRoutes.use("/:linkId/*", async (c, next) => {
   const db = getDb(c.env.DB);
   const link = await db.select({ userId: links.userId, teamId: links.teamId }).from(links).where(eq(links.id, linkId)).get();
   if (!link) throw notFound("Link not found");
-  const userId = c.var.user!.id;
-  if (link.userId !== userId) {
-    // Allow team members to view stats for team-owned links
-    if (!link.teamId) throw notFound("Link not found");
-    try {
-      await requireTeamMember(db, link.teamId, userId);
-    } catch {
-      throw notFound("Link not found");
-    }
-  }
+  if (!(await canAccessLink(db, link, c.var.user!.id))) throw notFound("Link not found");
   c.set("aeAvailable", !!(c.env.CF_ACCOUNT_ID && c.env.CF_API_TOKEN));
   await next();
 });

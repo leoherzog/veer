@@ -82,6 +82,48 @@ describe("Links API — domain-scoped operations", () => {
       expect(msg).toContain("access");
     });
 
+    it("treats the primary hostname as the default domain", async () => {
+      // BETTER_AUTH_URL is http://localhost:8787 in the test env, so "localhost" is primary.
+      const res = await postLink({
+        slug: "primary-host-link",
+        destinationUrl: "https://example.com/primary",
+        domainHostname: "localhost",
+      }, headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { id: string; domainHostname: string | null } };
+      expect(json.data.domainHostname).toBeNull();
+
+      const row = await env.DB.prepare("SELECT domainHostname FROM links WHERE id = ?")
+        .bind(json.data.id).first<{ domainHostname: string | null }>();
+      expect(row!.domainHostname).toBeNull();
+
+      // The redirect engine reads the bare slug key for primary-host links.
+      expect(await env.KV.get("primary-host-link")).not.toBeNull();
+      expect(await env.KV.get("localhost:primary-host-link")).toBeNull();
+    });
+
+    it("collides with an existing default-domain slug when given the primary hostname", async () => {
+      await createTestLink(env.DB, { slug: "primary-host-taken", userId, domainHostname: null });
+      const res = await postLink({
+        slug: "primary-host-taken",
+        destinationUrl: "https://example.com",
+        domainHostname: "localhost",
+      }, headers);
+      expect(res.status).toBe(409);
+    });
+
+    it("rejects an internal link on a custom domain with 400", async () => {
+      const res = await postLink({
+        slug: "internal-custom-domain",
+        destinationUrl: "https://example.com/internal",
+        domainHostname: "custom.example.com",
+        isInternal: true,
+      }, headers);
+      expect(res.status).toBe(400);
+      const json = await res.json() as { error?: string; message?: string };
+      expect(json.error || json.message).toContain("Internal links");
+    });
+
     it("allows same slug on different domains", async () => {
       // Create on default domain (no domainHostname)
       const res1 = await postLink({
@@ -152,6 +194,59 @@ describe("Links API — domain-scoped operations", () => {
         body: { domainHostname: "custom.example.com" },
       });
       expect(res.status).toBe(409);
+    });
+
+    it("moving to the primary hostname clears domainHostname", async () => {
+      const link = await createTestLink(env.DB, {
+        slug: "move-to-primary",
+        userId,
+        domainHostname: "custom.example.com",
+      });
+      await env.KV.put("custom.example.com:move-to-primary", JSON.stringify({ url: "https://example.com" }));
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { domainHostname: "localhost" },
+      });
+      expect(res.status).toBe(200);
+
+      const row = await env.DB.prepare("SELECT domainHostname FROM links WHERE id = ?")
+        .bind(link.id).first<{ domainHostname: string | null }>();
+      expect(row!.domainHostname).toBeNull();
+      expect(await env.KV.get("custom.example.com:move-to-primary")).toBeNull();
+      expect(await env.KV.get("move-to-primary")).not.toBeNull();
+    });
+
+    it("rejects making a custom-domain link internal with 400", async () => {
+      const link = await createTestLink(env.DB, {
+        slug: "internal-on-custom",
+        userId,
+        domainHostname: "custom.example.com",
+      });
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { isInternal: true },
+      });
+      expect(res.status).toBe(400);
+
+      const row = await env.DB.prepare("SELECT isInternal FROM links WHERE id = ?")
+        .bind(link.id).first<{ isInternal: number }>();
+      expect(row!.isInternal).toBe(0);
+    });
+
+    it("rejects moving an internal link onto a custom domain with 400", async () => {
+      const link = await createTestLink(env.DB, {
+        slug: "internal-move",
+        userId,
+        isInternal: true,
+      });
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { domainHostname: "custom.example.com" },
+      });
+      expect(res.status).toBe(400);
     });
   });
 });

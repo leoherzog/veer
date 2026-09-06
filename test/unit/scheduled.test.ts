@@ -97,4 +97,32 @@ describe("scheduled handler", () => {
 
     expect(second!.clicks).toBeGreaterThan(first!.clicks);
   });
+
+  it("cascades link_stats away when the link is deleted", async () => {
+    // The seed's idempotency rests on this cascade, which only exists because the
+    // suite applies drizzle/migrations rather than an ad-hoc schema.
+    const now = Math.floor(Date.now() / 1000);
+    const linkId = "sched-cascade-link";
+    await env.DB
+      .prepare(
+        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('demo-user', 'Demo', 'demo@x', 0, ?, ?)`,
+      )
+      .bind(now, now)
+      .run();
+    await env.DB
+      .prepare(
+        `INSERT OR REPLACE INTO links (id, userId, slug, destinationUrl, createdAt, updatedAt) VALUES (?, 'demo-user', ?, 'https://example.com', ?, ?)`,
+      )
+      .bind(linkId, `sched-${linkId}`, now, now)
+      .run();
+    await env.DB
+      .prepare(`INSERT OR REPLACE INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, '2026-01-01', 3, 2)`)
+      .bind(linkId)
+      .run();
+
+    await env.DB.prepare("DELETE FROM links WHERE id = ?").bind(linkId).run();
+
+    const row = await getStatsRow(linkId, "2026-01-01");
+    expect(row).toBeNull();
+  });
 });

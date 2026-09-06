@@ -84,7 +84,7 @@ app.delete("/:id", async (c) => {
 
   if (!result.meta?.changes) throw notFound("API key not found");
 
-  return c.body(null, 204);
+  return c.json({ success: true });
 });
 
 export default app;

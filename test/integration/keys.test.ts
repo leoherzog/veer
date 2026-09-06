@@ -178,7 +178,7 @@ describe("API Keys", () => {
   // DELETE  DELETE /api/keys/:id
   // -----------------------------------------------------------------------
   describe("DELETE /api/keys/:id", () => {
-    it("deletes own key and returns 204", async () => {
+    it("deletes own key and returns 200 with a JSON body", async () => {
       const auth = await setupAuth(env);
       const createRes = await api("POST", "/api/keys", {
         headers: auth.headers,
@@ -189,7 +189,30 @@ describe("API Keys", () => {
       const deleteRes = await api("DELETE", `/api/keys/${data.id}`, {
         headers: auth.headers,
       });
-      expect(deleteRes.status).toBe(204);
+      expect(deleteRes.status).toBe(200);
+      expect(await deleteRes.json()).toEqual({ success: true });
+    });
+
+    it("revokes the key: reusing it as a Bearer token returns 401", async () => {
+      const auth = await setupAuth(env);
+      const createRes = await api("POST", "/api/keys", {
+        headers: auth.headers,
+        body: { name: "To Revoke" },
+      });
+      const { data } = await createRes.json() as { data: { id: string; key: string } };
+
+      const before = await api("GET", "/api/links", {
+        headers: { Authorization: `Bearer ${data.key}` },
+      });
+      expect(before.status).toBe(200);
+
+      const deleteRes = await api("DELETE", `/api/keys/${data.id}`, { headers: auth.headers });
+      expect(deleteRes.status).toBe(200);
+
+      const after = await api("GET", "/api/links", {
+        headers: { Authorization: `Bearer ${data.key}` },
+      });
+      expect(after.status).toBe(401);
     });
 
     it("returns 404 for nonexistent key", async () => {

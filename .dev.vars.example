@@ -1,9 +1,11 @@
+# Local-dev secrets and var overrides. Copy to .dev.vars and fill in.
+# Values here override the `vars` block in wrangler.jsonc for `wrangler dev`.
+
 # Better Auth
 BETTER_AUTH_SECRET=your-secret-min-32-chars-here!!!
+# wrangler.jsonc points this at the deployed hostname; local dev needs the
+# localhost origin or sign-in cookies and OAuth callbacks won't match.
 BETTER_AUTH_URL=http://localhost:8787
-
-# Branding (optional — defaults to "Veer" when unset)
-INSTANCE_NAME=
 
 # Admin access
 ADMIN_EMAILS=you@example.com
@@ -11,6 +13,13 @@ ADMIN_EMAILS=you@example.com
 # Cloudflare (for Analytics Engine SQL API reads)
 CF_ACCOUNT_ID=
 CF_API_TOKEN=
+
+# Passkey sign-in — "true" to offer it alongside OAuth
+PASSKEY_ENABLED=false
+
+# Uncomment to run the local instance as the read-only demo showcase
+# (auth bypassed, all /api writes 403). Seed it with `npm run seed:local`.
+# DEMO_MODE=true
 
 # OAuth providers (configure at least one pair)
 GOOGLE_CLIENT_ID=

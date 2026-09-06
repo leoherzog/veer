@@ -1,6 +1,6 @@
 import { escapeHtml } from "../lib/escape.js";
 import { SKELETON, CHART_SKELETON, noData, fetchJSON } from "../lib/stats-common.js";
-import { createChart, destroyChart } from "../lib/chart-helper.js";
+import { createChart, destroyCharts } from "../lib/chart-helper.js";
 import { renderStatsDevices } from "./stats-devices.js";
 import { renderStatsGeo } from "./stats-geo.js";
 import { renderStatsReferrers } from "./stats-referrers.js";
@@ -21,10 +21,9 @@ async function loadSummary(container, linkId, days) {
   }
 }
 
-let timelineChart;
-
 async function loadTimeline(container, linkId, days) {
   const wrap = container.querySelector("#timeline-container");
+  destroyCharts(wrap);
   wrap.innerHTML = CHART_SKELETON;
 
   const period = days <= 1 ? "hour" : "day";
@@ -38,10 +37,9 @@ async function loadTimeline(container, linkId, days) {
       return;
     }
 
-    destroyChart(timelineChart);
     wrap.innerHTML = `<div class="wa-frame:landscape"><canvas id="clicks-timeline"></canvas></div>`;
     const canvas = wrap.querySelector("#clicks-timeline");
-    timelineChart = createChart(canvas, "line", {
+    wrap._charts = [createChart(canvas, "line", {
       data: {
         labels,
         datasets: [{
@@ -50,7 +48,7 @@ async function loadTimeline(container, linkId, days) {
           fill: true,
         }],
       },
-    });
+    })];
   } catch {
     wrap.innerHTML = noData("Failed to load timeline");
   }

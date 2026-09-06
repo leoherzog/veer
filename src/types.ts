@@ -1,3 +1,5 @@
+import type { ApiKeyRateLimitState } from "./middleware/rate-limit";
+
 /** Authenticated user shape injected by requireAuth middleware. */
 export type AuthUser = {
   id: string;
@@ -10,5 +12,5 @@ export type AuthUser = {
 /** Shared Hono environment type used across the app. */
 export type AppEnv = {
   Bindings: Env;
-  Variables: { user?: AuthUser };
+  Variables: { user?: AuthUser; apiKeyRateLimit?: ApiKeyRateLimitState };
 };

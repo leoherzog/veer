@@ -11,13 +11,14 @@ export async function renderCampaignDetail(container, { id }) {
   const { data: campaign } = campResult;
   const campaignLinks = campaign.links || [];
 
-  let totalClicks = 0;
-  // Fetch aggregate stats (best-effort — no toast on failure)
+  // Aggregate stats cover a 30-day window, unlike the lifetime per-link totals
+  // below. Best-effort — no toast on failure.
+  let recentClicks = 0;
   try {
     const statsRes = await fetch(`/api/campaigns/${id}/stats`);
     if (statsRes.ok) {
       const statsResult = await statsRes.json();
-      totalClicks = statsResult?.data?.totalClicks || 0;
+      recentClicks = statsResult?.data?.totalClicks || 0;
     }
   } catch { /* stats are best-effort */ }
 
@@ -46,7 +47,7 @@ export async function renderCampaignDetail(container, { id }) {
 
       <div class="wa-grid wa-gap-m">
         ${statCard("Links", `<wa-format-number id="campaign-link-count" value="${campaignLinks.length}"></wa-format-number>`)}
-        ${statCard("Total Clicks", `<wa-format-number value="${totalClicks}"></wa-format-number>`)}
+        ${statCard("Clicks (30 days)", `<wa-format-number value="${recentClicks}"></wa-format-number>`)}
       </div>
 
       <div class="wa-split">

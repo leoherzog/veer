@@ -59,8 +59,8 @@ export function shortUrl(link) {
 
 /**
  * Fetch wrapper with 401 redirect and error toast.
- * Returns the parsed JSON body on success, or null on failure.
- * Callers destructure the returned object (e.g. { data }, { data, pagination }).
+ * Returns the parsed JSON body on success, `{}` for a 2xx with no body, or
+ * null on failure. Callers destructure the result (e.g. { data }, { data, pagination }).
  */
 export async function apiFetch(url, opts = {}) {
   const res = await fetch(url, opts);
@@ -74,7 +74,12 @@ export async function apiFetch(url, opts = {}) {
     showToast(err.error || err.message || "Request failed", variant);
     return null;
   }
-  return res.json();
+  // A 204 or an empty 200 body still counts as success, so callers can keep
+  // testing the result for truthiness.
+  if (res.status === 204) return {};
+  const text = await res.text();
+  if (!text.trim()) return {};
+  return JSON.parse(text);
 }
 
 /**

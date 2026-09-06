@@ -4,6 +4,7 @@ import { getDb } from "../../db";
 import { campaigns, linkCampaigns, links, linkStats } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
+import { accessibleLinks } from "../../lib/link-access";
 import type { AppEnv } from "../../types";
 
 type Campaign = typeof campaigns.$inferSelect;
@@ -13,6 +14,13 @@ type CampaignEnv = AppEnv & {
 };
 
 const campaignRoutes = new Hono<CampaignEnv>();
+
+/** Campaign descriptions are optional text capped at 2000 characters. */
+function validateDescription(description: unknown): void {
+  if (description === undefined || description === null || description === "") return;
+  if (typeof description !== "string") throw badRequest("description must be a string");
+  if (description.trim().length > 2000) throw badRequest("description must be 2000 characters or fewer");
+}
 
 const loadCampaign: MiddlewareHandler<CampaignEnv> = async (c, next) => {
   if (c.var.campaign) return next();
@@ -40,10 +48,13 @@ campaignRoutes.get("/", async (c) => {
       description: campaigns.description,
       createdAt: campaigns.createdAt,
       updatedAt: campaigns.updatedAt,
-      linkCount: sql<number>`count(${linkCampaigns.linkId})`,
+      linkCount: sql<number>`count(${links.id})`,
     })
     .from(campaigns)
     .leftJoin(linkCampaigns, eq(campaigns.id, linkCampaigns.campaignId))
+    // An association outlives the caller's access to the link, so the join drops
+    // inaccessible ones — the count must match what GET /:id and /:id/stats report.
+    .leftJoin(links, and(eq(linkCampaigns.linkId, links.id), accessibleLinks(user.id)))
     .where(eq(campaigns.userId, user.id))
     .groupBy(campaigns.id)
     .orderBy(campaigns.createdAt);
@@ -64,9 +75,7 @@ campaignRoutes.post("/", async (c) => {
   if (body.name.trim().length > 200) {
     throw badRequest("name must be 200 characters or fewer");
   }
-  if (body.description && body.description.trim().length > 2000) {
-    throw badRequest("description must be 2000 characters or fewer");
-  }
+  validateDescription(body.description);
 
   const id = crypto.randomUUID();
   const now = new Date();
@@ -94,11 +103,13 @@ campaignRoutes.post("/", async (c) => {
 
 // Get campaign details + linked links
 campaignRoutes.get("/:id", async (c) => {
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
   const campaign = c.var.campaign;
 
-  // Fetch linked links with per-link click totals
+  // Fetch linked links with per-link click totals. An association outlives the caller's
+  // access to the link (team membership can be revoked), so filter on access here.
   const linkedRows = await db
     .select({
       id: links.id,
@@ -107,12 +118,13 @@ campaignRoutes.get("/:id", async (c) => {
       title: links.title,
       createdAt: links.createdAt,
       isActive: links.isActive,
+      domainHostname: links.domainHostname,
       totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)`,
     })
     .from(linkCampaigns)
     .innerJoin(links, eq(linkCampaigns.linkId, links.id))
     .leftJoin(linkStats, eq(links.id, linkStats.linkId))
-    .where(eq(linkCampaigns.campaignId, id))
+    .where(and(eq(linkCampaigns.campaignId, id), accessibleLinks(user.id)))
     .groupBy(links.id);
 
   return c.json({ data: { ...campaign, links: linkedRows } });
@@ -139,9 +151,7 @@ campaignRoutes.put("/:id", async (c) => {
   }
 
   if (body.description !== undefined) {
-    if (body.description && body.description.trim().length > 2000) {
-      throw badRequest("description must be 2000 characters or fewer");
-    }
+    validateDescription(body.description);
     updates.description = body.description?.trim() || null;
   }
 
@@ -175,20 +185,23 @@ campaignRoutes.post("/:id/links", async (c) => {
   if (body.linkIds.length > 100) {
     throw badRequest("linkIds must contain 100 or fewer items");
   }
+  if (body.linkIds.some(linkId => typeof linkId !== "string")) {
+    throw badRequest("linkIds must contain strings");
+  }
 
-  // Verify all links belong to the user
-  const userLinks = await db.select({ id: links.id })
+  // Any link the caller can access, matching what PUT /api/links/:id accepts for campaignIds
+  const allowedLinks = await db.select({ id: links.id })
     .from(links)
-    .where(and(eq(links.userId, user.id), inArray(links.id, body.linkIds)));
+    .where(and(accessibleLinks(user.id), inArray(links.id, body.linkIds)));
 
-  const validIds = new Set(userLinks.map(l => l.id));
+  const validIds = new Set(allowedLinks.map(l => l.id));
   const invalidIds = body.linkIds.filter(id => !validIds.has(id));
   if (invalidIds.length > 0) {
     throw badRequest(`Links not found: ${invalidIds.join(", ")}`);
   }
 
   // Insert associations in a single batch (ignore duplicates via onConflictDoNothing)
-  await db.insert(linkCampaigns).values(body.linkIds.map(linkId => ({ linkId, campaignId: id })))
+  await db.insert(linkCampaigns).values([...validIds].map(linkId => ({ linkId, campaignId: id })))
     .onConflictDoNothing();
 
   return c.json({ success: true });
@@ -208,16 +221,18 @@ campaignRoutes.delete("/:id/links/:linkId", async (c) => {
 
 // Aggregate stats across all campaign links
 campaignRoutes.get("/:id/stats", async (c) => {
+  const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
   const days = Math.min(90, Math.max(1, Number(c.req.query("days")) || 30));
   const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
 
-  // Get all link IDs in this campaign
+  // Only links the caller can still access count toward the campaign's totals.
   const campaignLinks = await db.select({ linkId: linkCampaigns.linkId })
     .from(linkCampaigns)
-    .where(eq(linkCampaigns.campaignId, id));
+    .innerJoin(links, eq(linkCampaigns.linkId, links.id))
+    .where(and(eq(linkCampaigns.campaignId, id), accessibleLinks(user.id)));
 
   if (campaignLinks.length === 0) {
     return c.json({ data: { totalClicks: 0, linkCount: 0, period: { days } } });

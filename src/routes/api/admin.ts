@@ -1,5 +1,6 @@
 import { Hono } from "hono";
-import { eq, sql, like, or, desc } from "drizzle-orm";
+import { eq, sql, or, desc, getTableName } from "drizzle-orm";
+import type { AnyColumn, SQL } from "drizzle-orm";
 import { getDb } from "../../db";
 import { user as userTable, teams, teamMembers, links } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
@@ -8,17 +9,28 @@ import type { AppEnv } from "../../types";
 
 const adminRoutes = new Hono<AppEnv>();
 
+/**
+ * Table-qualified reference to a column, for use inside a raw correlated subquery.
+ * Drizzle renders a bare `"id"` when the outer select has a single table, which the
+ * subquery's own tables then shadow.
+ */
+function qualify(column: AnyColumn): SQL {
+  return sql`${sql.identifier(getTableName(column.table))}.${sql.identifier(column.name)}`;
+}
+
 // GET /users - List all users (paginated, searchable)
 adminRoutes.get("/users", async (c) => {
   const db = getDb(c.env.DB);
   const { page, limit, offset } = parsePagination(c);
   const q = c.req.query("q")?.trim();
 
-  const escaped = q ? q.replace(/%/g, "\\%").replace(/_/g, "\\_") : "";
+  // `%` and `_` are escaped, so the LIKE needs a matching ESCAPE clause or a
+  // query containing either character matches nothing.
+  const pattern = q ? `%${q.replace(/%/g, "\\%").replace(/_/g, "\\_")}%` : "";
   const where = q
     ? or(
-        like(userTable.name, `%${escaped}%`),
-        like(userTable.email, `%${escaped}%`)
+        sql`${userTable.name} LIKE ${pattern} ESCAPE '\\'`,
+        sql`${userTable.email} LIKE ${pattern} ESCAPE '\\'`
       )
     : undefined;
 
@@ -32,8 +44,8 @@ adminRoutes.get("/users", async (c) => {
         maxLinks: userTable.maxLinks,
         createdAt: userTable.createdAt,
         updatedAt: userTable.updatedAt,
-        teamCount: sql<number>`(SELECT count(*) FROM team_members WHERE team_members.userId = ${userTable.id})`,
-        linkCount: sql<number>`(SELECT count(*) FROM links WHERE links.userId = ${userTable.id})`,
+        teamCount: sql<number>`(SELECT count(*) FROM team_members WHERE team_members.userId = ${qualify(userTable.id)})`,
+        linkCount: sql<number>`(SELECT count(*) FROM links WHERE links.userId = ${qualify(userTable.id)})`,
       })
       .from(userTable)
       .where(where)
@@ -111,11 +123,12 @@ adminRoutes.patch("/users/:id", async (c) => {
 
   const updates: Partial<typeof userTable.$inferInsert> = { updatedAt: new Date() };
 
+  // null means unlimited; anything below 1 is rejected.
   if (body.maxLinks === null) {
     updates.maxLinks = null;
   } else {
-    const ml = Math.floor(body.maxLinks);
-    if (!Number.isFinite(ml) || ml < 1) throw badRequest("maxLinks must be a positive integer or null");
+    const ml = Math.floor(Number(body.maxLinks));
+    if (!Number.isFinite(ml) || ml < 1) throw badRequest("maxLinks must be at least 1, or null for unlimited");
     updates.maxLinks = ml;
   }
 
@@ -199,8 +212,8 @@ adminRoutes.get("/teams", async (c) => {
         slug: teams.slug,
         createdAt: teams.createdAt,
         updatedAt: teams.updatedAt,
-        memberCount: sql<number>`(SELECT count(*) FROM team_members WHERE team_members.teamId = ${teams.id})`,
-        linkCount: sql<number>`(SELECT count(*) FROM links WHERE links.teamId = ${teams.id})`,
+        memberCount: sql<number>`(SELECT count(*) FROM team_members WHERE team_members.teamId = ${qualify(teams.id)})`,
+        linkCount: sql<number>`(SELECT count(*) FROM links WHERE links.teamId = ${qualify(teams.id)})`,
       })
       .from(teams)
       .orderBy(desc(teams.createdAt))

@@ -149,12 +149,22 @@ describe("API key auth (requireAuthOrApiKey)", () => {
     expect(res.status).toBe(401);
   });
 
-  it("API key is rejected on GET /api/me (session-only route)", async () => {
+  it("GET /api/me works with an API key and returns the key owner", async () => {
     const { key } = await createApiKey(authHeaders, "me-route-test");
     const res = await api("GET", "/api/me", {
       headers: { Authorization: `Bearer ${key}` },
     });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(200);
+    const json = await res.json() as { data: Record<string, unknown> };
+    expect(json.data.id).toBe(userId);
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
+  });
+
+  it("GET /api/me exposes only the AuthUser fields, never the raw Better Auth user", async () => {
+    const res = await api("GET", "/api/me", { headers: authHeaders });
+    expect(res.status).toBe(200);
+    const json = await res.json() as { data: Record<string, unknown> };
+    expect(Object.keys(json.data).sort()).toEqual(["email", "id", "image", "isAdmin", "name"]);
   });
 
   it("same API key works on GET /api/links (requireAuthOrApiKey route)", async () => {
@@ -191,6 +201,31 @@ describe("API key auth (requireAuthOrApiKey)", () => {
     expect(res61.headers.get("Retry-After")).toBeTruthy();
     expect(res61.headers.get("X-RateLimit-Remaining")).toBe("0");
     expect(res61.headers.get("X-RateLimit-Limit")).toBe("60");
+  });
+
+  it("rate limit is checked before key verification (429, not 401, for an over-limit unknown key)", async () => {
+    // The limiter keys on the bearer prefix alone, so an over-limit key never
+    // reaches the HMAC or the D1 lookup.
+    const key = `veer_neverissued${Date.now()}notarealkey00000000000000`;
+    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
+    await env.KV.put(`rl:${key.slice(0, 16)}:${windowEpoch}`, "60", { expirationTtl: 120 });
+
+    const res = await api("GET", "/api/links", {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    expect(res.status).toBe(429);
+  });
+
+  it("an unknown key spends no KV write (the counter is incremented only after auth)", async () => {
+    const key = `veer_notawrite${Date.now()}notarealkey00000000000000`;
+    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
+    const kvKey = `rl:${key.slice(0, 16)}:${windowEpoch}`;
+
+    const res = await api("GET", "/api/links", {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    expect(res.status).toBe(401);
+    expect(await env.KV.get(kvKey)).toBeNull();
   });
 
   // -------------------------------------------------------------------------

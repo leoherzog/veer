@@ -7,6 +7,9 @@ import { renderTeamDetail } from "./team-detail.js";
 import { escapeHtml } from "../lib/escape.js";
 import { apiFetch, withLoadingBtn, bindSearchInput, renderTable, setTeamOptions } from "../lib/ui.js";
 
+/** Matches the server-side cap on POST /api/bulk. */
+const BULK_MAX = 50;
+
 export function renderDashboard(container, { activeTab = "links", teamId = null } = {}) {
   let userTeams = [];
   async function fetchTeams() {
@@ -64,7 +67,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
             </div>
             <div id="links-table"></div>
 
-            <wa-dialog id="new-link-dialog" label="New Link" light-dismiss style="--width:640px;">
+            <wa-dialog id="new-link-dialog" label="New Link" style="--width:640px;">
               <div id="create-form"></div>
             </wa-dialog>
 
@@ -109,7 +112,11 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
   const scopeSelect = container.querySelector("#scope-filter");
 
   // Populate scope filter with teams once the initial fetch completes
-  teamsReady.then(() => setTeamOptions(scopeSelect, userTeams, { prefix: "team:" }));
+  function refreshScopeOptions() {
+    setTeamOptions(scopeSelect, userTeams, { prefix: "team:", selected: scopeFilter });
+    scopeSelect.value = scopeFilter;
+  }
+  teamsReady.then(refreshScopeOptions);
 
   scopeSelect.addEventListener("change", () => {
     scopeFilter = scopeSelect.value;
@@ -121,6 +128,9 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
   const bulkDialog = container.querySelector("#bulk-create-dialog");
   const createDropdown = container.querySelector("wa-button-group wa-dropdown");
 
+  // A partial save keeps the dialog open, so the list refresh waits for the
+  // user to close it or the new row stays missing from the table.
+  let partialSave = false;
   newLinkDialog.addEventListener("wa-show", (e) => {
     if (e.target !== newLinkDialog) return;
     renderLinkForm(container.querySelector("#create-form"), {
@@ -128,13 +138,25 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
         newLinkDialog.open = false;
         loadLinks();
       },
+      onPartialSave: () => { partialSave = true; },
       teams: userTeams,
     });
+  });
+
+  newLinkDialog.addEventListener("wa-after-hide", (e) => {
+    if (e.target !== newLinkDialog || !partialSave) return;
+    partialSave = false;
+    loadLinks();
   });
 
   bulkDialog.addEventListener("wa-show", (e) => {
     if (e.target !== bulkDialog) return;
     setTeamOptions(container.querySelector("#bulk-owner"), userTeams);
+    // Reopening starts a fresh batch, not a re-run of the last one.
+    container.querySelector("#bulk-input").value = "";
+    const previousResults = container.querySelector("#bulk-results");
+    previousResults.style.display = "none";
+    previousResults.innerHTML = "";
   });
 
   createDropdown.addEventListener("wa-select", (e) => {
@@ -148,14 +170,26 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     if (!text) { showToast("Enter at least one link", "warning"); return; }
 
     const lines = text.split("\n").map(l => l.trim()).filter(Boolean);
+    if (lines.length > BULK_MAX) {
+      showToast(`Bulk create takes at most ${BULK_MAX} links at a time — you pasted ${lines.length}.`, "warning");
+      return;
+    }
+
     const links = [];
     for (const line of lines) {
-      const parts = line.split(",").map(p => p.trim());
-      if (parts.length < 2) {
+      // Only the first two commas delimit fields, so the title may contain commas.
+      const firstComma = line.indexOf(",");
+      const secondComma = firstComma === -1 ? -1 : line.indexOf(",", firstComma + 1);
+      const slug = firstComma === -1 ? "" : line.slice(0, firstComma).trim();
+      const destinationUrl = firstComma === -1
+        ? ""
+        : (secondComma === -1 ? line.slice(firstComma + 1) : line.slice(firstComma + 1, secondComma)).trim();
+      const title = secondComma === -1 ? "" : line.slice(secondComma + 1).trim();
+      if (!slug || !destinationUrl) {
         showToast(`Invalid line (need slug, url): "${line}"`, "warning");
         return;
       }
-      links.push({ slug: parts[0], destinationUrl: parts[1], title: parts[2] || undefined });
+      links.push({ slug, destinationUrl, title: title || undefined });
     }
 
     const submitBtn = container.querySelector("#bulk-submit-btn");
@@ -249,12 +283,13 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
 
   async function loadTeamsPanel(selectTeamId = null) {
     await fetchTeams();
+    refreshScopeOptions();
     const panel = container.querySelector("#teams-panel");
 
     if (selectTeamId) {
       renderTeamDetail(panel, { id: selectTeamId }, null, {
         onBack: () => loadTeamsPanel(),
-        onTeamsChanged: () => fetchTeams(),
+        onTeamsChanged: async () => { await fetchTeams(); refreshScopeOptions(); },
       });
       history.replaceState(null, "", "/teams/" + selectTeamId);
     } else {
@@ -263,7 +298,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
         onTeamSelect: (id) => {
           loadTeamsPanel(id);
         },
-        onTeamsChanged: () => fetchTeams(),
+        onTeamsChanged: async () => { await fetchTeams(); refreshScopeOptions(); },
       });
       history.replaceState(null, "", "/teams");
     }

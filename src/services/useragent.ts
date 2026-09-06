@@ -33,7 +33,12 @@ function parseOS(ua: string): string {
   return "Other";
 }
 
-function parseDevice(ua: string): "desktop" | "mobile" | "tablet" {
+/**
+ * Classify a user agent as desktop, mobile or tablet. The single device
+ * classifier: redirect device targeting and click stats both call it, so a
+ * request always lands in the same bucket in both places.
+ */
+export function parseDevice(ua: string): "desktop" | "mobile" | "tablet" {
   // Tablet checks first
   if (/iPad/i.test(ua)) return "tablet";
   if (/Tablet/i.test(ua)) return "tablet";
@@ -41,7 +46,7 @@ function parseDevice(ua: string): "desktop" | "mobile" | "tablet" {
   if (/Android/i.test(ua) && !/Mobile/i.test(ua)) return "tablet";
 
   // Mobile checks
-  if (/Mobile|iPhone|iPod/i.test(ua)) return "mobile";
+  if (/Mobile|iPhone|iPod|webOS|BlackBerry|BB10|Opera Mini|Windows Phone/i.test(ua)) return "mobile";
   if (/Android/i.test(ua)) return "mobile";
 
   return "desktop";

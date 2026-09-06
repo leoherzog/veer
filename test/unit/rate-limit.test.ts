@@ -1,14 +1,22 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
-import { rateLimitApiKey } from "../../src/middleware/rate-limit";
+import { rateLimitApiKeyCheck, rateLimitApiKeyIncrement, checkRateLimit } from "../../src/middleware/rate-limit";
 import { app as veerApp } from "../../src/index";
 import { setupAuth } from "../helpers";
 import type { AppEnv } from "../../src/types";
 
 function createApp() {
   const app = new Hono<AppEnv>();
-  app.use("*", rateLimitApiKey);
+  app.use("*", rateLimitApiKeyCheck, rateLimitApiKeyIncrement);
+  app.get("/test", (c) => c.json({ ok: true }));
+  return app;
+}
+
+/** Mirrors the real wiring: the increment sits behind an auth gate that can reject. */
+function createRejectingApp() {
+  const app = new Hono<AppEnv>();
+  app.use("*", rateLimitApiKeyCheck, async () => Response.json({ error: "Unauthorized" }, { status: 401 }), rateLimitApiKeyIncrement);
   app.get("/test", (c) => c.json({ ok: true }));
   return app;
 }
@@ -90,6 +98,18 @@ describe("rateLimitApiKey middleware", () => {
     expect(resB.status).toBe(200);
   });
 
+  it("does not write the counter when authentication rejects the key", async () => {
+    const token = `veer_ratelimit_rej_${Date.now()}`;
+    const kvKey = `rl:${token.slice(0, 16)}:${Math.floor(Date.now() / 1000 / 60)}`;
+    const app = createRejectingApp();
+
+    const res = await app.request("/test", {
+      headers: { Authorization: `Bearer ${token}` },
+    }, env);
+    expect(res.status).toBe(401);
+    expect(await env.KV.get(kvKey)).toBeNull();
+  });
+
   it("non-Bearer Authorization header passes through unmetered", async () => {
     const app = createApp();
     const res = await app.request("/test", {
@@ -97,6 +117,35 @@ describe("rateLimitApiKey middleware", () => {
     }, env);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
+  });
+});
+
+describe("checkRateLimit", () => {
+  it("reports zero for an unset key", async () => {
+    const state = await checkRateLimit(env.KV, `rl:unset:${Date.now()}`, 60, 60);
+    expect(state.count).toBe(0);
+    expect(state.stored).toBeNull();
+    expect(state.exceeded).toBe(false);
+  });
+
+  it("falls back to 0 when the stored counter is not a number", async () => {
+    // A corrupted value must not read as NaN — NaN >= limit is false, which
+    // would disable the limit for that key until the entry expires.
+    const key = `rl:corrupt:${Date.now()}`;
+    await env.KV.put(key, "not-a-number", { expirationTtl: 120 });
+
+    const state = await checkRateLimit(env.KV, key, 1, 60);
+    expect(state.count).toBe(0);
+    expect(state.exceeded).toBe(false);
+  });
+
+  it("still enforces the limit for a valid counter", async () => {
+    const key = `rl:valid:${Date.now()}`;
+    await env.KV.put(key, "5", { expirationTtl: 120 });
+
+    const state = await checkRateLimit(env.KV, key, 5, 60);
+    expect(state.count).toBe(5);
+    expect(state.exceeded).toBe(true);
   });
 });
 

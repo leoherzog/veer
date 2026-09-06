@@ -1,12 +1,12 @@
 import { Hono } from "hono";
-import { inArray } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { getDb } from "../../db";
-import { links } from "../../db/schema";
+import { links, user as userTable } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
 import { setCachedRedirect } from "../../services/kv-cache";
 import { badRequest } from "../../lib/errors";
 import { requireTeamMember } from "../../lib/team";
-import { validateHttpUrl, validateDomainAccess } from "../../lib/validators";
+import { validateHttpUrl, validateDomainAccess, getPrimaryHostname, resolveDomainHostname } from "../../lib/validators";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "../../types";
 import type { CachedRedirect } from "../../services/kv-cache";
@@ -17,6 +17,7 @@ function buildNewLinkCache(
   destinationUrl: string,
   redirectType: number,
   domainHostname: string | null,
+  isInternal: boolean,
 ): CachedRedirect {
   return {
     url: destinationUrl,
@@ -26,7 +27,7 @@ function buildNewLinkCache(
     expiresAt: null,
     maxClicks: null,
     hasPassword: false,
-    isInternal: false,
+    isInternal,
     ogTitle: null,
     ogDescription: null,
     ogImage: null,
@@ -42,6 +43,7 @@ interface BulkLinkInput {
   title?: string;
   redirectType?: number;
   domainHostname?: string;
+  isInternal?: boolean;
 }
 
 interface ValidatedLink {
@@ -52,6 +54,7 @@ interface ValidatedLink {
   redirectType: number;
   title: string | null;
   domainHostname: string | null;
+  isInternal: boolean;
 }
 
 type BulkResult =
@@ -76,6 +79,9 @@ bulkRoutes.post("/", async (c) => {
     throw badRequest("Invalid JSON body");
   }
 
+  if (body.teamId !== undefined && body.teamId !== null && typeof body.teamId !== "string") {
+    throw badRequest("teamId must be a string");
+  }
   const teamId = body.teamId?.trim() || null;
 
   const db = getDb(c.env.DB);
@@ -96,12 +102,24 @@ bulkRoutes.post("/", async (c) => {
   if (body.links.length > 50) {
     throw badRequest("Maximum 50 links per request");
   }
+
+  // Same soft quota as single create, counting the whole batch (see POST /api/links).
+  const quota = await db.select({
+    maxLinks: userTable.maxLinks,
+    linkCount: sql<number>`(SELECT count(*) FROM ${links} WHERE ${links.userId} = ${user.id})`,
+  }).from(userTable).where(eq(userTable.id, user.id)).get();
+  if (quota?.maxLinks != null && (quota.linkCount ?? 0) + body.links.length > quota.maxLinks) {
+    throw badRequest(`You have reached your link limit (${quota.maxLinks})`);
+  }
+
   const results: BulkResult[] = new Array(body.links.length);
   const validated: ValidatedLink[] = [];
+  const primaryHost = getPrimaryHostname(c.env.BETTER_AUTH_URL);
 
   // Phase 1: Validate all inputs (format, domain access)
-  // Cache domain access checks to avoid repeated queries for the same domain
-  const domainAccessCache = new Map<string, boolean>();
+  // Cache the domain check per hostname, keeping the message so every item for a
+  // rejected domain reports the same reason. null means the domain is usable.
+  const domainAccessCache = new Map<string, string | null>();
   const preValidated: ValidatedLink[] = [];
 
   for (let i = 0; i < body.links.length; i++) {
@@ -134,21 +152,32 @@ bulkRoutes.post("/", async (c) => {
         continue;
       }
 
-      const domainHostname = item.domainHostname || null;
+      let domainHostname: string | null;
+      try {
+        domainHostname = resolveDomainHostname(item.domainHostname, primaryHost);
+      } catch (e) {
+        results[i] = { slug, success: false, error: e instanceof HTTPException ? e.message : "Invalid domainHostname" };
+        continue;
+      }
+
+      const isInternal = item.isInternal === true;
+      if (isInternal && domainHostname) {
+        results[i] = { slug, success: false, error: "Internal links are only supported on the default domain" };
+        continue;
+      }
 
       if (domainHostname) {
         if (!domainAccessCache.has(domainHostname)) {
           try {
-            await validateDomainAccess(db, domainHostname, user.email, user.isAdmin);
-            domainAccessCache.set(domainHostname, true);
+            await validateDomainAccess(db, domainHostname, user.email, user.isAdmin, primaryHost);
+            domainAccessCache.set(domainHostname, null);
           } catch (e) {
-            domainAccessCache.set(domainHostname, false);
-            const msg = e instanceof HTTPException ? e.message : "Domain access error";
-            results[i] = { slug, success: false, error: msg };
-            continue;
+            domainAccessCache.set(domainHostname, e instanceof HTTPException ? e.message : "Domain access error");
           }
-        } else if (!domainAccessCache.get(domainHostname)) {
-          results[i] = { slug, success: false, error: "You do not have access to this domain" };
+        }
+        const domainError = domainAccessCache.get(domainHostname);
+        if (domainError) {
+          results[i] = { slug, success: false, error: domainError };
           continue;
         }
       }
@@ -161,6 +190,7 @@ bulkRoutes.post("/", async (c) => {
         redirectType: item.redirectType === 301 ? 301 : 302,
         title: item.title || null,
         domainHostname,
+        isInternal,
       });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Unexpected error";
@@ -215,7 +245,7 @@ bulkRoutes.post("/", async (c) => {
         expiresAt: null,
         maxClicks: null,
         password: null,
-        isInternal: false,
+        isInternal: v.isInternal,
         paramForwarding: false,
         ogTitle: null,
         ogDescription: null,
@@ -245,7 +275,7 @@ bulkRoutes.post("/", async (c) => {
       validated
         .filter((v) => results[v.index]?.success)
         .map((v) => {
-          const kvData = buildNewLinkCache(v.id, v.destinationUrl, v.redirectType, v.domainHostname);
+          const kvData = buildNewLinkCache(v.id, v.destinationUrl, v.redirectType, v.domainHostname, v.isInternal);
           return setCachedRedirect(c.env.KV, v.slug, kvData, v.domainHostname);
         }),
     ));

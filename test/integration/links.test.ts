@@ -916,5 +916,306 @@ describe("Links API", () => {
       const json = await res.json() as { pagination: { page: number } };
       expect(json.pagination.page).toBe(1);
     });
+
+    it("accepts a fractional page (offset must stay an integer for SQLite)", async () => {
+      const res = await api("GET", "/api/links?page=1.3&limit=2", { headers });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { pagination: { page: number } };
+      expect(json.pagination.page).toBe(1);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Cross-user ownership on mutating routes
+  // -----------------------------------------------------------------------
+  describe("cross-user access returns 404", () => {
+    let otherLinkId: string;
+
+    beforeAll(async () => {
+      const otherAuth = await setupAuth(env, { email: "links-crossuser@test.com" });
+      const link = await createTestLink(env.DB, {
+        slug: `cross-user-${crypto.randomUUID().slice(0, 8)}`,
+        userId: otherAuth.user.id,
+      });
+      otherLinkId = link.id;
+    });
+
+    it("PUT another user's link", async () => {
+      const res = await api("PUT", `/api/links/${otherLinkId}`, {
+        headers,
+        body: { destinationUrl: "https://hijacked.example.com" },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("PATCH another user's link active state", async () => {
+      const res = await api("PATCH", `/api/links/${otherLinkId}/active`, {
+        headers,
+        body: { isActive: false },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("DELETE another user's link", async () => {
+      const res = await api("DELETE", `/api/links/${otherLinkId}`, { headers });
+      expect(res.status).toBe(404);
+
+      const row = await env.DB.prepare("SELECT id FROM links WHERE id = ?").bind(otherLinkId).first();
+      expect(row).not.toBeNull();
+    });
+
+    it("GET another user's link targets", async () => {
+      const res = await api("GET", `/api/links/${otherLinkId}/targets`, { headers });
+      expect(res.status).toBe(404);
+    });
+
+    it("PUT another user's link targets", async () => {
+      const res = await api("PUT", `/api/links/${otherLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "geo", matchValue: "US", destinationUrl: "https://example.com/us" }] },
+      });
+      expect(res.status).toBe(404);
+
+      const row = await env.DB.prepare("SELECT id FROM link_targets WHERE linkId = ?").bind(otherLinkId).first();
+      expect(row).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // KV write-through on mutation
+  // -----------------------------------------------------------------------
+  describe("KV cache stays in step with D1", () => {
+    type Cached = { url: string; hasPassword: boolean; expiresAt: number | null; isActive: boolean; targets: { matchValue: string; priority: number }[] | null };
+
+    async function readKv(slug: string) {
+      return await env.KV.get(slug, { type: "json" }) as Cached | null;
+    }
+
+    it("PUT destinationUrl, password and expiresAt writes them through", async () => {
+      const slug = `kv-put-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink(env.DB, { slug, userId });
+      const expiresAt = new Date(Date.now() + 86400000).toISOString();
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { destinationUrl: "https://kv-updated.example.com", password: "s3cret", expiresAt },
+      });
+      expect(res.status).toBe(200);
+
+      const cached = await readKv(slug);
+      expect(cached).not.toBeNull();
+      expect(cached!.url).toBe("https://kv-updated.example.com");
+      expect(cached!.hasPassword).toBe(true);
+      expect(cached!.expiresAt).toBe(Math.floor(new Date(expiresAt).getTime() / 1000));
+    });
+
+    it("PUT targets writes the target list and bumps updatedAt", async () => {
+      const slug = `kv-targets-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink(env.DB, { slug, userId });
+      // Backdate so the bump is unambiguous at second resolution.
+      await env.DB.prepare("UPDATE links SET updatedAt = 1000 WHERE id = ?").bind(link.id).run();
+
+      const res = await api("PUT", `/api/links/${link.id}/targets`, {
+        headers,
+        body: { targets: [{ type: "geo", matchValue: "GB", destinationUrl: "https://example.com/gb", priority: 5 }] },
+      });
+      expect(res.status).toBe(200);
+
+      const cached = await readKv(slug);
+      expect(cached!.targets).toHaveLength(1);
+      expect(cached!.targets![0].matchValue).toBe("GB");
+      expect(cached!.targets![0].priority).toBe(5);
+
+      const after = await env.DB.prepare("SELECT updatedAt FROM links WHERE id = ?")
+        .bind(link.id).first<{ updatedAt: number }>();
+      expect(after!.updatedAt).toBeGreaterThan(1000);
+    });
+
+    it("PUT targets clamps a non-finite priority to 0", async () => {
+      const slug = `kv-priority-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink(env.DB, { slug, userId });
+
+      const res = await api("PUT", `/api/links/${link.id}/targets`, {
+        headers,
+        body: {
+          targets: [
+            { type: "geo", matchValue: "US", destinationUrl: "https://example.com/us", priority: Number.POSITIVE_INFINITY },
+            { type: "device", matchValue: "mobile", destinationUrl: "https://example.com/m", priority: 1e9 },
+          ],
+        },
+      });
+      expect(res.status).toBe(200);
+
+      const rows = await env.DB.prepare("SELECT matchValue, priority FROM link_targets WHERE linkId = ? ORDER BY matchValue")
+        .bind(link.id).all<{ matchValue: string; priority: number }>();
+      const byValue = Object.fromEntries(rows.results.map(r => [r.matchValue, r.priority]));
+      // JSON.stringify turns Infinity into null, which is not a number → 0.
+      expect(byValue["US"]).toBe(0);
+      expect(byValue["mobile"]).toBe(1000);
+    });
+
+    it("reactivating repopulates the cache entry", async () => {
+      const slug = `kv-reactivate-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink(env.DB, { slug, userId, isActive: false });
+      expect(await env.KV.get(slug)).toBeNull();
+
+      const res = await api("PATCH", `/api/links/${link.id}/active`, { headers, body: { isActive: true } });
+      expect(res.status).toBe(200);
+
+      const cached = await readKv(slug);
+      expect(cached).not.toBeNull();
+      expect(cached!.isActive).toBe(true);
+      expect(cached!.url).toBe(link.destinationUrl);
+    });
+
+    it("DELETE removes the cache entry", async () => {
+      const slug = `kv-delete-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink(env.DB, { slug, userId });
+      await env.KV.put(slug, JSON.stringify({ url: link.destinationUrl, linkId: link.id, isActive: true }));
+
+      const res = await api("DELETE", `/api/links/${link.id}`, { headers });
+      expect(res.status).toBe(200);
+      expect(await env.KV.get(slug)).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Validation before any write
+  // -----------------------------------------------------------------------
+  describe("PUT /api/links/:id – validation order and body types", () => {
+    it("a bogus campaignId leaves D1 and KV untouched", async () => {
+      const slug = `put-bad-campaign-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink(env.DB, { slug, userId, destinationUrl: "https://original.example.com" });
+      await env.KV.put(slug, JSON.stringify({ url: "https://original.example.com", linkId: link.id, isActive: true }));
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { destinationUrl: "https://changed.example.com", campaignIds: ["no-such-campaign"] },
+      });
+      expect(res.status).toBe(400);
+
+      const row = await env.DB.prepare("SELECT destinationUrl FROM links WHERE id = ?")
+        .bind(link.id).first<{ destinationUrl: string }>();
+      expect(row!.destinationUrl).toBe("https://original.example.com");
+
+      const cached = await env.KV.get(slug, { type: "json" }) as { url: string };
+      expect(cached.url).toBe("https://original.example.com");
+    });
+
+    it("rejects a non-array campaignIds with 400", async () => {
+      const link = await createTestLink(env.DB, { slug: `put-campaignids-type-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { campaignIds: "not-an-array" } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a non-string password with 400", async () => {
+      const link = await createTestLink(env.DB, { slug: `put-password-type-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { password: { hash: "x" } } as unknown as JsonBody,
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe("POST /api/links – body types", () => {
+    it("rejects a non-string password with 400", async () => {
+      const res = await postLink({
+        slug: `post-password-type-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        password: 12345,
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects a non-array campaignIds with 400", async () => {
+      const res = await postLink({
+        slug: `post-campaignids-type-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        campaignIds: "nope",
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("enforces the user's maxLinks quota", async () => {
+      const quotaAuth = await setupAuth(env, { email: "links-quota@test.com" });
+      await createTestLink(env.DB, { slug: `quota-existing-${crypto.randomUUID().slice(0, 8)}`, userId: quotaAuth.user.id });
+      await env.DB.prepare("UPDATE user SET maxLinks = 1 WHERE id = ?").bind(quotaAuth.user.id).run();
+
+      const res = await postLink({
+        slug: `quota-over-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+      }, quotaAuth.headers);
+      expect(res.status).toBe(400);
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain("link limit");
+    });
+
+    it("allows a create that stays inside the quota", async () => {
+      const quotaAuth = await setupAuth(env, { email: "links-quota-ok@test.com" });
+      await env.DB.prepare("UPDATE user SET maxLinks = 1 WHERE id = ?").bind(quotaAuth.user.id).run();
+
+      const res = await postLink({
+        slug: `quota-fit-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+      }, quotaAuth.headers);
+      expect(res.status).toBe(201);
+    });
+
+    it("rejects an unknown campaignId with 400 and creates nothing", async () => {
+      const slug = `post-unknown-campaign-${crypto.randomUUID().slice(0, 8)}`;
+      const res = await postLink({
+        slug,
+        destinationUrl: "https://example.com",
+        campaignIds: ["no-such-campaign"],
+      }, headers);
+      expect(res.status).toBe(400);
+
+      const row = await env.DB.prepare("SELECT id FROM links WHERE slug = ?").bind(slug).first();
+      expect(row).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // PATCH /:id/active body handling
+  // -----------------------------------------------------------------------
+  describe("PATCH /api/links/:id/active – body handling", () => {
+    it("an empty object toggles instead of deactivating", async () => {
+      const link = await createTestLink(env.DB, { slug: `toggle-empty-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: false });
+      const res = await api("PATCH", `/api/links/${link.id}/active`, { headers, body: {} });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { isActive: boolean };
+      expect(json.isActive).toBe(true);
+    });
+
+    it("an oversized body returns 413, not a toggle", async () => {
+      const link = await createTestLink(env.DB, { slug: `toggle-big-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
+      const body = JSON.stringify({ isActive: false, pad: "x".repeat(11_000) });
+      const res = await app.request(`/api/links/${link.id}/active`, {
+        method: "PATCH",
+        headers: { ...headers, "Content-Length": String(new TextEncoder().encode(body).byteLength) },
+        body,
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(413);
+
+      const row = await env.DB.prepare("SELECT isActive FROM links WHERE id = ?")
+        .bind(link.id).first<{ isActive: number }>();
+      expect(row!.isActive).toBe(1);
+    });
+  });
+
+  describe("POST /api/links/:id/check-password – id length", () => {
+    it("returns 404 for an id too long to fit a KV key", async () => {
+      const longId = "a".repeat(600);
+      const res = await app.request(`/api/links/${longId}/check-password`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: "anything" }),
+      }, env, mockExecutionCtx());
+      expect(res.status).toBe(404);
+    });
   });
 });

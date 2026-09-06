@@ -1,5 +1,5 @@
 import { CHART_SKELETON, noData, fetchJSON, statsCard } from "../lib/stats-common.js";
-import { createChart, destroyChart, getThemeColors } from "../lib/chart-helper.js";
+import { createChart, destroyCharts, registerChart, themeColors } from "../lib/chart-helper.js";
 import { Chart } from "chart.js";
 import { feature } from "topojson-client";
 
@@ -30,11 +30,13 @@ const A2 = {
 
 let worldPromise = null;
 
+/** Country outlines for the choropleth. A failure clears the cache so a later render retries. */
 function loadWorld() {
   if (!worldPromise) {
     worldPromise = fetch("https://cdn.jsdelivr.net/npm/world-atlas@2/countries-110m.json")
       .then((r) => { if (!r.ok) throw new Error("Failed to fetch map"); return r.json(); })
-      .then((topo) => feature(topo, topo.objects.countries).features);
+      .then((topo) => feature(topo, topo.objects.countries).features)
+      .catch((err) => { worldPromise = null; throw err; });
   }
   return worldPromise;
 }
@@ -49,10 +51,15 @@ function buildClickMap(countries) {
 }
 
 export async function renderStatsGeo(container, linkId, days = 30) {
+  destroyCharts(container);
   container.innerHTML = statsCard("Geographic", CHART_SKELETON);
+  // Only the newest render may touch the DOM. An overlapping one resuming after
+  // an await would attach a second chart to a canvas the newer render owns.
+  const token = (container._geoRender = (container._geoRender || 0) + 1);
 
   try {
     const { data } = await fetchJSON(`/api/stats/${linkId}/geo?days=${days}`);
+    if (container._geoRender !== token) return;
 
     const countries = data.countries ?? [];
     const cities = data.cities ?? [];
@@ -62,31 +69,30 @@ export async function renderStatsGeo(container, linkId, days = 30) {
       return;
     }
 
-    (container._charts || []).forEach(destroyChart);
-
     const hasMap = countries.length > 0;
     container.innerHTML = statsCard("Geographic", `
       <div class="wa-stack wa-gap-m">
-        ${hasMap ? `<div class="wa-frame:landscape"><canvas id="geo-map"></canvas></div>` : ""}
+        ${hasMap ? `<div id="geo-map-slot"><div class="wa-frame:landscape"><canvas id="geo-map"></canvas></div></div>` : ""}
         ${countries.length ? `<div class="wa-frame:landscape"><canvas id="geo-countries"></canvas></div>` : ""}
         ${cities.length ? `<div class="wa-frame:landscape"><canvas id="geo-cities"></canvas></div>` : ""}
       </div>
     `);
 
+    // Tracked as it fills so a failure part-way still leaves the charts destroyable.
     const charts = [];
+    container._charts = charts;
 
     // Choropleth map
     if (hasMap) {
       try {
         const features = await loadWorld();
+        if (container._geoRender !== token) return;
         const clickMap = buildClickMap(countries);
         const maxClicks = Math.max(...clickMap.values(), 1);
 
         const mapCanvas = container.querySelector("#geo-map");
         if (mapCanvas) {
-          const { brand: brandColor, border: borderColor, fill: bgColor } = getThemeColors();
-
-          const chart = new Chart(mapCanvas, {
+          const chart = registerChart(new Chart(mapCanvas, {
             type: "choropleth",
             data: {
               labels: features.map((f) => f.properties.name),
@@ -96,14 +102,16 @@ export async function renderStatsGeo(container, linkId, days = 30) {
                   feature: f,
                   value: clickMap.get(f.id) || 0,
                 })),
+                // Scriptable so the map repaints in the new palette on a theme change.
                 backgroundColor: (ctx) => {
                   const v = ctx.raw?.value || 0;
-                  if (v === 0) return bgColor;
+                  const colors = themeColors();
+                  if (v === 0) return colors.fill;
                   const intensity = Math.min(v / maxClicks, 1);
                   const alpha = 0.15 + intensity * 0.85;
-                  return hexToRgba(brandColor, alpha);
+                  return hexToRgba(colors.brand, alpha);
                 },
-                borderColor,
+                borderColor: () => themeColors().border,
                 borderWidth: 0.5,
               }],
             },
@@ -134,11 +142,14 @@ export async function renderStatsGeo(container, linkId, days = 30) {
                 },
               },
             },
-          });
+          }));
           charts.push(chart);
         }
       } catch {
-        // Map failed to load — bar charts below still render
+        if (container._geoRender !== token) return;
+        // The atlas is a third-party fetch; say so instead of leaving an empty box.
+        const slot = container.querySelector("#geo-map-slot");
+        if (slot) slot.innerHTML = noData("Map unavailable");
       }
     }
 
@@ -155,8 +166,8 @@ export async function renderStatsGeo(container, linkId, days = 30) {
 
     makeBar("geo-countries", countries, "name");
     makeBar("geo-cities", cities, "name");
-    container._charts = charts;
   } catch {
+    if (container._geoRender !== token) return;
     container.innerHTML = statsCard("Geographic", noData("Failed to load geographic data"));
   }
 }

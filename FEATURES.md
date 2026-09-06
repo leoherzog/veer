@@ -7,10 +7,10 @@ The implemented product surface. Each bullet corresponds to shipped code — see
 *   **Custom slugs:** Slugs are user-chosen and required — no auto-generated gibberish. Same slug can exist on different domains. Any URL-safe character works, including non-ASCII and emoji (`/🎉`), and slugs are case-insensitive: `/Blah` resolves to `/blah`, and only one of the two can exist.
 *   **Editable links:** Change the destination URL, title, and settings at any time (the slug itself is immutable).
 *   **Redirect type:** Choose 301 (permanent) or 302 (temporary) per link.
-*   **Bulk creation:** Paste comma-separated lines into the bulk tool or POST a JSON array to the API (up to 50 links per request, with per-item validation errors).
+*   **Bulk creation:** Paste `slug, url, title` lines into the bulk tool or POST a JSON array to the API (up to 50 links per request, with per-item validation errors). Only the first two commas delimit fields, so a title may contain commas.
 *   **Link expiration:** Expire links after a date or after a maximum number of clicks.
 *   **Password protection:** Gate any link behind a password (PBKDF2-hashed, rate-limited, works without JavaScript).
-*   **Internal links:** Require a signed-in session before redirecting.
+*   **Internal links:** Require a signed-in session before redirecting. Available on the default domain only, since the session cookie is host-only to it.
 *   **Social preview control:** Set custom Open Graph title, description, and image per link; crawlers see the preview even on password-protected links.
 *   **Param forwarding:** Optionally pass query parameters from the short link through to the destination.
 
@@ -21,7 +21,7 @@ The implemented product surface. Each bullet corresponds to shipped code — see
 *   **Device & platform data:** Top browsers, operating systems, and device types (mobile/tablet/desktop).
 *   **Referrer tracking:** See which sites drive traffic to each link.
 *   **A/B variant stats:** Per-variant click breakdown for split-tested links.
-*   **Public reports:** Generate a shareable, tokenized public stats page per link (private by default, revocable).
+*   **Public reports:** Opt in from a link's page to publish its stats at a shareable tokenized URL. No report exists until you enable one, and enabling can be reversed.
 
 ### 3. QR Codes
 *   **Per-link QR codes:** Rendered for every short URL, with customizable foreground/background colors and PNG download.

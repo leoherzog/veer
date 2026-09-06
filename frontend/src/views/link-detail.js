@@ -116,19 +116,20 @@ function buildAbTestCard(targets, link) {
   `;
 }
 
+/** Public-report card. A link with no report row renders the switch off and the URL hidden. */
 function buildPublicReportCard(report) {
-  if (!report) return "";
-  const reportUrl = `${location.origin}/r/${report.token}`;
+  const enabled = !!report?.isEnabled;
+  const reportUrl = report ? `${location.origin}/r/${report.token}` : "";
   return `
     <wa-card>
       <h3 slot="header">Public Report</h3>
-      <wa-switch slot="header-actions" id="report-toggle" ${report.isEnabled ? "checked" : ""}><span class="wa-visually-hidden">Enable public report</span></wa-switch>
+      <wa-switch slot="header-actions" id="report-toggle" ${enabled ? "checked" : ""}><span class="wa-visually-hidden">Enable public report</span></wa-switch>
       <div class="wa-stack wa-gap-s">
         <p class="wa-body-s wa-color-text-quiet">Share your analytics dashboard with others via a public link.</p>
-        <div id="report-link-container" class="wa-cluster wa-gap-2xs" style="display: ${report.isEnabled ? "flex" : "none"};">
-          <wa-input readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
-          <wa-copy-button value="${escapeAttr(reportUrl)}"></wa-copy-button>
-          <wa-button variant="neutral" appearance="outlined" href="${escapeAttr(reportUrl)}" target="_blank" rel="noopener">
+        <div id="report-link-container" class="wa-cluster wa-gap-2xs" style="display: ${enabled ? "flex" : "none"};">
+          <wa-input id="report-url" readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
+          <wa-copy-button id="report-copy" value="${escapeAttr(reportUrl)}"></wa-copy-button>
+          <wa-button id="report-open" variant="neutral" appearance="outlined" href="${escapeAttr(reportUrl)}" target="_blank" rel="noopener">
             <wa-icon name="arrow-up-right-from-square" label="Open public report"></wa-icon>
           </wa-button>
         </div>
@@ -144,17 +145,12 @@ export async function renderLinkDetail(container, { id }) {
   if (!linkResult) return;
   const { data: link } = linkResult;
 
-  let targets = [];
-  let report = null;
-  const [targetsResult, reportResult] = await Promise.all([
-    apiFetch(`/api/links/${id}/targets`).catch(() => null),
-    apiFetch(`/api/reports/${id}`, { method: "POST" }).catch(() => null),
-  ]);
-  if (targetsResult?.data) targets = targetsResult.data;
-  if (reportResult?.data) report = reportResult.data;
+  const targets = link.targets || [];
 
-  // Attach targets to link for edit form
-  link.targets = targets;
+  // Read-only: creating the report here would publish stats nobody asked to share.
+  // An internal link gets no card at all — its public report URL always 404s.
+  const reportResult = link.isInternal ? null : await apiFetch(`/api/reports/${id}`);
+  let report = reportResult?.data ?? null;
 
   // Use domainHostname from API response (returned by GET /api/links/:id)
   const linkShortUrl = shortUrl(link);
@@ -199,14 +195,14 @@ export async function renderLinkDetail(container, { id }) {
         </div>
       </wa-card>
 
-      ${buildPublicReportCard(report)}
+      ${link.isInternal ? "" : buildPublicReportCard(report)}
       ${buildTargetingRules(targets)}
       ${buildAbTestCard(targets, link)}
       ${buildOgPreview(link)}
 
       ${link.totalClicks > 0 ? '<div id="stats-container"></div>' : ''}
 
-      <wa-dialog id="edit-link-dialog" label="Edit Link" light-dismiss style="--width:640px;">
+      <wa-dialog id="edit-link-dialog" label="Edit Link" style="--width:640px;">
         <div id="edit-form"></div>
       </wa-dialog>
 
@@ -222,25 +218,34 @@ export async function renderLinkDetail(container, { id }) {
 
   const reportToggle = container.querySelector("#report-toggle");
   if (reportToggle) {
+    const linkRow = container.querySelector("#report-link-container");
     reportToggle.addEventListener("change", async (e) => {
       const isEnabled = e.target.checked;
-      const result = await apiFetch(`/api/reports/${id}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isEnabled }),
-      });
-      if (!result) {
+      const result = report
+        ? await apiFetch(`/api/reports/${id}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ isEnabled }),
+          })
+        : await apiFetch(`/api/reports/${id}`, { method: "POST" });
+      if (!result?.data) {
         e.target.checked = !isEnabled;
         return;
       }
-      const containerDiv = container.querySelector("#report-link-container");
-      if (containerDiv) {
-        containerDiv.style.display = isEnabled ? "flex" : "none";
-      }
+      report = result.data;
+      const reportUrl = `${location.origin}/r/${report.token}`;
+      container.querySelector("#report-url").value = reportUrl;
+      container.querySelector("#report-copy").value = reportUrl;
+      container.querySelector("#report-open").href = reportUrl;
+      e.target.checked = report.isEnabled;
+      linkRow.style.display = report.isEnabled ? "flex" : "none";
     });
   }
 
   const editDialog = container.querySelector("#edit-link-dialog");
+  // A partial save leaves the dialog open with stale detail behind it, so the
+  // refresh waits until the dialog is closed by hand.
+  let partialSave = false;
   editDialog.addEventListener("wa-show", (e) => {
     if (e.target !== editDialog) return;
     renderLinkForm(container.querySelector("#edit-form"), {
@@ -249,7 +254,13 @@ export async function renderLinkDetail(container, { id }) {
         editDialog.open = false;
         renderLinkDetail(container, { id });
       },
+      onPartialSave: () => { partialSave = true; },
     });
+  });
+  editDialog.addEventListener("wa-after-hide", (e) => {
+    if (e.target !== editDialog || !partialSave) return;
+    partialSave = false;
+    renderLinkDetail(container, { id });
   });
 
   bindConfirmDialog({

@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestDomain as sharedCreateTestDomain, mockExecutionCtx, type JsonBody } from "../helpers";
+import { setupAuth, createTestDomain as sharedCreateTestDomain, createTestLink, mockExecutionCtx, type JsonBody } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,6 +131,27 @@ describe("Domains API", () => {
       const json = await res.json() as { data: { hostname: string }[] };
       const hostnames = json.data.map((d) => d.hostname);
       expect(hostnames).not.toContain(hostname);
+    });
+
+    it("flags the primary hostname with isPrimary", async () => {
+      // BETTER_AUTH_URL is http://localhost:8787 in the test env.
+      await createTestDomain("localhost");
+      await createTestDomain("not-primary.example.com");
+
+      const res = await api("GET", "/api/domains", { headers: userHeaders });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { hostname: string; isPrimary: boolean }[] };
+      expect(json.data.find((d) => d.hostname === "localhost")!.isPrimary).toBe(true);
+      expect(json.data.find((d) => d.hostname === "not-primary.example.com")!.isPrimary).toBe(false);
+    });
+
+    it("admin listing also carries isPrimary", async () => {
+      await createTestDomain("localhost");
+
+      const res = await api("GET", "/api/domains", { headers: adminHeaders, env: adminEnvObj });
+      const json = await res.json() as { data: { hostname: string; isPrimary: boolean }[] };
+      expect(json.data.find((d) => d.hostname === "localhost")!.isPrimary).toBe(true);
+      expect(json.data.every((d) => typeof d.isPrimary === "boolean")).toBe(true);
     });
 
     it("response includes required fields", async () => {
@@ -541,6 +562,78 @@ describe("Domains API", () => {
         body: { emails: [] },
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // SYNC  POST /api/domains/sync
+  // -----------------------------------------------------------------------
+  describe("POST /api/domains/sync", () => {
+    /** Stub the Cloudflare workers-domains API with a fixed hostname list. */
+    function stubCloudflareDomains(hostnames: string[]) {
+      return vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        Response.json({
+          result: hostnames.map((hostname) => ({ hostname })),
+          result_info: { total_pages: 1 },
+        })
+      );
+    }
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("removes a dropped domain's links instead of moving them onto the primary host", async () => {
+      const removed = "sync-removed.example.com";
+      await createTestDomain(removed);
+      const userAuth = await setupAuth(env, { email: "sync-links@test.com" });
+      const customLink = await createTestLink(env.DB, {
+        slug: "sync-collide",
+        userId: userAuth.user.id,
+        domainHostname: removed,
+      });
+      const primaryLink = await createTestLink(env.DB, {
+        slug: "sync-collide",
+        userId: userAuth.user.id,
+        domainHostname: null,
+      });
+      await env.KV.put(`${removed}:sync-collide`, JSON.stringify({ url: "https://example.com" }));
+
+      stubCloudflareDomains(["kept.example.com"]);
+
+      const res = await api("POST", "/api/domains/sync", {
+        headers: adminHeaders,
+        env: adminEnvObj,
+      });
+      expect(res.status).toBe(200);
+
+      const domainRow = await env.DB.prepare("SELECT hostname FROM domain_config WHERE hostname = ?")
+        .bind(removed).first();
+      expect(domainRow).toBeNull();
+
+      const goneLink = await env.DB.prepare("SELECT id FROM links WHERE id = ?").bind(customLink.id).first();
+      expect(goneLink).toBeNull();
+
+      const keptLink = await env.DB.prepare("SELECT domainHostname FROM links WHERE id = ?")
+        .bind(primaryLink.id).first<{ domainHostname: string | null }>();
+      expect(keptLink).not.toBeNull();
+      expect(keptLink!.domainHostname).toBeNull();
+
+      expect(await env.KV.get(`${removed}:sync-collide`)).toBeNull();
+    });
+
+    it("inserts new hostnames and always keeps the primary host", async () => {
+      stubCloudflareDomains(["fresh-sync.example.com"]);
+
+      const res = await api("POST", "/api/domains/sync", {
+        headers: adminHeaders,
+        env: adminEnvObj,
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { hostname: string }[] };
+      const hostnames = json.data.map((d) => d.hostname);
+      expect(hostnames).toContain("fresh-sync.example.com");
+      expect(hostnames).toContain("localhost");
     });
   });
 });

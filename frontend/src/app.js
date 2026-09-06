@@ -103,10 +103,13 @@ async function init() {
   // reentrantly during the first load, and that nested render is still bootstrap.
   let bootstrapping = true;
   function render(viewFn) {
-    main.innerHTML = "";
-    Promise.resolve(viewFn(main)).catch((err) => {
+    // Each render owns a fresh element, so a view that resolves after a newer
+    // navigation writes into a node already detached from #main.
+    const view = document.createElement("div");
+    main.replaceChildren(view);
+    Promise.resolve(viewFn(view)).catch((err) => {
       console.error(err);
-      main.innerHTML = '<div class="wa-stack wa-align-items-center"><h2>Something went wrong</h2><p>Please try again.</p></div>';
+      view.innerHTML = '<div class="wa-stack wa-align-items-center"><h2>Something went wrong</h2><p>Please try again.</p></div>';
     });
     if (!bootstrapping) main.focus();
   }
@@ -114,7 +117,8 @@ async function init() {
   // Routes
   addRoute("/", () => render((el) => renderHome(el, currentUser)));
   addRoute("/login", () => {
-    if (currentUser) return render((el) => renderHome(el, currentUser));
+    // Replace rather than push: /login must not sit in history behind /links.
+    if (currentUser) return navigate("/links", true);
     render((el) => renderLogin(el));
   });
   addRoute("/links", () => {

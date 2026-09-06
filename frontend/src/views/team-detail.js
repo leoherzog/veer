@@ -32,6 +32,10 @@ function renderMemberRow(member, isAdmin) {
   `;
 }
 
+function inviteUrl(token) {
+  return `${location.origin}/invite/${token}`;
+}
+
 function renderInviteRow(invite) {
   return `
     <tr>
@@ -39,13 +43,27 @@ function renderInviteRow(invite) {
       <td><wa-badge variant="${invite.role === "admin" ? "brand" : "neutral"}" pill>${escapeHtml(invite.role)}</wa-badge></td>
       <td><wa-relative-time date="${escapeAttr(invite.expiresAt)}"></wa-relative-time></td>
       <td>
-        <wa-button size="s" variant="danger" appearance="outlined" class="cancel-invite-btn" data-invite-id="${escapeAttr(invite.id)}">
-          <wa-icon slot="start" name="xmark"></wa-icon>
-          Cancel
-        </wa-button>
+        <div class="wa-cluster wa-gap-2xs">
+          ${invite.token ? `<wa-copy-button value="${escapeAttr(inviteUrl(invite.token))}" copy-label="Copy invite link" success-label="Copied!"></wa-copy-button>` : ""}
+          <wa-button size="s" variant="danger" appearance="outlined" class="cancel-invite-btn" data-invite-id="${escapeAttr(invite.id)}">
+            <wa-icon slot="start" name="xmark"></wa-icon>
+            Cancel
+          </wa-button>
+        </div>
       </td>
     </tr>
   `;
+}
+
+/** Pending-invites table, or the empty message. */
+function invitesHtml(invites) {
+  if (!invites.length) return `<p class="wa-color-text-quiet">No pending invites.</p>`;
+  return renderTable({
+    label: "Pending invites",
+    columns: ["Email", "Role", "Expires", "Actions"],
+    rows: invites.map(i => renderInviteRow(i)),
+    tbodyId: "invites-tbody",
+  });
 }
 
 export async function renderTeamDetail(container, { id }, currentUser = null, { onBack, onTeamsChanged, activeTab = "members" } = {}) {
@@ -161,15 +179,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
             <div class="wa-stack wa-gap-m">
               <wa-card>
                 <h3 slot="header">Pending Invites</h3>
-                ${invites.length === 0
-                  ? `<p class="wa-color-text-quiet">No pending invites.</p>`
-                  : renderTable({
-                    label: "Pending invites",
-                    columns: ["Email", "Role", "Expires", "Actions"],
-                    rows: invites.map(i => renderInviteRow(i)),
-                    tbodyId: "invites-tbody",
-                  })
-                }
+                <div id="invites-list">${invitesHtml(invites)}</div>
               </wa-card>
             </div>
           </wa-tab-panel>
@@ -232,7 +242,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
           body: JSON.stringify({ email, role }),
         });
         if (!result) return;
-        const inviteUrl = `${location.origin}/invite/${result.data.token}`;
+        const url = inviteUrl(result.data.token);
         showToast("Invite created! Share the link with the invitee.", "success");
         // Show a small inline result with the invite URL and copy button
         const inviteResult = document.createElement("div");
@@ -241,8 +251,8 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
         inviteResult.innerHTML = `
           <wa-callout variant="success">
             <div class="wa-cluster wa-gap-s wa-align-items-center">
-              <code style="word-break:break-all;">${escapeHtml(inviteUrl)}</code>
-              <wa-copy-button value="${escapeAttr(inviteUrl)}" copy-label="Copy link" success-label="Copied!"></wa-copy-button>
+              <code style="word-break:break-all;">${escapeHtml(url)}</code>
+              <wa-copy-button value="${escapeAttr(url)}" copy-label="Copy link" success-label="Copied!"></wa-copy-button>
             </div>
             <p class="wa-body-s wa-color-text-quiet" style="margin-top:var(--wa-space-2xs);">Share this link with ${escapeHtml(email)}. It expires in 7 days.</p>
           </wa-callout>
@@ -251,6 +261,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
         const existingResult = inviteForm.parentElement.querySelector(".invite-result");
         if (existingResult) existingResult.remove();
         inviteForm.after(inviteResult);
+        await refreshInvites();
       });
     });
   }
@@ -296,20 +307,32 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     },
   });
 
-  // Cancel invite buttons
-  container.querySelectorAll(".cancel-invite-btn").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const inviteId = btn.dataset.inviteId;
-      await withLoadingBtn(btn, async () => {
-        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites/${encodeURIComponent(inviteId)}`, {
-          method: "DELETE",
+  // Cancel invite buttons — rebound whenever the invites list re-renders.
+  function bindCancelInviteButtons() {
+    container.querySelectorAll(".cancel-invite-btn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const inviteId = btn.dataset.inviteId;
+        await withLoadingBtn(btn, async () => {
+          const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites/${encodeURIComponent(inviteId)}`, {
+            method: "DELETE",
+          });
+          if (!res) return;
+          showToast("Invite cancelled", "success");
+          reloadPreservingTab();
         });
-        if (!res) return;
-        showToast("Invite cancelled", "success");
-        reloadPreservingTab();
       });
     });
-  });
+  }
+  bindCancelInviteButtons();
+
+  async function refreshInvites() {
+    const list = container.querySelector("#invites-list");
+    if (!list) return;
+    const invResult = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites`);
+    if (!invResult?.data) return;
+    list.innerHTML = invitesHtml(invResult.data);
+    bindCancelInviteButtons();
+  }
 
   // Edit team dialog
   if (isAdmin) {
