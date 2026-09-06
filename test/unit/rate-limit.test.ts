@@ -171,5 +171,6 @@ describe("session-only routes are not rate limited", () => {
       const res = await veerApp.request("/api/teams", { headers }, env);
       expect(res.status).toBe(200);
     }
-  });
+    // 65 session lookups exceed the default 5s timeout when the full suite shares the CPU.
+  }, 30_000);
 });
