@@ -1,4 +1,4 @@
-import { renderLinkForm } from "../components/link-form.js";
+import { bindLinkFormDialog } from "../components/link-form.js";
 import { renderLinkTable } from "../components/link-table.js";
 import { showToast } from "../components/toast.js";
 import { renderCampaignsPanel } from "./campaigns.js";
@@ -10,16 +10,15 @@ import { apiFetch, withLoadingBtn, bindSearchInput, renderTable, setTeamOptions 
 /** Matches the server-side cap on POST /api/bulk. */
 const BULK_MAX = 50;
 
-export function renderDashboard(container, { activeTab = "links", teamId = null } = {}) {
+export function renderDashboard(container, { activeTab = "links", teamId = null, user } = {}) {
   let userTeams = [];
   async function fetchTeams() {
-    const result = await apiFetch("/api/teams").catch(() => null);
+    const result = await apiFetch("/api/teams");
     if (result?.data) userTeams = result.data;
   }
   const teamsReady = fetchTeams();
 
   container.innerHTML = `
-    <div >
       <wa-tab-group without-scroll-controls id="dashboard-tabs" active="${activeTab}">
         <wa-tab panel="links">
           <wa-icon name="link"></wa-icon>
@@ -45,7 +44,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
                     New Link
                   </wa-button>
                   <wa-dropdown placement="bottom-end">
-                    <wa-button variant="brand" slot="trigger" id="new-link-dropdown">
+                    <wa-button variant="brand" slot="trigger">
                       <wa-icon name="chevron-down" label="More options"></wa-icon>
                     </wa-button>
                     <wa-dropdown-item id="bulk-create-btn">
@@ -67,9 +66,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
             </div>
             <div id="links-table"></div>
 
-            <wa-dialog id="new-link-dialog" label="New Link" style="--width:640px;">
-              <div id="create-form"></div>
-            </wa-dialog>
+            <wa-dialog id="new-link-dialog" label="New Link" style="--width:640px;"></wa-dialog>
 
             <wa-dialog id="bulk-create-dialog" label="Bulk Create Links" light-dismiss style="--width:640px;">
               <div class="wa-stack wa-gap-m">
@@ -79,7 +76,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
 
                 <p class="wa-body-s wa-color-text-quiet">Enter one link per line: <code>slug, destination_url</code> (optionally: <code>slug, destination_url, title</code>)</p>
                 <wa-textarea id="bulk-input" label="Links to create" class="wa-visually-hidden-label" rows="8" placeholder="my-slug, https://example.com&#10;another-slug, https://example.org, My Title"></wa-textarea>
-                <div id="bulk-results" style="display:none;"></div>
+                <div id="bulk-results" hidden></div>
               </div>
               <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
               <wa-button slot="footer" variant="brand" id="bulk-submit-btn">
@@ -98,7 +95,6 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
           <div id="teams-panel"></div>
         </wa-tab-panel>
       </wa-tab-group>
-    </div>
   `;
 
   // --- Links tab ---
@@ -124,30 +120,10 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     loadLinks();
   });
 
-  const newLinkDialog = container.querySelector("#new-link-dialog");
   const bulkDialog = container.querySelector("#bulk-create-dialog");
   const createDropdown = container.querySelector("wa-button-group wa-dropdown");
 
-  // A partial save keeps the dialog open, so the list refresh waits for the
-  // user to close it or the new row stays missing from the table.
-  let partialSave = false;
-  newLinkDialog.addEventListener("wa-show", (e) => {
-    if (e.target !== newLinkDialog) return;
-    renderLinkForm(container.querySelector("#create-form"), {
-      onSuccess: () => {
-        newLinkDialog.open = false;
-        loadLinks();
-      },
-      onPartialSave: () => { partialSave = true; },
-      teams: userTeams,
-    });
-  });
-
-  newLinkDialog.addEventListener("wa-after-hide", (e) => {
-    if (e.target !== newLinkDialog || !partialSave) return;
-    partialSave = false;
-    loadLinks();
-  });
+  bindLinkFormDialog(container.querySelector("#new-link-dialog"), () => ({ teams: userTeams }), loadLinks);
 
   bulkDialog.addEventListener("wa-show", (e) => {
     if (e.target !== bulkDialog) return;
@@ -155,7 +131,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     // Reopening starts a fresh batch, not a re-run of the last one.
     container.querySelector("#bulk-input").value = "";
     const previousResults = container.querySelector("#bulk-results");
-    previousResults.style.display = "none";
+    previousResults.hidden = true;
     previousResults.innerHTML = "";
   });
 
@@ -178,24 +154,20 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     const links = [];
     for (const line of lines) {
       // Only the first two commas delimit fields, so the title may contain commas.
-      const firstComma = line.indexOf(",");
-      const secondComma = firstComma === -1 ? -1 : line.indexOf(",", firstComma + 1);
-      const slug = firstComma === -1 ? "" : line.slice(0, firstComma).trim();
-      const destinationUrl = firstComma === -1
-        ? ""
-        : (secondComma === -1 ? line.slice(firstComma + 1) : line.slice(firstComma + 1, secondComma)).trim();
-      const title = secondComma === -1 ? "" : line.slice(secondComma + 1).trim();
+      const [rawSlug, rawUrl = "", ...title] = line.split(",");
+      const slug = rawSlug.trim();
+      const destinationUrl = rawUrl.trim();
       if (!slug || !destinationUrl) {
         showToast(`Invalid line (need slug, url): "${line}"`, "warning");
         return;
       }
-      links.push({ slug, destinationUrl, title: title || undefined });
+      links.push({ slug, destinationUrl, title: title.join(",").trim() || undefined });
     }
 
     const submitBtn = container.querySelector("#bulk-submit-btn");
 
     await withLoadingBtn(submitBtn, async () => {
-      const bulkTeamId = container.querySelector("#bulk-owner")?.value || null;
+      const bulkTeamId = container.querySelector("#bulk-owner").value || null;
       const result = await apiFetch("/api/bulk", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -204,28 +176,29 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
       if (!result) return;
       const { results } = result;
 
-      const succeeded = results.filter(r => r.success).length;
-      const failed = results.filter(r => !r.success).length;
+      const failures = results.filter(r => !r.success);
+      const succeeded = results.length - failures.length;
 
       const resultsEl = container.querySelector("#bulk-results");
-      resultsEl.style.display = "block";
+      resultsEl.hidden = false;
       resultsEl.innerHTML = `
-        <wa-callout variant="${failed === 0 ? "success" : "warning"}">
-          <wa-icon slot="icon" name="${failed === 0 ? "circle-check" : "triangle-exclamation"}"></wa-icon>
-          ${succeeded} created${failed > 0 ? `, ${failed} failed` : ""}
-        </wa-callout>
-        ${failed > 0 ? renderTable({
-          label: "Bulk create results",
-          columns: ["Slug", "Status", "Error"],
-          rows: results.filter(r => !r.success).map(r => `
-            <tr>
-              <td>${escapeHtml(r.slug)}</td>
-              <td><wa-badge variant="danger" pill>Failed</wa-badge></td>
-              <td>${escapeHtml(r.error)}</td>
-            </tr>
-          `),
-          style: "margin-top:var(--wa-space-s);",
-        }) : ""}
+        <div class="wa-stack wa-gap-s">
+          <wa-callout variant="${failures.length === 0 ? "success" : "warning"}">
+            <wa-icon slot="icon" name="${failures.length === 0 ? "circle-check" : "triangle-exclamation"}"></wa-icon>
+            ${succeeded} created${failures.length > 0 ? `, ${failures.length} failed` : ""}
+          </wa-callout>
+          ${failures.length > 0 ? renderTable({
+            label: "Bulk create results",
+            columns: ["Slug", "Status", "Error"],
+            rows: failures.map(r => `
+              <tr>
+                <td>${escapeHtml(r.slug)}</td>
+                <td><wa-badge variant="danger" pill>Failed</wa-badge></td>
+                <td>${escapeHtml(r.error)}</td>
+              </tr>
+            `),
+          }) : ""}
+        </div>
       `;
 
       if (succeeded > 0) {
@@ -287,7 +260,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     const panel = container.querySelector("#teams-panel");
 
     if (selectTeamId) {
-      renderTeamDetail(panel, { id: selectTeamId }, null, {
+      renderTeamDetail(panel, { id: selectTeamId }, user, {
         onBack: () => loadTeamsPanel(),
         onTeamsChanged: async () => { await fetchTeams(); refreshScopeOptions(); },
       });
@@ -298,7 +271,6 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
         onTeamSelect: (id) => {
           loadTeamsPanel(id);
         },
-        onTeamsChanged: async () => { await fetchTeams(); refreshScopeOptions(); },
       });
       history.replaceState(null, "", "/teams");
     }
@@ -309,14 +281,12 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     if (e.target !== tabGroup) return;
     if (e.detail.name === "campaigns" && !campaignsLoaded) {
       renderCampaignsPanel(container.querySelector("#campaigns-panel"))
-        .then(() => { campaignsLoaded = true; })
-        .catch(() => {});
+        .then(() => { campaignsLoaded = true; });
     }
     if (e.detail.name === "teams" && !teamsLoaded) {
       teamsLoaded = true;
       loadTeamsPanel();
     }
-    // Sync URL with active tab
     const newPath = e.detail.name === "campaigns" ? "/campaigns"
       : e.detail.name === "teams" ? "/teams"
       : "/links";
@@ -325,7 +295,6 @@ export function renderDashboard(container, { activeTab = "links", teamId = null 
     }
   });
 
-  // If teams tab is active on init, load immediately
   if (activeTab === "teams") {
     teamsLoaded = true;
     loadTeamsPanel(teamId || null);

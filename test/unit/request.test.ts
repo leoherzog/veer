@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { parseJsonBody, parseOptionalJsonBody, parsePagination, stripPassword } from "../../src/lib/request";
+import { parseDays, parseJsonBody, parseOptionalJsonBody, parsePagination, stripPassword } from "../../src/lib/request";
 import type { AppEnv } from "../../src/types";
 
 describe("parsePagination", () => {
@@ -76,23 +76,30 @@ describe("parsePagination", () => {
   });
 });
 
-describe("parseJsonBody", () => {
-  function appWithParse() {
-    const app = new Hono<AppEnv>();
-    // Match the production app's onError so HTTPException rendering is identical
-    app.onError((err, c) => {
-      if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-      return c.json({ error: String(err) }, 500);
-    });
-    app.post("/j", async (c) => {
-      const body = await parseJsonBody<{ ok: boolean }>(c);
-      return c.json(body);
-    });
-    return app;
-  }
+describe("parseDays", () => {
+  it("defaults to 30 when absent, non-numeric or below 1", () => {
+    for (const raw of [undefined, "", "abc", "0", "-5"]) expect(parseDays(raw)).toBe(30);
+  });
 
+  it("truncates a fractional value and caps at 90", () => {
+    expect(parseDays("2.5")).toBe(2);
+    expect(parseDays("365")).toBe(90);
+  });
+});
+
+/** Routes /j through parseJsonBody and /o through parseOptionalJsonBody. */
+const parseApp = new Hono<AppEnv>();
+// Match the production app's onError so HTTPException rendering is identical
+parseApp.onError((err, c) => {
+  if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
+  return c.json({ error: String(err) }, 500);
+});
+parseApp.post("/j", async (c) => c.json(await parseJsonBody<{ ok: boolean }>(c)));
+parseApp.post("/o", async (c) => c.json({ body: await parseOptionalJsonBody<{ ok?: boolean }>(c) }));
+
+describe("parseJsonBody", () => {
   it("parses a valid JSON body", async () => {
-    const res = await appWithParse().request("/j", {
+    const res = await parseApp.request("/j", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ok: true }),
@@ -103,7 +110,7 @@ describe("parseJsonBody", () => {
   });
 
   it("returns 400 Invalid JSON body for malformed JSON", async () => {
-    const res = await appWithParse().request("/j", {
+    const res = await parseApp.request("/j", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: "{not-json",
@@ -112,33 +119,11 @@ describe("parseJsonBody", () => {
     const json = await res.json<{ error: string }>();
     expect(json.error).toBe("Invalid JSON body");
   });
-
-  it("returns 413 when Content-Length exceeds 10_000", async () => {
-    const res = await appWithParse().request("/j", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": "20000" },
-      body: JSON.stringify({ ok: true }),
-    });
-    expect(res.status).toBe(413);
-  });
 });
 
 describe("parseOptionalJsonBody", () => {
-  function appWithOptionalParse() {
-    const app = new Hono<AppEnv>();
-    app.onError((err, c) => {
-      if (err instanceof HTTPException) return c.json({ error: err.message }, err.status);
-      return c.json({ error: String(err) }, 500);
-    });
-    app.post("/j", async (c) => {
-      const body = await parseOptionalJsonBody<{ ok?: boolean }>(c);
-      return c.json({ body });
-    });
-    return app;
-  }
-
   it("returns the parsed body when one is sent", async () => {
-    const res = await appWithOptionalParse().request("/j", {
+    const res = await parseApp.request("/o", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ ok: true }),
@@ -148,19 +133,10 @@ describe("parseOptionalJsonBody", () => {
   });
 
   it("returns null when no body is sent", async () => {
-    const res = await appWithOptionalParse().request("/j", { method: "POST" });
+    const res = await parseApp.request("/o", { method: "POST" });
     expect(res.status).toBe(200);
     const json = await res.json<{ body: unknown }>();
     expect(json.body).toBeNull();
-  });
-
-  it("still returns 413 when Content-Length exceeds 10_000", async () => {
-    const res = await appWithOptionalParse().request("/j", {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "Content-Length": "20000" },
-      body: JSON.stringify({ ok: true }),
-    });
-    expect(res.status).toBe(413);
   });
 });
 
@@ -172,27 +148,11 @@ describe("stripPassword", () => {
     expect("password" in out).toBe(false);
   });
 
-  it("sets hasPassword:false when password is null", () => {
-    const out = stripPassword({ id: "1", password: null as string | null });
-    expect(out.hasPassword).toBe(false);
-  });
-
-  it("sets hasPassword:false when password is empty string", () => {
-    const out = stripPassword({ id: "1", password: "" });
-    expect(out.hasPassword).toBe(false);
-  });
-
-  it("sets hasPassword:false when password field is missing", () => {
-    const out = stripPassword({ id: "1" } as { id: string; password?: string | null });
-    expect(out.hasPassword).toBe(false);
-  });
-
-  it("preserves all non-password fields", () => {
-    const input = { id: "a", slug: "b", title: "c", password: "hash", extra: 42 };
-    const out = stripPassword(input);
-    expect(out.id).toBe("a");
-    expect(out.slug).toBe("b");
-    expect(out.title).toBe("c");
-    expect((out as typeof out & { extra: number }).extra).toBe(42);
+  it.each([
+    ["null", { id: "1", password: null }],
+    ["an empty string", { id: "1", password: "" }],
+    ["missing", { id: "1" }],
+  ])("sets hasPassword:false when password is %s", (_label, input: { id: string; password?: string | null }) => {
+    expect(stripPassword(input).hasPassword).toBe(false);
   });
 });

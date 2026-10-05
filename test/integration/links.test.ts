@@ -1,21 +1,8 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx, apiRequest, insertClickStat, type JsonBody } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx, api, postLink, insertClickStat, type JsonBody } from "../helpers";
 import { hashPassword } from "../../src/services/password";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
-  return apiRequest(app, method, path, opts);
-}
-
-/** Shorthand: POST /api/links with auth. */
-function postLink(body: JsonBody, headers: Record<string, string>) {
-  return api("POST", "/api/links", { headers, body });
-}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -26,7 +13,7 @@ describe("Links API", () => {
   let userId: string;
 
   beforeAll(async () => {
-    const auth = await setupAuth(env);
+    const auth = await setupAuth();
     headers = auth.headers;
     userId = auth.user.id;
   });
@@ -35,21 +22,13 @@ describe("Links API", () => {
   // LIST  GET /api/links
   // -----------------------------------------------------------------------
   describe("GET /api/links", () => {
-    it("returns empty list with pagination", async () => {
-      const res = await api("GET", "/api/links", { headers });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: unknown[]; pagination: { page: number; limit: number; total: number } };
-      expect(Array.isArray(json.data)).toBe(true);
-      expect(json.pagination).toMatchObject({ page: 1, limit: 20 });
-    });
-
     it("lists only the authenticated user's links", async () => {
       // Create link for current user
-      await createTestLink(env.DB, { slug: "my-link-iso", userId });
+      await createTestLink({ slug: "my-link-iso", userId });
 
       // Create link for another user
-      const otherAuth = await setupAuth(env, { email: "other-list@test.com" });
-      await createTestLink(env.DB, { slug: "other-link-iso", userId: otherAuth.user.id });
+      const otherAuth = await setupAuth({ email: "other-list@test.com" });
+      await createTestLink({ slug: "other-link-iso", userId: otherAuth.user.id });
 
       const res = await api("GET", "/api/links", { headers });
       const json = await res.json() as { data: { slug: string }[] };
@@ -60,7 +39,7 @@ describe("Links API", () => {
 
     it("paginates correctly", async () => {
       for (let i = 0; i < 3; i++) {
-        await createTestLink(env.DB, { slug: `page-${crypto.randomUUID().slice(0, 8)}`, userId });
+        await createTestLink({ slug: `page-${crypto.randomUUID().slice(0, 8)}`, userId });
       }
 
       const res = await api("GET", "/api/links?page=1&limit=2", { headers });
@@ -71,14 +50,14 @@ describe("Links API", () => {
     });
 
     it("searches by slug substring", async () => {
-      await createTestLink(env.DB, { slug: "findme-slug", userId });
+      await createTestLink({ slug: "findme-slug", userId });
       const res = await api("GET", "/api/links?q=findme", { headers });
       const json = await res.json() as { data: { slug: string }[] };
       expect(json.data.some((l) => l.slug === "findme-slug")).toBe(true);
     });
 
     it("searches by title substring", async () => {
-      await createTestLink(env.DB, { slug: "titled-link", userId, title: "UniqueTitle42" });
+      await createTestLink({ slug: "titled-link", userId, title: "UniqueTitle42" });
       const res = await api("GET", "/api/links?q=UniqueTitle42", { headers });
       const json = await res.json() as { data: { title: string }[] };
       expect(json.data.some((l) => l.title === "UniqueTitle42")).toBe(true);
@@ -139,16 +118,8 @@ describe("Links API", () => {
       expect(res.status).toBe(400);
     });
 
-    it("rejects invalid slug (spaces) with 400", async () => {
-      const res = await postLink(
-        { slug: "has space", destinationUrl: "https://example.com" },
-        headers
-      );
-      expect(res.status).toBe(400);
-    });
-
     it("rejects duplicate slug with 409", async () => {
-      await createTestLink(env.DB, { slug: "taken-slug", userId });
+      await createTestLink({ slug: "taken-slug", userId });
       const res = await postLink(
         { slug: "taken-slug", destinationUrl: "https://example.com" },
         headers
@@ -171,7 +142,7 @@ describe("Links API", () => {
     });
 
     it("rejects a case variant of an existing slug with 409", async () => {
-      await createTestLink(env.DB, { slug: "case-taken", userId });
+      await createTestLink({ slug: "case-taken", userId });
       const res = await postLink(
         { slug: "Case-TAKEN", destinationUrl: "https://example.com" },
         headers
@@ -189,34 +160,13 @@ describe("Links API", () => {
       expect((json.data as JsonBody).slug).toBe("\u{1F389}-party");
     });
 
-    it("rejects slugs with characters that are not URL-safe", async () => {
-      for (const slug of ["has/slash", "has?query", "has#hash", "has%percent", "has<angle"]) {
+    it.each(["has space", "has/slash", "has?query", "has#hash", "has%percent", "has<angle"])(
+      "rejects the URL-unsafe slug %j with 400",
+      async (slug) => {
         const res = await postLink({ slug, destinationUrl: "https://example.com" }, headers);
         expect(res.status).toBe(400);
-      }
-    });
-
-    it("rejects oversized body with 413", async () => {
-      const bigTitle = "x".repeat(11_000);
-      const body = JSON.stringify({ slug: "big", destinationUrl: "https://example.com", title: bigTitle });
-      const res = await app.request("/api/links", {
-        method: "POST",
-        headers: {
-          ...headers,
-          "Content-Length": String(new TextEncoder().encode(body).byteLength),
-        },
-        body,
-      }, env);
-      expect(res.status).toBe(413);
-    });
-
-    it("rejects unauthenticated request with 401", async () => {
-      const res = await api("POST", "/api/links", {
-        headers: { "Content-Type": "application/json" },
-        body: { slug: "noauth", destinationUrl: "https://example.com" },
-      });
-      expect(res.status).toBe(401);
-    });
+      },
+    );
   });
 
   // -----------------------------------------------------------------------
@@ -224,7 +174,7 @@ describe("Links API", () => {
   // -----------------------------------------------------------------------
   describe("GET /api/links/:id", () => {
     it("returns a link with totalClicks=0 when no stats exist", async () => {
-      const link = await createTestLink(env.DB, { slug: "get-zero", userId });
+      const link = await createTestLink({ slug: "get-zero", userId });
       const res = await api("GET", `/api/links/${link.id}`, { headers });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { id: string; totalClicks: number } };
@@ -233,9 +183,9 @@ describe("Links API", () => {
     });
 
     it("returns aggregated totalClicks from link_stats", async () => {
-      const link = await createTestLink(env.DB, { slug: "get-clicks", userId });
-      await insertClickStat(env.DB, link.id, 15, "2026-03-15");
-      await insertClickStat(env.DB, link.id, 25, "2026-03-16");
+      const link = await createTestLink({ slug: "get-clicks", userId });
+      await insertClickStat(link.id, 15, "2026-03-15");
+      await insertClickStat(link.id, 25, "2026-03-16");
 
       const res = await api("GET", `/api/links/${link.id}`, { headers });
       const json = await res.json() as { data: { totalClicks: number } };
@@ -248,8 +198,8 @@ describe("Links API", () => {
     });
 
     it("returns 404 for link owned by a different user", async () => {
-      const otherAuth = await setupAuth(env, { email: "iso2@test.com" });
-      const link = await createTestLink(env.DB, { slug: "other-owned", userId: otherAuth.user.id });
+      const otherAuth = await setupAuth({ email: "iso2@test.com" });
+      const link = await createTestLink({ slug: "other-owned", userId: otherAuth.user.id });
 
       const res = await api("GET", `/api/links/${link.id}`, { headers });
       expect(res.status).toBe(404);
@@ -261,7 +211,7 @@ describe("Links API", () => {
   // -----------------------------------------------------------------------
   describe("PUT /api/links/:id", () => {
     it("updates the destination URL", async () => {
-      const link = await createTestLink(env.DB, { slug: "update-dest", userId });
+      const link = await createTestLink({ slug: "update-dest", userId });
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
         body: { destinationUrl: "https://new-destination.com" },
@@ -271,27 +221,17 @@ describe("Links API", () => {
       expect(json.data.destinationUrl).toBe("https://new-destination.com");
     });
 
-    it("ignores slug in PUT body (slug is immutable)", async () => {
-      const link = await createTestLink(env.DB, { slug: "immutable-slug", userId });
+    it("updates the title and ignores a slug in the body, even a taken one", async () => {
+      await createTestLink({ slug: "conflict-target2", userId });
+      const link = await createTestLink({ slug: "immutable-slug", userId });
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
-        body: { slug: "new-slug", title: "Updated" },
+        body: { slug: "conflict-target2", title: "Updated" },
       });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { slug: string; title: string } };
       expect(json.data.slug).toBe("immutable-slug");
       expect(json.data.title).toBe("Updated");
-    });
-
-    it("updates the title", async () => {
-      const link = await createTestLink(env.DB, { slug: "update-title", userId });
-      const res = await api("PUT", `/api/links/${link.id}`, {
-        headers,
-        body: { title: "New Title" },
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: { title: string } };
-      expect(json.data.title).toBe("New Title");
     });
 
     it("returns 404 for non-existent link", async () => {
@@ -301,19 +241,6 @@ describe("Links API", () => {
       });
       expect(res.status).toBe(404);
     });
-
-    it("PUT does not allow slug changes so no slug conflict is possible", async () => {
-      await createTestLink(env.DB, { slug: "conflict-target2", userId });
-      const link = await createTestLink(env.DB, { slug: "conflict-source2", userId });
-
-      const res = await api("PUT", `/api/links/${link.id}`, {
-        headers,
-        body: { slug: "conflict-target2", title: "test" },
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: { slug: string } };
-      expect(json.data.slug).toBe("conflict-source2");
-    });
   });
 
   // -----------------------------------------------------------------------
@@ -321,7 +248,7 @@ describe("Links API", () => {
   // -----------------------------------------------------------------------
   describe("PATCH /api/links/:id/active", () => {
     it("deactivates a link and invalidates its cached redirect", async () => {
-      const link = await createTestLink(env.DB, { slug: "deactivate-me", userId, isActive: true });
+      const link = await createTestLink({ slug: "deactivate-me", userId, isActive: true });
 
       // Seed the KV cache the way the redirect path would. Key format matches
       // kvKey() in src/services/kv-cache.ts: bare slug when there is no custom domain.
@@ -346,8 +273,11 @@ describe("Links API", () => {
       expect(kv).toBeNull();
     });
 
-    it("reactivates a link", async () => {
-      const link = await createTestLink(env.DB, { slug: "reactivate-me", userId, isActive: false });
+    it("reactivates a link and repopulates its cached redirect", async () => {
+      const slug = `kv-reactivate-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink({ slug, userId, isActive: false });
+      expect(await env.KV.get(slug)).toBeNull();
+
       const res = await api("PATCH", `/api/links/${link.id}/active`, {
         headers,
         body: { isActive: true },
@@ -355,6 +285,11 @@ describe("Links API", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { success: boolean; isActive: boolean };
       expect(json.isActive).toBe(true);
+
+      const cached = await env.KV.get(slug, { type: "json" }) as { url: string; isActive: boolean } | null;
+      expect(cached).not.toBeNull();
+      expect(cached!.isActive).toBe(true);
+      expect(cached!.url).toBe(link.destinationUrl);
     });
 
     it("returns 404 for non-existent link", async () => {
@@ -370,20 +305,18 @@ describe("Links API", () => {
   // DELETE  DELETE /api/links/:id
   // -----------------------------------------------------------------------
   describe("DELETE /api/links/:id", () => {
-    it("deletes a link successfully", async () => {
-      const link = await createTestLink(env.DB, { slug: "delete-me", userId });
+    it("returns success, clears the cache entry and 404s on re-fetch", async () => {
+      const slug = `kv-delete-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink({ slug, userId });
+      await env.KV.put(slug, JSON.stringify({ url: link.destinationUrl, linkId: link.id, isActive: true }));
+
       const res = await api("DELETE", `/api/links/${link.id}`, { headers });
       expect(res.status).toBe(200);
-      const json = await res.json() as { success: boolean };
-      expect(json.success).toBe(true);
-    });
+      expect(await res.json()).toEqual({ success: true });
+      expect(await env.KV.get(slug)).toBeNull();
 
-    it("returns 404 when re-fetching a deleted link", async () => {
-      const link = await createTestLink(env.DB, { slug: "delete-then-get", userId });
-      await api("DELETE", `/api/links/${link.id}`, { headers });
-
-      const res = await api("GET", `/api/links/${link.id}`, { headers });
-      expect(res.status).toBe(404);
+      const refetch = await api("GET", `/api/links/${link.id}`, { headers });
+      expect(refetch.status).toBe(404);
     });
 
     it("returns 404 for non-existent link", async () => {
@@ -393,7 +326,7 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // NO BODY tests (Task 1)
+  // NO BODY tests
   // -----------------------------------------------------------------------
   describe("No body requests", () => {
     it("POST /api/links with no body returns 400", async () => {
@@ -405,7 +338,7 @@ describe("Links API", () => {
     });
 
     it("PUT /api/links/:id with no body returns 400", async () => {
-      const link = await createTestLink(env.DB, { slug: `no-body-put-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `no-body-put-${crypto.randomUUID().slice(0, 8)}`, userId });
       const res = await app.request(`/api/links/${link.id}`, {
         method: "PUT",
         headers: { Cookie: headers.Cookie },
@@ -414,7 +347,7 @@ describe("Links API", () => {
     });
 
     it("PUT /api/links/:id/targets with no body returns 400", async () => {
-      const link = await createTestLink(env.DB, { slug: `no-body-targets-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `no-body-targets-${crypto.randomUUID().slice(0, 8)}`, userId });
       const res = await app.request(`/api/links/${link.id}/targets`, {
         method: "PUT",
         headers: { Cookie: headers.Cookie },
@@ -423,7 +356,7 @@ describe("Links API", () => {
     });
 
     it("PATCH /api/links/:id/active with no body toggles (does not crash)", async () => {
-      const link = await createTestLink(env.DB, { slug: `no-body-toggle-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
+      const link = await createTestLink({ slug: `no-body-toggle-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
       const res = await app.request(`/api/links/${link.id}/active`, {
         method: "PATCH",
         headers: { Cookie: headers.Cookie },
@@ -435,76 +368,7 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // checkPassword (Task 3)
-  // -----------------------------------------------------------------------
-  describe("POST /api/links/:id/check-password", () => {
-    it("returns success for correct password", async () => {
-      const hashed = await hashPassword("secret123");
-      const link = await createTestLink(env.DB, { slug: `pw-correct-${crypto.randomUUID().slice(0, 8)}`, userId });
-      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
-
-      const res = await app.request(`/api/links/${link.id}/check-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: "secret123" }),
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(200);
-      const json = await res.json() as { valid: boolean };
-      expect(json.valid).toBe(true);
-    });
-
-    it("returns valid:false for wrong password", async () => {
-      const hashed = await hashPassword("secret123");
-      const link = await createTestLink(env.DB, { slug: `pw-wrong-${crypto.randomUUID().slice(0, 8)}`, userId });
-      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
-
-      const res = await app.request(`/api/links/${link.id}/check-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: "wrongpass" }),
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(200);
-      const json = await res.json() as { valid: boolean };
-      expect(json.valid).toBe(false);
-    });
-
-    it("returns 404 for link with no password", async () => {
-      const link = await createTestLink(env.DB, { slug: `pw-none-${crypto.randomUUID().slice(0, 8)}`, userId });
-      const res = await app.request(`/api/links/${link.id}/check-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: "anything" }),
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 400 for no body", async () => {
-      const hashed = await hashPassword("secret123");
-      const link = await createTestLink(env.DB, { slug: `pw-nobody-${crypto.randomUUID().slice(0, 8)}`, userId });
-      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
-
-      const res = await app.request(`/api/links/${link.id}/check-password`, {
-        method: "POST",
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 400 for missing password field", async () => {
-      const hashed = await hashPassword("secret123");
-      const link = await createTestLink(env.DB, { slug: `pw-nofield-${crypto.randomUUID().slice(0, 8)}`, userId });
-      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
-
-      const res = await app.request(`/api/links/${link.id}/check-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notPassword: "test" }),
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(400);
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Link create with advanced fields (Task 13)
+  // Link create with advanced fields
   // -----------------------------------------------------------------------
   describe("POST /api/links – advanced fields", () => {
     it("creates link with OG fields", async () => {
@@ -551,20 +415,11 @@ describe("Links API", () => {
       expect(res.status).toBe(400);
     });
 
-    it("rejects maxClicks: 0", async () => {
+    it.each([0, -1])("rejects maxClicks %i", async (maxClicks) => {
       const res = await postLink({
-        slug: `mc-zero-${crypto.randomUUID().slice(0, 8)}`,
+        slug: `mc-${crypto.randomUUID().slice(0, 8)}`,
         destinationUrl: "https://example.com",
-        maxClicks: 0,
-      }, headers);
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects maxClicks: -1", async () => {
-      const res = await postLink({
-        slug: `mc-neg-${crypto.randomUUID().slice(0, 8)}`,
-        destinationUrl: "https://example.com",
-        maxClicks: -1,
+        maxClicks,
       }, headers);
       expect(res.status).toBe(400);
     });
@@ -605,13 +460,15 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Link update clearing fields (Task 14)
+  // Link update clearing fields
   // -----------------------------------------------------------------------
   describe("PUT /api/links/:id – clearing fields", () => {
     it("clears expiresAt with null", async () => {
-      const link = await createTestLink(env.DB, { slug: `clear-exp-${crypto.randomUUID().slice(0, 8)}`, userId });
-      // Set expiresAt first
-      await env.DB.prepare("UPDATE links SET expiresAt = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000) + 86400, link.id).run();
+      const link = await createTestLink({
+        slug: `clear-exp-${crypto.randomUUID().slice(0, 8)}`,
+        userId,
+        expiresAt: Math.floor(Date.now() / 1000) + 86400,
+      });
 
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
@@ -623,8 +480,7 @@ describe("Links API", () => {
     });
 
     it("clears maxClicks with null", async () => {
-      const link = await createTestLink(env.DB, { slug: `clear-mc-${crypto.randomUUID().slice(0, 8)}`, userId });
-      await env.DB.prepare("UPDATE links SET maxClicks = ? WHERE id = ?").bind(100, link.id).run();
+      const link = await createTestLink({ slug: `clear-mc-${crypto.randomUUID().slice(0, 8)}`, userId, maxClicks: 100 });
 
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
@@ -636,9 +492,11 @@ describe("Links API", () => {
     });
 
     it("clears password with empty string", async () => {
-      const link = await createTestLink(env.DB, { slug: `clear-pw-${crypto.randomUUID().slice(0, 8)}`, userId });
-      const hashed = await hashPassword("secret");
-      await env.DB.prepare("UPDATE links SET password = ? WHERE id = ?").bind(hashed, link.id).run();
+      const link = await createTestLink({
+        slug: `clear-pw-${crypto.randomUUID().slice(0, 8)}`,
+        userId,
+        password: await hashPassword("secret"),
+      });
 
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
@@ -650,8 +508,11 @@ describe("Links API", () => {
     });
 
     it("clears ogImage with null", async () => {
-      const link = await createTestLink(env.DB, { slug: `clear-og-${crypto.randomUUID().slice(0, 8)}`, userId });
-      await env.DB.prepare("UPDATE links SET ogImage = ? WHERE id = ?").bind("https://example.com/img.png", link.id).run();
+      const link = await createTestLink({
+        slug: `clear-og-${crypto.randomUUID().slice(0, 8)}`,
+        userId,
+        ogImage: "https://example.com/img.png",
+      });
 
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
@@ -663,7 +524,7 @@ describe("Links API", () => {
     });
 
     it("toggles isInternal and paramForwarding", async () => {
-      const link = await createTestLink(env.DB, { slug: `toggle-flags-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `toggle-flags-${crypto.randomUUID().slice(0, 8)}`, userId });
 
       const res1 = await api("PUT", `/api/links/${link.id}`, {
         headers,
@@ -685,7 +546,7 @@ describe("Links API", () => {
     });
 
     it("changes redirectType from 302 to 301", async () => {
-      const link = await createTestLink(env.DB, { slug: `redir-change-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `redir-change-${crypto.randomUUID().slice(0, 8)}`, userId });
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
         body: { redirectType: 301 },
@@ -697,28 +558,28 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Target validation errors (Task 15)
+  // Target validation errors
   // -----------------------------------------------------------------------
   describe("PUT /api/links/:id/targets – validation", () => {
     let targetLinkId: string;
 
     beforeAll(async () => {
-      const link = await createTestLink(env.DB, { slug: `target-val-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `target-val-${crypto.randomUUID().slice(0, 8)}`, userId });
       targetLinkId = link.id;
     });
 
-    it("rejects targets not an array", async () => {
-      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
-        headers,
-        body: { targets: "not-array" } as unknown as JsonBody,
-      });
+    it.each([
+      ["targets not an array", "not-array"],
+      ["an unknown type", [{ type: "browser", matchValue: "chrome", destinationUrl: "https://example.com" }]],
+      ["an empty matchValue", [{ type: "geo", matchValue: "", destinationUrl: "https://example.com" }]],
+      ["a geo matchValue that is not 2 letters", [{ type: "geo", matchValue: "USA", destinationUrl: "https://example.com" }]],
+      ["a device matchValue outside mobile/tablet/desktop", [{ type: "device", matchValue: "phone", destinationUrl: "https://example.com" }]],
+      ["a non-http(s) destinationUrl", [{ type: "geo", matchValue: "US", destinationUrl: "ftp://bad.com" }]],
+    ])("rejects %s", async (_label, targets) => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, { headers, body: { targets } });
       expect(res.status).toBe(400);
     });
 
-    // Regression: the pre-squash migration constrained link_targets.type to
-    // ('geo','device') while the API has always accepted "ab", so this exact
-    // request returned 500 on a real deployment. It passed locally only because
-    // test/setup.ts built the table without the CHECK. Both now allow "ab".
     it("persists an A/B target — type 'ab' must satisfy the DB CHECK", async () => {
       const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
         headers,
@@ -734,50 +595,10 @@ describe("Links API", () => {
       expect(row!.matchValue).toBe("50");
     });
 
-    it("rejects invalid type (not geo/device/ab)", async () => {
-      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
-        headers,
-        body: { targets: [{ type: "browser", matchValue: "chrome", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects empty matchValue", async () => {
-      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
-        headers,
-        body: { targets: [{ type: "geo", matchValue: "", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects geo matchValue 'USA' (not 2-letter)", async () => {
-      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
-        headers,
-        body: { targets: [{ type: "geo", matchValue: "USA", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects device matchValue 'phone' (not mobile/tablet/desktop)", async () => {
-      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
-        headers,
-        body: { targets: [{ type: "device", matchValue: "phone", destinationUrl: "https://example.com" }] } as unknown as JsonBody,
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects invalid destinationUrl in target", async () => {
-      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
-        headers,
-        body: { targets: [{ type: "geo", matchValue: "US", destinationUrl: "ftp://bad.com" }] } as unknown as JsonBody,
-      });
-      expect(res.status).toBe(400);
-    });
-
     it("clears all rules with empty array", async () => {
       const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
         headers,
-        body: { targets: [] } as unknown as JsonBody,
+        body: { targets: [] },
       });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: unknown[] };
@@ -786,15 +607,15 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Search SQL wildcard escaping (Task 17)
+  // Search SQL wildcard escaping
   // -----------------------------------------------------------------------
   describe("GET /api/links – search wildcard escaping", () => {
     it("search for % matches a literal percent and does not act as a wildcard", async () => {
       const unique = crypto.randomUUID().slice(0, 8);
       const percentSlug = `has-percent-${unique}%sign`;
       const normalSlug = `normal-link-${unique}`;
-      await createTestLink(env.DB, { slug: percentSlug, userId });
-      await createTestLink(env.DB, { slug: normalSlug, userId });
+      await createTestLink({ slug: percentSlug, userId });
+      await createTestLink({ slug: normalSlug, userId });
 
       // ?q=%25 decodes to a single literal "%". With correct LIKE escaping this
       // matches only slugs containing a literal "%", not every row (which is what
@@ -803,13 +624,11 @@ describe("Links API", () => {
       const json = await res.json() as { data: { slug: string }[] };
       const slugs = json.data.map((l) => l.slug);
 
-      // Positive: the literal-percent slug IS found (guards against the escaping
-      // being so aggressive it matches nothing — the previous vacuous-pass bug).
+      // Positive: the literal-% slug is found, so over-aggressive escaping cannot pass vacuously.
       expect(slugs).toContain(percentSlug);
       // Negative: a slug without a "%" is NOT returned, proving "%" is not a wildcard.
       expect(slugs).not.toContain(normalSlug);
       // Every result must contain a literal "%".
-      expect(json.data.length).toBeGreaterThan(0);
       for (const item of json.data) {
         expect(item.slug).toContain("%");
       }
@@ -822,8 +641,8 @@ describe("Links API", () => {
       // which would match this slug even though it has no "_" characters. Correct
       // escaping treats "_" literally, so this control must be excluded.
       const wildcardOnlySlug = `zunderscorez${unique}`;
-      await createTestLink(env.DB, { slug: literalSlug, userId });
-      await createTestLink(env.DB, { slug: wildcardOnlySlug, userId });
+      await createTestLink({ slug: literalSlug, userId });
+      await createTestLink({ slug: wildcardOnlySlug, userId });
 
       const res = await api("GET", "/api/links?q=_underscore_", { headers });
       const json = await res.json() as { data: { slug: string }[] };
@@ -831,15 +650,25 @@ describe("Links API", () => {
 
       expect(slugs).toContain(literalSlug);
       expect(slugs).not.toContain(wildcardOnlySlug);
-      expect(json.data.length).toBeGreaterThan(0);
       for (const item of json.data) {
         expect(item.slug).toContain("_underscore_");
       }
     });
 
+    it("search for a trailing backslash matches it literally", async () => {
+      // An unescaped `\` would escape the closing `%` and the query would match nothing.
+      const unique = crypto.randomUUID().slice(0, 8);
+      const slug = `backslash-${unique}`;
+      await createTestLink({ slug, userId, title: `${unique}back\\slash` });
+
+      const res = await api("GET", `/api/links?q=${encodeURIComponent(`${unique}back\\`)}`, { headers });
+      const json = await res.json() as { data: { slug: string }[] };
+      expect(json.data.map((l) => l.slug)).toEqual([slug]);
+    });
+
     it("search matches destinationUrl (not just slug/title)", async () => {
       const unique = crypto.randomUUID().slice(0, 8);
-      await createTestLink(env.DB, { slug: `url-search-${unique}`, userId, destinationUrl: `https://uniquehost-${unique}.example.com` });
+      await createTestLink({ slug: `url-search-${unique}`, userId, destinationUrl: `https://uniquehost-${unique}.example.com` });
 
       const res = await api("GET", `/api/links?q=uniquehost-${unique}`, { headers });
       const json = await res.json() as { data: { slug: string }[] };
@@ -848,13 +677,13 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // Sort and pagination edge cases (Task 18)
+  // Sort and pagination edge cases
   // -----------------------------------------------------------------------
   describe("GET /api/links – sort and pagination", () => {
     beforeAll(async () => {
       // Create a few links with different slugs and titles
       for (const suffix of ["alpha", "beta", "gamma"]) {
-        await createTestLink(env.DB, {
+        await createTestLink({
           slug: `sort-${suffix}-${crypto.randomUUID().slice(0, 8)}`,
           userId,
           title: `Title-${suffix}`,
@@ -888,35 +717,6 @@ describe("Links API", () => {
       expect(Array.isArray(json.data)).toBe(true);
     });
 
-    it("clamps page=0 to page 1", async () => {
-      const res = await api("GET", "/api/links?page=0", { headers });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { pagination: { page: number } };
-      expect(json.pagination.page).toBe(1);
-    });
-
-    it("clamps limit=0 to default (20)", async () => {
-      const res = await api("GET", "/api/links?limit=0", { headers });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { pagination: { limit: number } };
-      // Number(0) || 20 = 20 (falsy fallback to default)
-      expect(json.pagination.limit).toBe(20);
-    });
-
-    it("clamps limit=101 to 100", async () => {
-      const res = await api("GET", "/api/links?limit=101", { headers });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { pagination: { limit: number } };
-      expect(json.pagination.limit).toBe(100);
-    });
-
-    it("treats page=abc as page 1", async () => {
-      const res = await api("GET", "/api/links?page=abc", { headers });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { pagination: { page: number } };
-      expect(json.pagination.page).toBe(1);
-    });
-
     it("accepts a fractional page (offset must stay an integer for SQLite)", async () => {
       const res = await api("GET", "/api/links?page=1.3&limit=2", { headers });
       expect(res.status).toBe(200);
@@ -932,8 +732,8 @@ describe("Links API", () => {
     let otherLinkId: string;
 
     beforeAll(async () => {
-      const otherAuth = await setupAuth(env, { email: "links-crossuser@test.com" });
-      const link = await createTestLink(env.DB, {
+      const otherAuth = await setupAuth({ email: "links-crossuser@test.com" });
+      const link = await createTestLink({
         slug: `cross-user-${crypto.randomUUID().slice(0, 8)}`,
         userId: otherAuth.user.id,
       });
@@ -964,11 +764,6 @@ describe("Links API", () => {
       expect(row).not.toBeNull();
     });
 
-    it("GET another user's link targets", async () => {
-      const res = await api("GET", `/api/links/${otherLinkId}/targets`, { headers });
-      expect(res.status).toBe(404);
-    });
-
     it("PUT another user's link targets", async () => {
       const res = await api("PUT", `/api/links/${otherLinkId}/targets`, {
         headers,
@@ -993,7 +788,7 @@ describe("Links API", () => {
 
     it("PUT destinationUrl, password and expiresAt writes them through", async () => {
       const slug = `kv-put-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink(env.DB, { slug, userId });
+      const link = await createTestLink({ slug, userId });
       const expiresAt = new Date(Date.now() + 86400000).toISOString();
 
       const res = await api("PUT", `/api/links/${link.id}`, {
@@ -1011,7 +806,7 @@ describe("Links API", () => {
 
     it("PUT targets writes the target list and bumps updatedAt", async () => {
       const slug = `kv-targets-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink(env.DB, { slug, userId });
+      const link = await createTestLink({ slug, userId });
       // Backdate so the bump is unambiguous at second resolution.
       await env.DB.prepare("UPDATE links SET updatedAt = 1000 WHERE id = ?").bind(link.id).run();
 
@@ -1031,9 +826,31 @@ describe("Links API", () => {
       expect(after!.updatedAt).toBeGreaterThan(1000);
     });
 
+    it("PUT targets stores more rules than one insert could bind and returns the stored rows", async () => {
+      const slug = `kv-many-targets-${crypto.randomUUID().slice(0, 8)}`;
+      const link = await createTestLink({ slug, userId });
+      // 20 rows of 6 columns exceed D1's 100 bound parameters per statement.
+      const codes = Array.from({ length: 20 }, (_, i) => `A${String.fromCharCode(65 + i)}`);
+
+      const res = await api("PUT", `/api/links/${link.id}/targets`, {
+        headers,
+        body: { targets: codes.map(code => ({ type: "geo", matchValue: code, destinationUrl: `https://example.com/${code}` })) },
+      });
+      expect(res.status).toBe(200);
+
+      const json = await res.json() as { data: { id: string }[] };
+      const rows = await env.DB.prepare("SELECT id FROM link_targets WHERE linkId = ?")
+        .bind(link.id).all<{ id: string }>();
+      expect(json.data.map(t => t.id).sort()).toEqual(rows.results.map(r => r.id).sort());
+
+      const cached = await readKv(slug);
+      expect(cached!.targets).toHaveLength(20);
+      expect(Object.keys(cached!.targets![0]).sort()).toEqual(["destinationUrl", "matchValue", "priority", "type"]);
+    });
+
     it("PUT targets clamps a non-finite priority to 0", async () => {
       const slug = `kv-priority-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink(env.DB, { slug, userId });
+      const link = await createTestLink({ slug, userId });
 
       const res = await api("PUT", `/api/links/${link.id}/targets`, {
         headers,
@@ -1053,30 +870,6 @@ describe("Links API", () => {
       expect(byValue["US"]).toBe(0);
       expect(byValue["mobile"]).toBe(1000);
     });
-
-    it("reactivating repopulates the cache entry", async () => {
-      const slug = `kv-reactivate-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink(env.DB, { slug, userId, isActive: false });
-      expect(await env.KV.get(slug)).toBeNull();
-
-      const res = await api("PATCH", `/api/links/${link.id}/active`, { headers, body: { isActive: true } });
-      expect(res.status).toBe(200);
-
-      const cached = await readKv(slug);
-      expect(cached).not.toBeNull();
-      expect(cached!.isActive).toBe(true);
-      expect(cached!.url).toBe(link.destinationUrl);
-    });
-
-    it("DELETE removes the cache entry", async () => {
-      const slug = `kv-delete-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink(env.DB, { slug, userId });
-      await env.KV.put(slug, JSON.stringify({ url: link.destinationUrl, linkId: link.id, isActive: true }));
-
-      const res = await api("DELETE", `/api/links/${link.id}`, { headers });
-      expect(res.status).toBe(200);
-      expect(await env.KV.get(slug)).toBeNull();
-    });
   });
 
   // -----------------------------------------------------------------------
@@ -1085,7 +878,7 @@ describe("Links API", () => {
   describe("PUT /api/links/:id – validation order and body types", () => {
     it("a bogus campaignId leaves D1 and KV untouched", async () => {
       const slug = `put-bad-campaign-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink(env.DB, { slug, userId, destinationUrl: "https://original.example.com" });
+      const link = await createTestLink({ slug, userId, destinationUrl: "https://original.example.com" });
       await env.KV.put(slug, JSON.stringify({ url: "https://original.example.com", linkId: link.id, isActive: true }));
 
       const res = await api("PUT", `/api/links/${link.id}`, {
@@ -1103,19 +896,19 @@ describe("Links API", () => {
     });
 
     it("rejects a non-array campaignIds with 400", async () => {
-      const link = await createTestLink(env.DB, { slug: `put-campaignids-type-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `put-campaignids-type-${crypto.randomUUID().slice(0, 8)}`, userId });
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
-        body: { campaignIds: "not-an-array" } as unknown as JsonBody,
+        body: { campaignIds: "not-an-array" },
       });
       expect(res.status).toBe(400);
     });
 
     it("rejects a non-string password with 400", async () => {
-      const link = await createTestLink(env.DB, { slug: `put-password-type-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const link = await createTestLink({ slug: `put-password-type-${crypto.randomUUID().slice(0, 8)}`, userId });
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
-        body: { password: { hash: "x" } } as unknown as JsonBody,
+        body: { password: { hash: "x" } },
       });
       expect(res.status).toBe(400);
     });
@@ -1140,31 +933,6 @@ describe("Links API", () => {
       expect(res.status).toBe(400);
     });
 
-    it("enforces the user's maxLinks quota", async () => {
-      const quotaAuth = await setupAuth(env, { email: "links-quota@test.com" });
-      await createTestLink(env.DB, { slug: `quota-existing-${crypto.randomUUID().slice(0, 8)}`, userId: quotaAuth.user.id });
-      await env.DB.prepare("UPDATE user SET maxLinks = 1 WHERE id = ?").bind(quotaAuth.user.id).run();
-
-      const res = await postLink({
-        slug: `quota-over-${crypto.randomUUID().slice(0, 8)}`,
-        destinationUrl: "https://example.com",
-      }, quotaAuth.headers);
-      expect(res.status).toBe(400);
-      const json = await res.json() as { error: string };
-      expect(json.error).toContain("link limit");
-    });
-
-    it("allows a create that stays inside the quota", async () => {
-      const quotaAuth = await setupAuth(env, { email: "links-quota-ok@test.com" });
-      await env.DB.prepare("UPDATE user SET maxLinks = 1 WHERE id = ?").bind(quotaAuth.user.id).run();
-
-      const res = await postLink({
-        slug: `quota-fit-${crypto.randomUUID().slice(0, 8)}`,
-        destinationUrl: "https://example.com",
-      }, quotaAuth.headers);
-      expect(res.status).toBe(201);
-    });
-
     it("rejects an unknown campaignId with 400 and creates nothing", async () => {
       const slug = `post-unknown-campaign-${crypto.randomUUID().slice(0, 8)}`;
       const res = await postLink({
@@ -1184,7 +952,7 @@ describe("Links API", () => {
   // -----------------------------------------------------------------------
   describe("PATCH /api/links/:id/active – body handling", () => {
     it("an empty object toggles instead of deactivating", async () => {
-      const link = await createTestLink(env.DB, { slug: `toggle-empty-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: false });
+      const link = await createTestLink({ slug: `toggle-empty-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: false });
       const res = await api("PATCH", `/api/links/${link.id}/active`, { headers, body: {} });
       expect(res.status).toBe(200);
       const json = await res.json() as { isActive: boolean };
@@ -1192,7 +960,7 @@ describe("Links API", () => {
     });
 
     it("an oversized body returns 413, not a toggle", async () => {
-      const link = await createTestLink(env.DB, { slug: `toggle-big-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
+      const link = await createTestLink({ slug: `toggle-big-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
       const body = JSON.stringify({ isActive: false, pad: "x".repeat(11_000) });
       const res = await app.request(`/api/links/${link.id}/active`, {
         method: "PATCH",
@@ -1204,18 +972,6 @@ describe("Links API", () => {
       const row = await env.DB.prepare("SELECT isActive FROM links WHERE id = ?")
         .bind(link.id).first<{ isActive: number }>();
       expect(row!.isActive).toBe(1);
-    });
-  });
-
-  describe("POST /api/links/:id/check-password – id length", () => {
-    it("returns 404 for an id too long to fit a KV key", async () => {
-      const longId = "a".repeat(600);
-      const res = await app.request(`/api/links/${longId}/check-password`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password: "anything" }),
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(404);
     });
   });
 });

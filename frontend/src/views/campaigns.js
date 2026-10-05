@@ -68,7 +68,7 @@ function renderCampaignList(container, campaigns) {
                 <strong>${escapeHtml(c.name)}</strong>
                 ${c.description ? `<span class="wa-body-s wa-color-text-quiet">${escapeHtml(c.description)}</span>` : ""}
               </div>
-              <wa-badge variant="neutral" pill>${c.linkCount ?? 0} link${(c.linkCount ?? 0) === 1 ? "" : "s"}</wa-badge>
+              <wa-badge variant="neutral" pill>${c.linkCount} link${c.linkCount === 1 ? "" : "s"}</wa-badge>
             </div>
           </wa-card>
         </a>

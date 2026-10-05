@@ -23,13 +23,8 @@ export function navigate(path, replace = false) {
   resolve();
 }
 
-/** A trailing slash names the same route; "/" keeps its slash. */
-function normalizePath(path) {
-  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
-}
-
 export function resolve() {
-  const path = normalizePath(location.pathname);
+  const path = location.pathname;
   for (const route of routes) {
     const match = path.match(route.pattern);
     if (match) {

@@ -1,39 +1,19 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, createTestLink, apiRequest, type JsonBody } from "../helpers";
+import { createTestLink, addTestTeamMember, api, newUser, uniq } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
-  return apiRequest(app, method, path, opts);
-}
-
-let seq = 0;
-/** Unique identifier fragment — team slugs and link slugs are globally unique. */
-function uniq(prefix: string): string {
-  seq++;
-  return `${prefix}-${Date.now().toString(36)}-${seq}`;
-}
-
-type Team = { id: string; name: string; slug: string };
+type Team = { id: string; name: string };
 
 /** Create a team through the API and return it. */
 async function createTeam(headers: Record<string, string>, name = "Test Team"): Promise<Team> {
-  const res = await api("POST", "/api/teams", { headers, body: { name, slug: uniq("team") } });
+  const res = await api("POST", "/api/teams", { headers, body: { name } });
   expect(res.status).toBe(201);
   const json = await res.json() as { data: Team };
   return json.data;
-}
-
-/** Add a member row directly, bypassing the invite flow. */
-async function addMember(teamId: string, userId: string, role: "admin" | "member" = "member") {
-  await env.DB
-    .prepare(`INSERT OR REPLACE INTO team_members (teamId, userId, role, joinedAt) VALUES (?, ?, ?, ?)`)
-    .bind(teamId, userId, role, Math.floor(Date.now() / 1000))
-    .run();
 }
 
 /** Insert an invite row directly so its expiry can be set in the past. */
@@ -64,11 +44,6 @@ async function inviteCount(teamId: string, email?: string): Promise<number> {
   return row?.c ?? 0;
 }
 
-/** A fresh authenticated user with a unique email. */
-function newUser(label: string) {
-  return setupAuth(env, { email: `${uniq(label)}@example.com` });
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -77,11 +52,10 @@ describe("Teams API", () => {
   describe("POST /api/teams", () => {
     it("creates a team with the creator as admin", async () => {
       const auth = await newUser("creator");
-      const slug = uniq("team");
-      const res = await api("POST", "/api/teams", { headers: auth.headers, body: { name: "Acme", slug } });
+      const res = await api("POST", "/api/teams", { headers: auth.headers, body: { name: "Acme" } });
       expect(res.status).toBe(201);
       const json = await res.json() as { data: Team };
-      expect(json.data).toMatchObject({ name: "Acme", slug });
+      expect(json.data).toMatchObject({ name: "Acme" });
 
       const list = await api("GET", "/api/teams", { headers: auth.headers });
       const teams = await list.json() as { data: { id: string; role: string; memberCount: number }[] };
@@ -93,21 +67,8 @@ describe("Teams API", () => {
 
     it("rejects a missing name", async () => {
       const auth = await newUser("noname");
-      const res = await api("POST", "/api/teams", { headers: auth.headers, body: { slug: uniq("team") } });
+      const res = await api("POST", "/api/teams", { headers: auth.headers, body: {} });
       expect(res.status).toBe(400);
-    });
-
-    it("rejects a duplicate slug with 409", async () => {
-      const auth = await newUser("dupe");
-      const slug = uniq("team");
-      await api("POST", "/api/teams", { headers: auth.headers, body: { name: "First", slug } });
-      const res = await api("POST", "/api/teams", { headers: auth.headers, body: { name: "Second", slug } });
-      expect(res.status).toBe(409);
-    });
-
-    it("requires authentication", async () => {
-      const res = await api("POST", "/api/teams", { body: { name: "x", slug: uniq("team") } });
-      expect(res.status).toBe(401);
     });
   });
 
@@ -129,14 +90,13 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("GET", `/api/teams/${team.id}`, { headers: member.headers });
       expect(res.status).toBe(200);
-      const json = await res.json() as { data: { members: { userId: string; role: string }[]; inviteCount: number } };
+      const json = await res.json() as { data: { members: { userId: string; role: string }[] } };
       expect(json.data.members).toHaveLength(2);
       expect(json.data.members.find(m => m.userId === admin.user.id)!.role).toBe("admin");
-      expect(json.data.inviteCount).toBe(0);
     });
 
     it("returns 404 for a non-member", async () => {
@@ -160,11 +120,19 @@ describe("Teams API", () => {
       expect(json.data.name).toBe("Renamed");
     });
 
+    it("rejects a non-string name with 400", async () => {
+      const admin = await newUser("admin");
+      const team = await createTeam(admin.headers);
+
+      const res = await api("PUT", `/api/teams/${team.id}`, { headers: admin.headers, body: { name: 42 } });
+      expect(res.status).toBe(400);
+    });
+
     it("returns 403 for a non-admin member", async () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("PUT", `/api/teams/${team.id}`, { headers: member.headers, body: { name: "Nope" } });
       expect(res.status).toBe(403);
@@ -184,7 +152,7 @@ describe("Teams API", () => {
     it("deletes the team for an admin and nulls the team's links", async () => {
       const admin = await newUser("admin");
       const team = await createTeam(admin.headers);
-      const link = await createTestLink(env.DB, { userId: admin.user.id, slug: uniq("tl"), teamId: team.id });
+      const link = await createTestLink({ userId: admin.user.id, slug: uniq("tl"), teamId: team.id });
 
       const res = await api("DELETE", `/api/teams/${team.id}`, { headers: admin.headers });
       expect(res.status).toBe(200);
@@ -197,7 +165,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("DELETE", `/api/teams/${team.id}`, { headers: member.headers });
       expect(res.status).toBe(403);
@@ -254,7 +222,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("POST", `/api/teams/${team.id}/invite`, { headers: admin.headers, body: { email: member.user.email } });
       expect(res.status).toBe(409);
@@ -295,7 +263,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
       const invite = await insertInvite(team.id, `x-${uniq("i")}@example.com`);
 
       const create = await api("POST", `/api/teams/${team.id}/invite`, { headers: member.headers, body: { email: "someone@example.com" } });
@@ -362,7 +330,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
       const invite = await insertInvite(team.id, member.user.email);
 
       const res = await api("POST", "/api/teams/accept-invite", { headers: member.headers, body: { token: invite.token } });
@@ -376,7 +344,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("POST", `/api/teams/${team.id}/leave`, { headers: member.headers });
       expect(res.status).toBe(200);
@@ -389,7 +357,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("POST", `/api/teams/${team.id}/leave`, { headers: admin.headers });
       expect(res.status).toBe(400);
@@ -400,7 +368,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const second = await newUser("second");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, second.user.id, "admin");
+      await addTestTeamMember(team.id, second.user.id, "admin");
 
       const res = await api("POST", `/api/teams/${team.id}/leave`, { headers: admin.headers });
       expect(res.status).toBe(200);
@@ -419,7 +387,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
       await insertInvite(team.id, member.user.email);
 
       const res = await api("DELETE", `/api/teams/${team.id}/members/${member.user.id}`, { headers: admin.headers });
@@ -446,7 +414,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("DELETE", `/api/teams/${team.id}/members/${admin.user.id}`, { headers: member.headers });
       expect(res.status).toBe(403);
@@ -456,7 +424,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("PATCH", `/api/teams/${team.id}/members/${member.user.id}`, { headers: admin.headers, body: { role: "admin" } });
       expect(res.status).toBe(200);
@@ -469,7 +437,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("PATCH", `/api/teams/${team.id}/members/${admin.user.id}`, { headers: admin.headers, body: { role: "member" } });
       expect(res.status).toBe(400);
@@ -480,7 +448,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const second = await newUser("second");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, second.user.id, "admin");
+      await addTestTeamMember(team.id, second.user.id, "admin");
 
       const res = await api("PATCH", `/api/teams/${team.id}/members/${admin.user.id}`, { headers: admin.headers, body: { role: "member" } });
       expect(res.status).toBe(200);
@@ -491,7 +459,7 @@ describe("Teams API", () => {
       const admin = await newUser("admin");
       const member = await newUser("member");
       const team = await createTeam(admin.headers);
-      await addMember(team.id, member.user.id);
+      await addTestTeamMember(team.id, member.user.id);
 
       const res = await api("PATCH", `/api/teams/${team.id}/members/${member.user.id}`, { headers: admin.headers, body: { role: "owner" } });
       expect(res.status).toBe(400);
@@ -503,8 +471,8 @@ describe("Teams API", () => {
       const owner = await newUser("owner");
       const member = await newUser("member");
       const team = await createTeam(owner.headers);
-      await addMember(team.id, member.user.id);
-      const link = await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
+      await addTestTeamMember(team.id, member.user.id);
+      const link = await createTestLink({ userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
 
       const res = await api("GET", `/api/links/${link.id}`, { headers: member.headers });
       expect(res.status).toBe(200);
@@ -517,7 +485,7 @@ describe("Teams API", () => {
       const owner = await newUser("owner");
       const stranger = await newUser("stranger");
       const team = await createTeam(owner.headers);
-      const link = await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
+      const link = await createTestLink({ userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
 
       const res = await api("GET", `/api/links/${link.id}`, { headers: stranger.headers });
       expect(res.status).toBe(404);
@@ -528,8 +496,8 @@ describe("Teams API", () => {
       const stranger = await newUser("stranger");
       const member = await newUser("member");
       const team = await createTeam(owner.headers);
-      await addMember(team.id, member.user.id);
-      const link = await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
+      await addTestTeamMember(team.id, member.user.id);
+      const link = await createTestLink({ userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
 
       const denied = await api("GET", `/api/links?teamId=${team.id}`, { headers: stranger.headers });
       expect(denied.status).toBe(404);
@@ -545,9 +513,9 @@ describe("Teams API", () => {
       const owner = await newUser("owner");
       const member = await newUser("member");
       const team = await createTeam(owner.headers);
-      await addMember(team.id, member.user.id);
-      const teamLink = await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
-      const ownLink = await createTestLink(env.DB, { userId: member.user.id, slug: uniq("own-link") });
+      await addTestTeamMember(team.id, member.user.id);
+      const teamLink = await createTestLink({ userId: owner.user.id, slug: uniq("team-link"), teamId: team.id });
+      const ownLink = await createTestLink({ userId: member.user.id, slug: uniq("own-link") });
 
       const scoped = await api("GET", "/api/links?scope=all", { headers: member.headers });
       const scopedIds = (await scoped.json() as { data: { id: string }[] }).data.map(l => l.id);

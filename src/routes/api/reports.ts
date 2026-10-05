@@ -1,28 +1,17 @@
 import { Hono } from "hono";
 import type { Context } from "hono";
-import { eq, and, sql, gte } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { getDb, type Database } from "../../db";
-import { publicReports, links, linkStats } from "../../db/schema";
+import { publicReports, links } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
-import { canAccessLink } from "../../lib/link-access";
-import { formatDate } from "../../lib/date";
+import { requireAccessibleLink } from "../../lib/link-access";
+import { dailyClickSeries, sumClicks } from "../../services/analytics";
 import type { AppEnv } from "../../types";
 
 function generateReportToken(): string { return "rpt_" + crypto.randomUUID().replace(/-/g, ""); }
 
 const reportRoutes = new Hono<AppEnv>();
-
-/** Load a link the caller may read, or throw 404. Team members count as callers. */
-async function requireAccessibleLink(db: Database, linkId: string, userId: string) {
-  const link = await db.select({ id: links.id, userId: links.userId, teamId: links.teamId, isInternal: links.isInternal })
-    .from(links)
-    .where(eq(links.id, linkId))
-    .get();
-  if (!link) throw notFound("Link not found");
-  if (!(await canAccessLink(db, link, userId))) throw notFound("Link not found");
-  return link;
-}
 
 /** Read the report row for a link, or null. */
 function selectReport(db: Database, linkId: string) {
@@ -61,18 +50,9 @@ reportRoutes.post("/:linkId", async (c) => {
     return c.json({ data: existing });
   }
 
-  // Create new report
-  const id = crypto.randomUUID();
   const token = generateReportToken();
   const now = new Date();
-
-  await db.insert(publicReports).values({
-    id,
-    linkId,
-    token,
-    isEnabled: true,
-    createdAt: now,
-  });
+  await db.insert(publicReports).values({ linkId, token, isEnabled: true, createdAt: now });
 
   return c.json({
     data: { linkId, token, isEnabled: true, createdAt: now },
@@ -91,16 +71,19 @@ reportRoutes.put("/:linkId", async (c) => {
   const isEnabled = body.isEnabled;
   if (isEnabled && link.isInternal) throw badRequest("Internal links cannot have a public report");
 
-  const report = await db.select().from(publicReports)
+  const report = await db.update(publicReports)
+    .set({ isEnabled })
     .where(eq(publicReports.linkId, linkId))
+    .returning({
+      token: publicReports.token,
+      isEnabled: publicReports.isEnabled,
+      createdAt: publicReports.createdAt,
+      linkId: publicReports.linkId,
+    })
     .get();
   if (!report) throw notFound("Report not found");
 
-  await db.update(publicReports)
-    .set({ isEnabled })
-    .where(eq(publicReports.id, report.id));
-
-  return c.json({ data: { token: report.token, isEnabled, createdAt: report.createdAt, linkId: report.linkId } });
+  return c.json({ data: report });
 });
 
 /** Public handler for GET /api/public-report/:token — no auth required. */
@@ -108,7 +91,6 @@ export async function publicReportRoute(c: Context<AppEnv>) {
   const token = c.req.param("token") as string;
   const db = getDb(c.env.DB);
 
-  // Single JOIN query instead of two sequential queries
   const row = await db.select({
     reportEnabled: publicReports.isEnabled,
     linkId: links.id,
@@ -131,24 +113,10 @@ export async function publicReportRoute(c: Context<AppEnv>) {
     return c.json({ error: "Not found" }, 404);
   }
 
-  // Total clicks (all time)
-  const totalRow = await db.select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
-    .from(linkStats)
-    .where(eq(linkStats.linkId, row.linkId))
-    .get();
-  const totalClicks = totalRow?.totalClicks ?? 0;
-
-  // Last 30 days timeseries
-  const cutoff = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
-  const rows = await db.select({ date: linkStats.date, clicks: linkStats.clicks })
-    .from(linkStats)
-    .where(and(eq(linkStats.linkId, row.linkId), gte(linkStats.date, cutoff)))
-    .orderBy(linkStats.date);
-
-  const timeseries = {
-    labels: rows.map((r) => formatDate(r.date)),
-    clicks: rows.map((r) => r.clicks),
-  };
+  const [totalClicks, timeseries] = await Promise.all([
+    sumClicks(db, row.linkId),
+    dailyClickSeries(db, row.linkId, 30),
+  ]);
 
   return c.json({
     data: {

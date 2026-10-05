@@ -14,22 +14,21 @@ async function renderForDownload(source) {
   el.value = source.value;
   el.label = source.label;
   el.size = DOWNLOAD_SIZE;
-  el.errorCorrection = source.errorCorrection;
-  el.fill = source.fill || getComputedStyle(source).color;
-  el.background = source.background;
-  const corner = getComputedStyle(source).getPropertyValue("--corner-color").trim();
-  if (corner) el.style.setProperty("--corner-color", corner);
+  const cs = getComputedStyle(source);
+  el.style.color = cs.color;
   el.style.position = "fixed";
   el.style.insetBlockStart = "-9999px";
   document.body.append(el);
   try {
     await el.updateComplete;
-    const canvas = el.shadowRoot?.querySelector("canvas");
-    if (!canvas) return null;
     const out = document.createElement("canvas");
     out.width = DOWNLOAD_SIZE;
     out.height = DOWNLOAD_SIZE;
-    out.getContext("2d").drawImage(canvas, 0, 0, DOWNLOAD_SIZE, DOWNLOAD_SIZE);
+    const ctx = out.getContext("2d");
+    // The QR canvas is transparent; the background is host CSS, so paint it in.
+    ctx.fillStyle = cs.backgroundColor;
+    ctx.fillRect(0, 0, DOWNLOAD_SIZE, DOWNLOAD_SIZE);
+    ctx.drawImage(el.canvas, 0, 0, DOWNLOAD_SIZE, DOWNLOAD_SIZE);
     return out.toDataURL("image/png");
   } finally {
     el.remove();
@@ -39,7 +38,7 @@ async function renderForDownload(source) {
 export function renderQrCode(container, shortUrl) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-xs wa-align-items-center">
-      <wa-qr-code value="${escapeAttr(shortUrl)}" size="${DISPLAY_SIZE}" label="QR code for short URL" error-correction="H"></wa-qr-code>
+      <wa-qr-code value="${escapeAttr(shortUrl)}" size="${DISPLAY_SIZE}" label="QR code for short URL"></wa-qr-code>
       <div class="wa-cluster wa-gap-s wa-align-items-center">
         <span class="wa-caption-xs">QR</span>
         <wa-color-picker id="qr-fill-color" value="#000000" without-format-toggle size="s"></wa-color-picker>
@@ -55,19 +54,15 @@ export function renderQrCode(container, shortUrl) {
 
   const qrEl = container.querySelector("wa-qr-code");
 
-  // Color pickers update QR in real-time
   container.querySelector("#qr-fill-color").addEventListener("change", (e) => {
-    // fill only paints the data modules; the finder squares read --corner-color
-    qrEl.style.setProperty("--corner-color", e.target.value);
-    qrEl.fill = e.target.value;
+    qrEl.style.color = e.target.value;
   });
   container.querySelector("#qr-bg-color").addEventListener("change", (e) => {
-    qrEl.background = e.target.value;
+    qrEl.style.backgroundColor = e.target.value;
   });
 
   container.querySelector("#qr-download-png").addEventListener("click", async () => {
     const href = await renderForDownload(qrEl);
-    if (!href) return;
     const a = document.createElement("a");
     a.href = href;
     a.download = "qr-code.png";

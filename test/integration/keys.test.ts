@@ -1,15 +1,7 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, apiRequest, type JsonBody } from "../helpers";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
-  return apiRequest(app, method, path, opts);
-}
+import { setupAuth, api } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -19,7 +11,7 @@ describe("API Keys", () => {
   let headers: Record<string, string>;
 
   beforeAll(async () => {
-    const auth = await setupAuth(env);
+    const auth = await setupAuth();
     headers = auth.headers;
   });
 
@@ -28,16 +20,15 @@ describe("API Keys", () => {
   // -----------------------------------------------------------------------
   describe("GET /api/keys", () => {
     it("returns empty array initially", async () => {
-      const auth = await setupAuth(env);
+      const auth = await setupAuth();
       const res = await api("GET", "/api/keys", { headers: auth.headers });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: unknown[] };
-      expect(Array.isArray(json.data)).toBe(true);
-      expect(json.data).toHaveLength(0);
+      expect(json.data).toEqual([]);
     });
 
     it("returns created keys without full key value", async () => {
-      const auth = await setupAuth(env);
+      const auth = await setupAuth();
       const createRes = await api("POST", "/api/keys", {
         headers: auth.headers,
         body: { name: "My Key" },
@@ -51,19 +42,11 @@ describe("API Keys", () => {
       const json = await res.json() as { data: { id: string; name: string; prefix: string; key?: string }[] };
       expect(json.data).toHaveLength(1);
       expect(json.data[0].name).toBe("My Key");
-      expect(json.data[0].prefix).toBeDefined();
       // The plaintext key must not appear anywhere in the list response...
       expect(JSON.stringify(json)).not.toContain(plaintextKey);
       // ...while the safe, non-secret fields are still present.
       expect(json.data[0].prefix).toBe(plaintextKey.slice(0, 12));
       expect(json.data[0].key).toBeUndefined();
-    });
-
-    it("returns 401 without auth", async () => {
-      const res = await api("GET", "/api/keys", {
-        headers: { "Content-Type": "application/json" },
-      });
-      expect(res.status).toBe(401);
     });
   });
 
@@ -146,7 +129,7 @@ describe("API Keys", () => {
     });
 
     it("enforces the 10-key limit", async () => {
-      const auth = await setupAuth(env);
+      const auth = await setupAuth();
 
       // Create 10 keys
       for (let i = 0; i < 10; i++) {
@@ -164,37 +147,14 @@ describe("API Keys", () => {
       });
       expect(res.status).toBe(400);
     });
-
-    it("returns 401 without auth", async () => {
-      const res = await api("POST", "/api/keys", {
-        headers: { "Content-Type": "application/json" },
-        body: { name: "Unauth Key" },
-      });
-      expect(res.status).toBe(401);
-    });
   });
 
   // -----------------------------------------------------------------------
   // DELETE  DELETE /api/keys/:id
   // -----------------------------------------------------------------------
   describe("DELETE /api/keys/:id", () => {
-    it("deletes own key and returns 200 with a JSON body", async () => {
-      const auth = await setupAuth(env);
-      const createRes = await api("POST", "/api/keys", {
-        headers: auth.headers,
-        body: { name: "To Delete" },
-      });
-      const { data } = await createRes.json() as { data: { id: string } };
-
-      const deleteRes = await api("DELETE", `/api/keys/${data.id}`, {
-        headers: auth.headers,
-      });
-      expect(deleteRes.status).toBe(200);
-      expect(await deleteRes.json()).toEqual({ success: true });
-    });
-
     it("revokes the key: reusing it as a Bearer token returns 401", async () => {
-      const auth = await setupAuth(env);
+      const auth = await setupAuth();
       const createRes = await api("POST", "/api/keys", {
         headers: auth.headers,
         body: { name: "To Revoke" },
@@ -208,6 +168,7 @@ describe("API Keys", () => {
 
       const deleteRes = await api("DELETE", `/api/keys/${data.id}`, { headers: auth.headers });
       expect(deleteRes.status).toBe(200);
+      expect(await deleteRes.json()).toEqual({ success: true });
 
       const after = await api("GET", "/api/links", {
         headers: { Authorization: `Bearer ${data.key}` },
@@ -223,7 +184,7 @@ describe("API Keys", () => {
     });
 
     it("returns 404 when deleting another user's key", async () => {
-      const otherAuth = await setupAuth(env);
+      const otherAuth = await setupAuth();
       const createRes = await api("POST", "/api/keys", {
         headers: otherAuth.headers,
         body: { name: "Other User Key" },
@@ -233,13 +194,6 @@ describe("API Keys", () => {
       // Try to delete with a different user's auth
       const res = await api("DELETE", `/api/keys/${data.id}`, { headers });
       expect(res.status).toBe(404);
-    });
-
-    it("returns 401 without auth", async () => {
-      const res = await api("DELETE", "/api/keys/some-id", {
-        headers: { "Content-Type": "application/json" },
-      });
-      expect(res.status).toBe(401);
     });
   });
 });

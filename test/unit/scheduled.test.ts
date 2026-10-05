@@ -1,99 +1,57 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { createScheduledController } from "cloudflare:test";
+import { describe, it, expect, beforeAll } from "vitest";
 import { scheduled } from "../../src/scheduled";
-import { mockExecutionCtx } from "../helpers";
+import { DEMO_USER_ID } from "../../src/lib/demo";
+import { mockExecutionCtx, isoDaysAgo, createTestLink, insertClickStat } from "../helpers";
 
 const demoEnv = { ...env, DEMO_MODE: "true" } as unknown as Env;
 
-function fakeEvent(): ScheduledController {
-  return { scheduledTime: Date.now(), cron: "0 * * * *", noRetry: () => {} };
-}
-
 async function getStatsRow(linkId: string, date: string) {
   return env.DB
-    .prepare("SELECT clicks, uniqueClicks FROM link_stats WHERE linkId = ? AND date = ?")
+    .prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
     .bind(linkId, date)
-    .first<{ clicks: number; uniqueClicks: number }>();
+    .first<{ clicks: number }>();
 }
 
 describe("scheduled handler", () => {
-  it("early-returns when DEMO_MODE is unset (no link_stats writes)", async () => {
-    const linkId = "sched-no-demo-link";
+  beforeAll(async () => {
     const now = Math.floor(Date.now() / 1000);
     await env.DB
       .prepare(
-        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('demo-user', 'Demo', 'demo@x', 0, ?, ?)`,
+        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, 'Demo', 'demo@x', 0, ?, ?)`,
       )
-      .bind(now, now)
+      .bind(DEMO_USER_ID, now, now)
       .run();
-    await env.DB
-      .prepare(
-        `INSERT INTO links (id, userId, slug, destinationUrl, createdAt, updatedAt) VALUES (?, 'demo-user', ?, 'https://example.com', ?, ?)`,
-      )
-      .bind(linkId, `sched-${linkId}`, now, now)
-      .run();
+  });
 
-    const today = new Date().toISOString().slice(0, 10);
-    await scheduled(fakeEvent(), env, mockExecutionCtx());
+  it("early-returns when DEMO_MODE is unset (no link_stats writes)", async () => {
+    const link = await createTestLink({ userId: DEMO_USER_ID });
 
-    const row = await getStatsRow(linkId, today);
-    expect(row).toBeNull();
+    await scheduled(createScheduledController(), env, mockExecutionCtx());
+
+    expect(await getStatsRow(link.id, isoDaysAgo(0))).toBeNull();
   });
 
   it("upserts today's link_stats for every seeded demo link when DEMO_MODE=true", async () => {
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('demo-user', 'Demo', 'demo@x', 0, ?, ?)`,
-      )
-      .bind(now, now)
-      .run();
+    const link = await createTestLink({ userId: DEMO_USER_ID });
 
-    const linkId = "sched-demo-link";
-    await env.DB
-      .prepare(
-        `INSERT OR REPLACE INTO links (id, userId, slug, destinationUrl, createdAt, updatedAt) VALUES (?, 'demo-user', ?, 'https://example.com', ?, ?)`,
-      )
-      .bind(linkId, `sched-${linkId}`, now, now)
-      .run();
+    await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
 
-    const today = new Date().toISOString().slice(0, 10);
-    await env.DB.prepare("DELETE FROM link_stats WHERE linkId = ?").bind(linkId).run();
-
-    await scheduled(fakeEvent(), demoEnv, mockExecutionCtx());
-
-    const row = await getStatsRow(linkId, today);
+    const row = await getStatsRow(link.id, isoDaysAgo(0));
     expect(row).not.toBeNull();
     expect(row!.clicks).toBeGreaterThanOrEqual(1);
     expect(row!.clicks).toBeLessThanOrEqual(5);
-    expect(row!.uniqueClicks).toBeGreaterThanOrEqual(1);
-    expect(row!.uniqueClicks).toBeLessThanOrEqual(row!.clicks);
   });
 
   it("increments clicks on a second invocation (onConflictDoUpdate)", async () => {
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('demo-user', 'Demo', 'demo@x', 0, ?, ?)`,
-      )
-      .bind(now, now)
-      .run();
+    const link = await createTestLink({ userId: DEMO_USER_ID });
+    const today = isoDaysAgo(0);
 
-    const linkId = "sched-increment-link";
-    await env.DB
-      .prepare(
-        `INSERT OR REPLACE INTO links (id, userId, slug, destinationUrl, createdAt, updatedAt) VALUES (?, 'demo-user', ?, 'https://example.com', ?, ?)`,
-      )
-      .bind(linkId, `sched-${linkId}`, now, now)
-      .run();
-
-    const today = new Date().toISOString().slice(0, 10);
-    await env.DB.prepare("DELETE FROM link_stats WHERE linkId = ?").bind(linkId).run();
-
-    await scheduled(fakeEvent(), demoEnv, mockExecutionCtx());
-    const first = await getStatsRow(linkId, today);
-    await scheduled(fakeEvent(), demoEnv, mockExecutionCtx());
-    const second = await getStatsRow(linkId, today);
+    await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
+    const first = await getStatsRow(link.id, today);
+    await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
+    const second = await getStatsRow(link.id, today);
 
     expect(second!.clicks).toBeGreaterThan(first!.clicks);
   });
@@ -101,28 +59,11 @@ describe("scheduled handler", () => {
   it("cascades link_stats away when the link is deleted", async () => {
     // The seed's idempotency rests on this cascade, which only exists because the
     // suite applies drizzle/migrations rather than an ad-hoc schema.
-    const now = Math.floor(Date.now() / 1000);
-    const linkId = "sched-cascade-link";
-    await env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES ('demo-user', 'Demo', 'demo@x', 0, ?, ?)`,
-      )
-      .bind(now, now)
-      .run();
-    await env.DB
-      .prepare(
-        `INSERT OR REPLACE INTO links (id, userId, slug, destinationUrl, createdAt, updatedAt) VALUES (?, 'demo-user', ?, 'https://example.com', ?, ?)`,
-      )
-      .bind(linkId, `sched-${linkId}`, now, now)
-      .run();
-    await env.DB
-      .prepare(`INSERT OR REPLACE INTO link_stats (linkId, date, clicks, uniqueClicks) VALUES (?, '2026-01-01', 3, 2)`)
-      .bind(linkId)
-      .run();
+    const link = await createTestLink({ userId: DEMO_USER_ID });
+    await insertClickStat(link.id, 3, "2026-01-01");
 
-    await env.DB.prepare("DELETE FROM links WHERE id = ?").bind(linkId).run();
+    await env.DB.prepare("DELETE FROM links WHERE id = ?").bind(link.id).run();
 
-    const row = await getStatsRow(linkId, "2026-01-01");
-    expect(row).toBeNull();
+    expect(await getStatsRow(link.id, "2026-01-01")).toBeNull();
   });
 });

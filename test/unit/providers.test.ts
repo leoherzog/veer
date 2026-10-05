@@ -2,24 +2,8 @@ import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
 import { getConfiguredProviders } from "../../src/lib/providers";
 
-// Every provider credential is present but empty, matching how an unconfigured
-// deployment reads: the keys exist on Env, their values are falsy. The cast is
-// needed because `wrangler types` types each wrangler.jsonc var as a literal union
-// of its configured values, which no test-local origin can satisfy.
+// The eight provider credentials, all empty. The cast is needed because the object is partial.
 const BASE_ENV = {
-  BETTER_AUTH_URL: "http://localhost:8787",
-  BETTER_AUTH_SECRET: "test-secret",
-  CF_ACCOUNT_ID: "test",
-  CF_API_TOKEN: "test",
-  ADMIN_EMAILS: "",
-  DB: {} as D1Database,
-  KV: {} as KVNamespace,
-  ANALYTICS: {} as AnalyticsEngineDataset,
-  ASSETS: {} as Fetcher,
-  WORKER_NAME: "veer" as const,
-  PASSKEY_ENABLED: "false",
-  INSTANCE_NAME: "",
-  DEMO_MODE: "",
   GOOGLE_CLIENT_ID: "",
   GOOGLE_CLIENT_SECRET: "",
   GITHUB_CLIENT_ID: "",

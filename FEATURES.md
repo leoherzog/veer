@@ -7,7 +7,7 @@ The implemented product surface. Each bullet corresponds to shipped code — see
 *   **Custom slugs:** Slugs are user-chosen and required — no auto-generated gibberish. Same slug can exist on different domains. Any URL-safe character works, including non-ASCII and emoji (`/🎉`), and slugs are case-insensitive: `/Blah` resolves to `/blah`, and only one of the two can exist.
 *   **Editable links:** Change the destination URL, title, and settings at any time (the slug itself is immutable).
 *   **Redirect type:** Choose 301 (permanent) or 302 (temporary) per link.
-*   **Bulk creation:** Paste `slug, url, title` lines into the bulk tool or POST a JSON array to the API (up to 50 links per request, with per-item validation errors). Only the first two commas delimit fields, so a title may contain commas.
+*   **Bulk creation:** Paste `slug, url, title` lines into the bulk tool or POST `{ "links": [...] }` to `/api/bulk` (up to 50 links per request). Only the first two commas delimit fields, so a title may contain commas. A pasted line missing its slug or URL stops the batch before anything is sent. Each link that fails server-side validation is reported on its own while the rest are created.
 *   **Link expiration:** Expire links after a date or after a maximum number of clicks.
 *   **Password protection:** Gate any link behind a password (PBKDF2-hashed, rate-limited, works without JavaScript).
 *   **Internal links:** Require a signed-in session before redirecting. Available on the default domain only, since the session cookie is host-only to it.
@@ -16,8 +16,8 @@ The implemented product surface. Each bullet corresponds to shipped code — see
 
 ### 2. Analytics & Reporting
 *   **Dual-storage stats:** Detailed per-click events retained ~90 days (Analytics Engine) plus permanent daily aggregates (D1), so lifetime totals never expire.
-*   **Timeline charts:** Click trends by hour, day, or week over a selectable time range.
-*   **Geographic analytics:** Clicks by country and city, in list and choropleth-map views.
+*   **Timeline charts:** Click trends by hour or day over a selectable range, plus weekly buckets through the API.
+*   **Geographic analytics:** Clicks by country and city, as a choropleth map and bar charts.
 *   **Device & platform data:** Top browsers, operating systems, and device types (mobile/tablet/desktop).
 *   **Referrer tracking:** See which sites drive traffic to each link.
 *   **A/B variant stats:** Per-variant click breakdown for split-tested links.
@@ -45,8 +45,8 @@ The implemented product surface. Each bullet corresponds to shipped code — see
 ### 7. Teams, Auth & Admin
 *   **OAuth sign-in:** Google, GitHub, Microsoft, and Discord — each enabled simply by setting its env-var credential pair.
 *   **Passkeys (WebAuthn):** Optional passwordless sign-in, gated by `PASSKEY_ENABLED`.
-*   **Teams:** Shared link ownership with member roles and email-token invitations.
-*   **Admin oversight:** Per-user link quotas and account impersonation for troubleshooting, driven by an `ADMIN_EMAILS` allowlist (no role column).
+*   **Teams:** Shared link ownership with member roles and copyable invite links bound to an email address.
+*   **Admin oversight:** Per-user link quotas and instance-wide user and team lists, driven by an `ADMIN_EMAILS` allowlist (no role column). "Impersonate" only marks the admin's browser tab with a banner: the session never switches, so every request still runs as the admin.
 
 ### 8. Self-Hosting
 *   **Runs entirely on Cloudflare Workers:** D1 (SQLite) + KV + Analytics Engine + static assets — no servers, no containers.

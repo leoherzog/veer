@@ -1,6 +1,6 @@
 import { authClient } from "../auth-client.js";
 import { showToast } from "../components/toast.js";
-import { getInstanceName } from "../lib/config.js";
+import { getInstanceName, getLoginOptions } from "../lib/config.js";
 import { escapeHtml } from "../lib/escape.js";
 
 /**
@@ -22,14 +22,9 @@ const allProviders = [
 
 function renderButtons(container, providers) {
   const wrapper = container.querySelector("#provider-buttons");
-  if (!providers.length) {
-    wrapper.innerHTML = "";
-    return;
-  }
-
   wrapper.innerHTML = providers.map((p) => `
     <wa-button variant="neutral" appearance="outlined" size="l" data-provider="${p.id}">
-      <wa-icon slot="start" name="${p.icon}" family="brands" label="${p.name}"></wa-icon>
+      <wa-icon slot="start" name="${p.icon}" family="brands"></wa-icon>
       Continue with ${p.name}
     </wa-button>
   `).join("");
@@ -50,12 +45,9 @@ function renderButtons(container, providers) {
 }
 
 function renderPasskeyButton(container, enabled) {
+  if (!enabled) return;
   const section = container.querySelector("#passkey-section");
-  if (!enabled) {
-    section.style.display = "none";
-    return;
-  }
-  section.style.display = "";
+  section.hidden = false;
   const btn = section.querySelector("#passkey-signin");
   btn.addEventListener("click", async () => {
     btn.loading = true;
@@ -79,51 +71,43 @@ export function renderLogin(container) {
     <div class="wa-stack wa-gap-l wa-text-center">
       <h1>Sign in to ${escapeHtml(getInstanceName())}</h1>
       <p id="login-help">Choose a provider to continue</p>
-      <div class="wa-stack wa-gap-s" id="provider-buttons">
-        <wa-skeleton effect="sheen" class="wa-size-l" style="height:var(--wa-form-control-height);"></wa-skeleton>
-        <wa-skeleton effect="sheen" class="wa-size-l" style="height:var(--wa-form-control-height);"></wa-skeleton>
-      </div>
-      <div id="passkey-section" style="display:none;">
+      <div class="wa-stack wa-gap-s" id="provider-buttons"></div>
+      <div id="passkey-section" hidden>
         <wa-divider></wa-divider>
         <wa-button id="passkey-signin" variant="brand" size="l" style="width:100%;">
-          <wa-icon slot="start" name="key" label="Passkey"></wa-icon>
+          <wa-icon slot="start" name="key"></wa-icon>
           Sign in with passkey
         </wa-button>
       </div>
     </div>
   `;
 
-  fetch("/api/auth/providers")
-    .then((r) => r.json())
-    .then(({ providers: ids, passkey }) => {
-      const providers = allProviders.filter((p) => ids.includes(p.id));
+  const help = container.querySelector("#login-help");
+  const options = getLoginOptions();
+  if (!options) {
+    help.textContent = "Failed to load login providers. Please refresh to try again.";
+    return;
+  }
+  const { passkey } = options;
+  const providers = allProviders.filter((p) => options.providers.includes(p.id));
 
-      // Single provider, no passkey — skip login page and redirect immediately
-      if (providers.length === 1 && !passkey) {
-        container.querySelector("#login-help").textContent =
-          `Redirecting to ${providers[0].name}…`;
-        container.querySelector("#provider-buttons").innerHTML = "";
-        authClient.signIn.social({
-          provider: providers[0].id,
-          callbackURL: callbackTarget(),
-        }).catch(() => {
-          showToast(`Sign in with ${providers[0].name} failed`, "danger");
-          renderButtons(container, providers);
-          container.querySelector("#login-help").textContent = "Choose a provider to continue";
-        });
-        return;
-      }
-
+  // Single provider, no passkey — skip login page and redirect immediately
+  if (providers.length === 1 && !passkey) {
+    help.textContent = `Redirecting to ${providers[0].name}…`;
+    authClient.signIn.social({
+      provider: providers[0].id,
+      callbackURL: callbackTarget(),
+    }).catch(() => {
+      showToast(`Sign in with ${providers[0].name} failed`, "danger");
       renderButtons(container, providers);
-      renderPasskeyButton(container, passkey);
-      if (!providers.length && !passkey) {
-        container.querySelector("#login-help").textContent =
-          "Have your administrator configure at least one login provider";
-      }
-    })
-    .catch(() => {
-      container.querySelector("#provider-buttons").innerHTML = "";
-      container.querySelector("#login-help").textContent =
-        "Failed to load login providers. Please refresh to try again.";
+      help.textContent = "Choose a provider to continue";
     });
+    return;
+  }
+
+  renderButtons(container, providers);
+  renderPasskeyButton(container, passkey);
+  if (!providers.length && !passkey) {
+    help.textContent = "Have your administrator configure at least one login provider";
+  }
 }

@@ -1,8 +1,7 @@
 import { showToast } from "./toast.js";
-import { navigate } from "../router.js";
 import { escapeAttr } from "../lib/escape.js";
 import { apiFetch, withLoadingBtn, setTeamOptions } from "../lib/ui.js";
-import { normalizeSlug } from "../lib/slug.js";
+import { normalizeSlug, MAX_SLUG_LENGTH } from "../../../src/services/slug.ts";
 
 function toLocalDatetime(isoStr) {
   if (!isoStr) return "";
@@ -75,6 +74,7 @@ function createAbRow(variant = {}) {
   return row;
 }
 
+/** Filled targeting rules, or null when a row has only one of match value and URL. Empty rows are skipped. */
 function collectTargets(container) {
   const rows = container.querySelectorAll(".target-rule");
   const targets = [];
@@ -83,9 +83,9 @@ function collectTargets(container) {
     const match = targetMatchValue(row);
     const url = row.querySelector('[name="targetUrl"]').value.trim();
     const priority = Number(row.querySelector('[name="targetPriority"]').value) || 0;
-    if (match && url) {
-      targets.push({ type, matchValue: match, destinationUrl: url, priority });
-    }
+    if (!match && !url) continue;
+    if (!match || !url) return null;
+    targets.push({ type, matchValue: match, destinationUrl: url, priority });
   }
   return targets;
 }
@@ -105,14 +105,12 @@ function collectAbVariants(container) {
 
 /**
  * Link create/edit form. `onSuccess` fires when everything saved; `onPartialSave`
- * fires when the link row was written but its targeting rules were rejected, so
- * the caller can refresh once the still-open dialog is closed.
+ * fires when the link row was written but its targeting rules were rejected.
  */
-export function renderLinkForm(container, { link = null, onSuccess, onPartialSave, teams = [] } = {}) {
+function renderLinkForm(container, { link = null, onSuccess, onPartialSave, teams = [] } = {}) {
   const isEdit = !!link;
   const hasPassword = isEdit && link.hasPassword;
   const hasTeams = teams.length > 0;
-  const currentTeamId = link?.teamId || "";
   const loadedExpiresAt = toLocalDatetime(link?.expiresAt);
   // Set as soon as the link row exists. A save that got the link in but not its
   // targeting rules leaves the form open, and the retry must update that row
@@ -122,9 +120,9 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
   container.innerHTML = `
     <form id="link-form" class="wa-stack wa-gap-m">
       ${hasTeams ? `
-        <wa-select name="teamId" label="Owner" ${isEdit ? "disabled" : ""}>
-          <wa-icon slot="start" name="${currentTeamId ? "people-group" : "user"}" class="wa-font-size-s"></wa-icon>
-          <wa-option value="" ${!currentTeamId ? "selected" : ""}>Me</wa-option>
+        <wa-select name="teamId" label="Owner">
+          <wa-icon slot="start" name="user" class="wa-font-size-s"></wa-icon>
+          <wa-option value="" selected>Me</wa-option>
         </wa-select>
       ` : ""}
       <wa-input
@@ -133,7 +131,7 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
         placeholder="my-link"
         required
         value="${escapeAttr(link?.slug || "")}"
-        hint="Case-insensitive. Letters, numbers, emoji and URL-safe punctuation (1-128 chars)"
+        hint="Case-insensitive. Letters, numbers, emoji and URL-safe punctuation (1-${MAX_SLUG_LENGTH} chars)"
         ${isEdit ? "disabled" : ""}
       ></wa-input>
       <wa-input
@@ -160,7 +158,7 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
             name="expiresAt"
             label="Expiration Date"
             type="datetime-local"
-            value="${escapeAttr(toLocalDatetime(link?.expiresAt))}"
+            value="${escapeAttr(loadedExpiresAt)}"
             hint="Link will stop redirecting after this date"
           ></wa-input>
           <wa-number-input
@@ -179,11 +177,11 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
             hint="${hasPassword ? "Leave empty to keep the current password" : "Visitors must enter this password to access the link"}"
           ></wa-input>
           ${hasPassword ? `<wa-switch name="removePassword" hint="Drops the password when you save">Remove password</wa-switch>` : ""}
-          <wa-switch name="isInternal" ${link?.isInternal ? "checked" : ""}>Internal link (hidden from public listings)</wa-switch>
+          <wa-switch name="isInternal" ${link?.isInternal ? "checked" : ""} hint="Only signed-in users can follow it. Default domain only.">Internal link</wa-switch>
           <wa-divider></wa-divider>
           <wa-switch name="paramForwarding" ${link ? (link.paramForwarding ? "checked" : "") : "checked"}>Forward query parameters to destination</wa-switch>
           <wa-divider></wa-divider>
-          <wa-select name="campaignIds" label="Campaigns (optional)" multiple with-clear max-options-visible="3">
+          <wa-select name="campaignIds" label="Campaigns (optional)" multiple with-clear>
           </wa-select>
           <wa-select name="domainHostname" label="Domain (optional)" with-clear>
             <wa-option value="" selected>Default domain</wa-option>
@@ -197,7 +195,7 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
                 Add Rule
               </wa-button>
             </div>
-            <p class="wa-body-s wa-color-text-quiet" style="margin:0;">Redirect visitors to different URLs based on country or device type.</p>
+            <p class="wa-body-s wa-color-text-quiet">Redirect visitors to different URLs based on country or device type.</p>
             <div id="targets-list" class="wa-stack wa-gap-s"></div>
           </div>
           <wa-divider></wa-divider>
@@ -209,7 +207,7 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
                 Add Variant
               </wa-button>
             </div>
-            <p class="wa-body-s wa-color-text-quiet" style="margin:0;">Split traffic between destination URLs. Weights must sum to less than 100 (remainder goes to default).</p>
+            <p class="wa-body-s wa-color-text-quiet">Split traffic between destination URLs. Weights must sum to less than 100 (remainder goes to default).</p>
             <div id="ab-list" class="wa-stack wa-gap-s"></div>
           </div>
           <wa-divider></wa-divider>
@@ -240,17 +238,15 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
     </form>
   `;
 
-  // Populate the owner select and keep its icon in sync with the selection
   const ownerSelect = container.querySelector('[name="teamId"]');
   if (ownerSelect) {
-    setTeamOptions(ownerSelect, teams, { selected: currentTeamId });
+    setTeamOptions(ownerSelect, teams);
     ownerSelect.addEventListener("change", () => {
       const icon = ownerSelect.querySelector('wa-icon[slot="start"]');
       if (icon) icon.name = ownerSelect.value ? "people-group" : "user";
     });
   }
 
-  // Populate campaigns dropdown
   const campaignSelect = container.querySelector('[name="campaignIds"]');
   apiFetch("/api/campaigns").then(result => {
     if (!result) return;
@@ -263,9 +259,8 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
       if (selectedIds.has(c.id)) opt.selected = true;
       campaignSelect.appendChild(opt);
     }
-  }).catch(() => {});
+  });
 
-  // Populate domains dropdown
   const domainSelect = container.querySelector('[name="domainHostname"]');
   apiFetch("/api/domains").then(result => {
     if (!result) return;
@@ -278,28 +273,19 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
       domainSelect.appendChild(opt);
     }
     if (link?.domainHostname) domainSelect.value = link.domainHostname;
-  }).catch(() => {});
+  });
 
-  // Populate existing targeting rules
   const targetsList = container.querySelector("#targets-list");
-  for (const t of (link?.targets || []).filter(t => t.type !== "ab")) {
-    targetsList.appendChild(createTargetRow(t));
+  const abList = container.querySelector("#ab-list");
+  for (const t of link?.targets ?? []) {
+    if (t.type === "ab") abList.appendChild(createAbRow(t));
+    else targetsList.appendChild(createTargetRow(t));
   }
 
-  // Add target button
   container.querySelector("#add-target-btn").addEventListener("click", () => {
     targetsList.appendChild(createTargetRow());
   });
 
-  // Populate existing A/B variants
-  const abList = container.querySelector("#ab-list");
-  if (link?.targets) {
-    for (const t of link.targets.filter(t => t.type === "ab")) {
-      abList.appendChild(createAbRow(t));
-    }
-  }
-
-  // Add A/B variant button
   container.querySelector("#add-ab-btn").addEventListener("click", () => {
     abList.appendChild(createAbRow());
   });
@@ -312,13 +298,9 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
     if (removePassword.checked) passwordInput.value = "";
   });
 
-  // Several constrained fields (Max Clicks' `min="1"`, etc.) live inside the
-  // collapsed "Advanced Options" <wa-details>. Native interactive validation
-  // refuses to submit but can't focus or anchor its bubble on a control that
-  // isn't rendered, so the user just sees the button do nothing. Catch the
-  // `invalid` event (fired on the form-associated host, capture phase since it
-  // doesn't bubble), expand the section holding the field, and name the problem
-  // in a toast — one per submit attempt, not one per invalid control.
+  // Native validation cannot focus a control inside the collapsed <wa-details>,
+  // so the submit silently fails. Catch `invalid` in the capture phase, since it
+  // doesn't bubble: expand the section and toast once per submit.
   let invalidReported = false;
   container.querySelector("#link-form").addEventListener("invalid", (e) => {
     const field = e.target;
@@ -343,25 +325,19 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
     e.preventDefault();
     const form = e.target;
 
-    // Validate targeting rules
-    const targets = [...collectTargets(container), ...collectAbVariants(container)];
-    const targetRows = container.querySelectorAll(".target-rule");
-    for (const row of targetRows) {
-      const match = targetMatchValue(row);
-      const url = row.querySelector('[name="targetUrl"]').value.trim();
-      if ((match && !url) || (!match && url)) {
-        showToast("Each targeting rule must have both a match value and destination URL", "danger");
-        return;
-      }
+    const rules = collectTargets(container);
+    if (!rules) {
+      showToast("Each targeting rule must have both a match value and destination URL", "danger");
+      return;
     }
 
-    // Validate A/B weights
     const abVariants = collectAbVariants(container);
     const totalWeight = abVariants.reduce((sum, v) => sum + (parseInt(v.matchValue) || 0), 0);
     if (totalWeight >= 100) {
       showToast("A/B variant weights must sum to less than 100", "danger");
       return;
     }
+    const targets = [...rules, ...abVariants];
 
     const submitBtn = form.querySelector('wa-button[type="submit"]');
     await withLoadingBtn(submitBtn, async () => {
@@ -369,18 +345,17 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
       const expiresAtVal = form.querySelector('[name="expiresAt"]').value;
       const maxClicksVal = form.querySelector('[name="maxClicks"]').value;
       const passwordVal = passwordInput.value;
-      const campaignIdsVal = form.querySelector('[name="campaignIds"]').value || [];
       const domainHostnameVal = form.querySelector('[name="domainHostname"]').value;
 
       const data = {
-        ...(!editing && { slug: normalizeSlug(form.querySelector('[name="slug"]').value) }),
+        ...(!editing && { slug: slugInput.value }),
         destinationUrl: form.querySelector('[name="destinationUrl"]').value.trim(),
         title: form.querySelector('[name="title"]').value.trim() || null,
         redirectType: Number(form.querySelector('[name="redirectType"]').value),
         maxClicks: maxClicksVal ? Number(maxClicksVal) : null,
         isInternal: form.querySelector('[name="isInternal"]').checked,
         paramForwarding: form.querySelector('[name="paramForwarding"]').checked,
-        campaignIds: Array.isArray(campaignIdsVal) ? campaignIdsVal : campaignIdsVal ? [campaignIdsVal] : [],
+        campaignIds: form.querySelector('[name="campaignIds"]').value ?? [],
         domainHostname: domainHostnameVal || null,
         ogTitle: form.querySelector('[name="ogTitle"]').value.trim() || null,
         ogDescription: form.querySelector('[name="ogDescription"]').value.trim() || null,
@@ -394,7 +369,6 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
         data.expiresAt = expiresAtVal ? new Date(expiresAtVal).toISOString() : null;
       }
 
-      // Include teamId on create if an owner select exists and a team is selected
       if (!editing) {
         const teamIdVal = form.querySelector('[name="teamId"]')?.value;
         if (teamIdVal) data.teamId = teamIdVal;
@@ -420,7 +394,6 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
         if (ownerSel) ownerSel.disabled = true;
       }
 
-      // Save targeting rules
       if (targets.length > 0 || mustSaveTargets) {
         const targetRes = await apiFetch(`/api/links/${savedId}/targets`, {
           method: "PUT",
@@ -432,15 +405,40 @@ export function renderLinkForm(container, { link = null, onSuccess, onPartialSav
           // the rules can be corrected and submitted again.
           mustSaveTargets = true;
           showToast("Link saved, but its targeting rules were not. Correct them and save again.", "warning");
-          if (onPartialSave) onPartialSave(result.data);
+          onPartialSave();
           return;
         }
         mustSaveTargets = targets.length > 0;
       }
 
       showToast(isEdit ? "Link updated" : "Link created", "success");
-      if (onSuccess) onSuccess(result.data);
-      else navigate(`/links/${result.data.id}`);
+      onSuccess();
     });
+  });
+}
+
+/**
+ * Render the link form into `dialog` each time it opens. `onSaved` runs after a
+ * full save, or once the dialog closes after a partial one.
+ */
+export function bindLinkFormDialog(dialog, getOptions, onSaved) {
+  // A partial save keeps the dialog open over stale data, so the refresh waits
+  // for the user to close it.
+  let partialSave = false;
+  dialog.addEventListener("wa-show", (e) => {
+    if (e.target !== dialog) return;
+    renderLinkForm(dialog, {
+      ...getOptions(),
+      onSuccess: () => {
+        dialog.open = false;
+        onSaved();
+      },
+      onPartialSave: () => { partialSave = true; },
+    });
+  });
+  dialog.addEventListener("wa-after-hide", (e) => {
+    if (e.target !== dialog || !partialSave) return;
+    partialSave = false;
+    onSaved();
   });
 }

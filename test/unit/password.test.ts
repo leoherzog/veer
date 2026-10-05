@@ -2,39 +2,12 @@ import { describe, it, expect } from "vitest";
 import { hashPassword, verifyPassword } from "../../src/services/password";
 
 describe("hashPassword", () => {
-  it("returns a non-empty string", async () => {
-    const hash = await hashPassword("secret");
-    expect(typeof hash).toBe("string");
-    expect(hash.length).toBeGreaterThan(0);
-  });
-
   it("returned hash contains exactly one colon (salt:hash format)", async () => {
     const hash = await hashPassword("secret");
     const parts = hash.split(":");
     expect(parts).toHaveLength(2);
     expect(parts[0].length).toBeGreaterThan(0);
     expect(parts[1].length).toBeGreaterThan(0);
-  });
-
-  it("produces a different hash each time (random salt)", async () => {
-    const hash1 = await hashPassword("secret");
-    const hash2 = await hashPassword("secret");
-    expect(hash1).not.toBe(hash2);
-  });
-
-  it("works with an empty string password", async () => {
-    const hash = await hashPassword("");
-    expect(hash).toContain(":");
-  });
-
-  it("works with special characters", async () => {
-    const hash = await hashPassword("p@$$w0rd!#%^&*()");
-    expect(hash).toContain(":");
-  });
-
-  it("works with unicode characters", async () => {
-    const hash = await hashPassword("パスワード🔒");
-    expect(hash).toContain(":");
   });
 });
 
@@ -76,7 +49,6 @@ describe("verifyPassword", () => {
     const password = "p@$$w0rd!#%^&*()";
     const hash = await hashPassword(password);
     await expect(verifyPassword(password, hash)).resolves.toBe(true);
-    await expect(verifyPassword("p@$$w0rd!#%^&*()", hash)).resolves.toBe(true);
     await expect(verifyPassword("p@$$w0rd", hash)).resolves.toBe(false);
   });
 

@@ -24,42 +24,31 @@ wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
 .text-truncate { max-width: 300px; }
 
 @media (max-width: 768px) {
-  .link-table { font-size: 0.875rem; }
+  .link-table { font-size: var(--wa-font-size-s); }
   .text-truncate { max-width: 150px; }
 }
 
 @media (max-width: 480px) {
-  /* Scoped to the dashboard links table: its third column is Title, the one
-     column worth dropping on a narrow screen. Every other `.link-table` puts
-     something load-bearing there. */
+  /* Scoped to the dashboard table, whose third column is Title. Other tables
+     need their third column. */
   #links-table .link-table th:nth-child(3),
   #links-table .link-table td:nth-child(3) { display: none; }
   .text-truncate { max-width: 100px; }
 }
 
-/* Skeletons must reserve the exact box the real chart renders into, or the page
-   shifts on mount. `height` overrides wa-skeleton's own `height: 100%` so
-   `aspect-ratio` decides the box. */
-.chart-skeleton { height: auto; aspect-ratio: 16 / 9; }
 .stats-skeleton { height: 200px; }
 
 /* Demo mode: hide top-level create buttons. Mutations still 403 with a friendly
    toast (see apiFetch), so this is purely UI polish. */
-body.demo-mode #new-link-btn,
-body.demo-mode #new-link-dropdown,
-body.demo-mode #bulk-create-btn,
+body.demo-mode wa-button-group:has(#new-link-btn),
 body.demo-mode #new-campaign-btn,
-body.demo-mode #create-team-btn,
-body.demo-mode wa-button-group:has(#new-link-btn) {
-  display: none !important;
+body.demo-mode #create-team-btn {
+  display: none;
 }
 
-/* Inline help icon beside a heading. Sized in `em` so it tracks the heading's
-   own font-size — the wa-font-size-* utilities are absolute tokens, so
-   wa-font-size-s pinned this to 14px next to a 41px h1 (--wa-font-size-3xl).
-   Kept inline (no wa-cluster) so wa-icon's built-in `vertical-align: -0.125em`
-   still applies; a flex parent blockifies the icon and discards that nudge,
-   leaving it geometrically centered in the line box and visibly low. */
+/* Inline help icon beside a heading. Sized in em to track the heading, since the
+   wa-font-size-* utilities are absolute. Kept inline, not in a flex parent, so
+   wa-icon's vertical-align nudge still applies. */
 .heading-help {
   font-size: 0.6em;
   cursor: help;

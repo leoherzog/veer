@@ -1,41 +1,17 @@
 import { Hono } from "hono";
-import { eq, inArray, sql } from "drizzle-orm";
+import { inArray } from "drizzle-orm";
 import { getDb } from "../../db";
-import { links, user as userTable } from "../../db/schema";
+import { links } from "../../db/schema";
 import { validateSlug } from "../../services/slug";
-import { setCachedRedirect } from "../../services/kv-cache";
+import { setCachedRedirect, toCachedRedirect } from "../../services/kv-cache";
 import { badRequest } from "../../lib/errors";
 import { requireTeamMember } from "../../lib/team";
-import { validateHttpUrl, validateDomainAccess, getPrimaryHostname, resolveDomainHostname } from "../../lib/validators";
+import {
+  validateHttpUrl, validateDomainAccess, getPrimaryHostname, resolveDomainHostname, assertInternalAllowed, assertLinkQuota,
+} from "../../lib/validators";
+import { parseJsonBody } from "../../lib/request";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "../../types";
-import type { CachedRedirect } from "../../services/kv-cache";
-
-/** Build a minimal CachedRedirect for a freshly created link (no targets). */
-function buildNewLinkCache(
-  id: string,
-  destinationUrl: string,
-  redirectType: number,
-  domainHostname: string | null,
-  isInternal: boolean,
-): CachedRedirect {
-  return {
-    url: destinationUrl,
-    redirectType,
-    linkId: id,
-    isActive: true,
-    expiresAt: null,
-    maxClicks: null,
-    hasPassword: false,
-    isInternal,
-    ogTitle: null,
-    ogDescription: null,
-    ogImage: null,
-    paramForwarding: false,
-    targets: null,
-    domainHostname,
-  };
-}
 
 interface BulkLinkInput {
   slug: string;
@@ -46,38 +22,21 @@ interface BulkLinkInput {
   isInternal?: boolean;
 }
 
-interface ValidatedLink {
-  index: number;
-  id: string;
-  slug: string;
-  destinationUrl: string;
-  redirectType: number;
-  title: string | null;
-  domainHostname: string | null;
-  isInternal: boolean;
-}
-
 type BulkResult =
   | { slug: string; id: string; success: true }
   | { slug: string; error: string; success: false };
+
+type Link = typeof links.$inferSelect;
+
+/** Uniqueness is per (slug, domain), matching the two unique indexes on links. */
+const slugKey = (link: Pick<Link, "slug" | "domainHostname">) => `${link.slug}::${link.domainHostname ?? ""}`;
 
 const bulkRoutes = new Hono<AppEnv>();
 
 bulkRoutes.post("/", async (c) => {
   const user = c.var.user!;
 
-  // Check body size — 100KB limit for bulk (allow missing Content-Length per Workers convention)
-  const contentLength = c.req.header("content-length");
-  if (contentLength && parseInt(contentLength, 10) > 100_000) {
-    throw new HTTPException(413, { message: "Request body too large (max 100KB)" });
-  }
-
-  let body: { links: BulkLinkInput[]; teamId?: string };
-  try {
-    body = await c.req.json();
-  } catch {
-    throw badRequest("Invalid JSON body");
-  }
+  const body = await parseJsonBody<{ links: BulkLinkInput[]; teamId?: string }>(c);
 
   if (body.teamId !== undefined && body.teamId !== null && typeof body.teamId !== "string") {
     throw badRequest("teamId must be a string");
@@ -86,7 +45,6 @@ bulkRoutes.post("/", async (c) => {
 
   const db = getDb(c.env.DB);
 
-  // Validate team membership if teamId provided
   if (teamId) {
     await requireTeamMember(db, teamId, user.id);
   }
@@ -103,181 +61,123 @@ bulkRoutes.post("/", async (c) => {
     throw badRequest("Maximum 50 links per request");
   }
 
-  // Same soft quota as single create, counting the whole batch (see POST /api/links).
-  const quota = await db.select({
-    maxLinks: userTable.maxLinks,
-    linkCount: sql<number>`(SELECT count(*) FROM ${links} WHERE ${links.userId} = ${user.id})`,
-  }).from(userTable).where(eq(userTable.id, user.id)).get();
-  if (quota?.maxLinks != null && (quota.linkCount ?? 0) + body.links.length > quota.maxLinks) {
-    throw badRequest(`You have reached your link limit (${quota.maxLinks})`);
-  }
+  await assertLinkQuota(db, user.id, body.links.length);
 
   const results: BulkResult[] = new Array(body.links.length);
-  const validated: ValidatedLink[] = [];
   const primaryHost = getPrimaryHostname(c.env.BETTER_AUTH_URL);
+  const now = new Date();
 
   // Phase 1: Validate all inputs (format, domain access)
   // Cache the domain check per hostname, keeping the message so every item for a
   // rejected domain reports the same reason. null means the domain is usable.
   const domainAccessCache = new Map<string, string | null>();
-  const preValidated: ValidatedLink[] = [];
+  const candidates: { index: number; row: Link }[] = [];
 
   for (let i = 0; i < body.links.length; i++) {
     const item = body.links[i];
 
-    // Guard against non-object array items
     if (!item || typeof item !== "object") {
       results[i] = { slug: "", success: false, error: "Invalid link entry" };
       continue;
     }
 
-    const rawSlug = item.slug;
     // Reported back verbatim on failure so the caller can match rows to input;
     // replaced by the canonical form once validation succeeds.
-    let slug = rawSlug;
+    let slug = item.slug ?? "";
 
     try {
-      const slugCheck = validateSlug(rawSlug);
-      if (!slugCheck.valid) {
-        results[i] = { slug: rawSlug ?? "", success: false, error: slugCheck.error };
-        continue;
-      }
+      const slugCheck = validateSlug(item.slug);
+      if (!slugCheck.valid) throw badRequest(slugCheck.error);
       slug = slugCheck.slug;
 
-      try {
-        validateHttpUrl(item.destinationUrl, "destinationUrl");
-      } catch (e) {
-        const msg = e instanceof HTTPException ? e.message : "Invalid destinationUrl";
-        results[i] = { slug, success: false, error: msg };
-        continue;
-      }
-
-      let domainHostname: string | null;
-      try {
-        domainHostname = resolveDomainHostname(item.domainHostname, primaryHost);
-      } catch (e) {
-        results[i] = { slug, success: false, error: e instanceof HTTPException ? e.message : "Invalid domainHostname" };
-        continue;
-      }
-
+      validateHttpUrl(item.destinationUrl, "destinationUrl");
+      const domainHostname = resolveDomainHostname(item.domainHostname, primaryHost);
       const isInternal = item.isInternal === true;
-      if (isInternal && domainHostname) {
-        results[i] = { slug, success: false, error: "Internal links are only supported on the default domain" };
-        continue;
-      }
+      assertInternalAllowed(isInternal, domainHostname);
 
       if (domainHostname) {
         if (!domainAccessCache.has(domainHostname)) {
           try {
-            await validateDomainAccess(db, domainHostname, user.email, user.isAdmin, primaryHost);
+            await validateDomainAccess(db, domainHostname, user.email, user.isAdmin);
             domainAccessCache.set(domainHostname, null);
           } catch (e) {
             domainAccessCache.set(domainHostname, e instanceof HTTPException ? e.message : "Domain access error");
           }
         }
         const domainError = domainAccessCache.get(domainHostname);
-        if (domainError) {
-          results[i] = { slug, success: false, error: domainError };
-          continue;
-        }
+        if (domainError) throw badRequest(domainError);
       }
 
-      preValidated.push({
+      candidates.push({
         index: i,
-        id: crypto.randomUUID(),
-        slug,
-        destinationUrl: item.destinationUrl,
-        redirectType: item.redirectType === 301 ? 301 : 302,
-        title: item.title || null,
-        domainHostname,
-        isInternal,
+        row: {
+          id: crypto.randomUUID(),
+          userId: user.id,
+          slug,
+          destinationUrl: item.destinationUrl,
+          redirectType: item.redirectType === 301 ? 301 : 302,
+          title: item.title || null,
+          createdAt: now,
+          updatedAt: now,
+          isActive: true,
+          expiresAt: null,
+          maxClicks: null,
+          password: null,
+          isInternal,
+          ogTitle: null,
+          ogDescription: null,
+          ogImage: null,
+          paramForwarding: false,
+          domainHostname,
+          teamId,
+        },
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Unexpected error";
-      results[i] = { slug: rawSlug ?? "", success: false, error: msg };
+      results[i] = { slug, success: false, error: e instanceof HTTPException ? e.message : "Unexpected error" };
     }
   }
 
-  // Detect intra-batch duplicate slugs before DB check
-  const seenInBatch = new Set<string>();
-  const deduped: ValidatedLink[] = [];
-  for (const v of preValidated) {
-    const key = `${v.slug}::${v.domainHostname ?? ""}`;
-    if (seenInBatch.has(key)) {
-      results[v.index] = { slug: v.slug, success: false, error: "Duplicate slug in batch" };
-    } else {
-      seenInBatch.add(key);
-      deduped.push(v);
-    }
-  }
-
-  // Batch slug-uniqueness check: single query for all deduped slugs
-  if (deduped.length > 0) {
-    const allSlugs = deduped.map(v => v.slug);
-    const existingSlugs = await db.select({ slug: links.slug, domainHostname: links.domainHostname })
+  // One query for every slug already taken on its domain.
+  const taken = new Set<string>();
+  if (candidates.length > 0) {
+    const existing = await db.select({ slug: links.slug, domainHostname: links.domainHostname })
       .from(links)
-      .where(inArray(links.slug, allSlugs));
-
-    // Build a set of "slug::domain" keys for O(1) lookup (domain-scoped uniqueness)
-    const takenSet = new Set(existingSlugs.map(r => `${r.slug}::${r.domainHostname ?? ""}`));
-
-    for (const v of deduped) {
-      const key = `${v.slug}::${v.domainHostname ?? ""}`;
-      if (takenSet.has(key)) {
-        results[v.index] = { slug: v.slug, success: false, error: "Slug already taken" };
-      } else {
-        validated.push(v);
-      }
-    }
+      .where(inArray(links.slug, candidates.map(({ row }) => row.slug)));
+    for (const r of existing) taken.add(slugKey(r));
   }
+
+  // A repeat within the batch is reported as a duplicate; its first occurrence is
+  // the one checked against existing links.
+  const seen = new Set<string>();
+  const valid = candidates.filter(({ index, row }) => {
+    const key = slugKey(row);
+    const error = seen.has(key) ? "Duplicate slug in batch" : taken.has(key) ? "Slug already taken" : null;
+    seen.add(key);
+    if (error) results[index] = { slug: row.slug, success: false, error };
+    return !error;
+  });
 
   // Phase 2: Batch insert all validated links using db.batch() for atomicity
-  if (validated.length > 0) {
-    const now = new Date();
-    const batchOps = validated.map((v) =>
-      db.insert(links).values({
-        id: v.id,
-        userId: user.id,
-        slug: v.slug,
-        destinationUrl: v.destinationUrl,
-        redirectType: v.redirectType,
-        title: v.title,
-        expiresAt: null,
-        maxClicks: null,
-        password: null,
-        isInternal: v.isInternal,
-        paramForwarding: false,
-        ogTitle: null,
-        ogDescription: null,
-        ogImage: null,
-        domainHostname: v.domainHostname,
-        teamId: teamId || null,
-        createdAt: now,
-        updatedAt: now,
-      })
-    );
+  if (valid.length > 0) {
+    const batchOps = valid.map(({ row }) => db.insert(links).values(row));
 
     try {
       await db.batch(batchOps as [typeof batchOps[number], ...typeof batchOps[number][]]);
-      // Batch succeeded — mark all as success
-      for (const v of validated) {
-        results[v.index] = { slug: v.slug, id: v.id, success: true };
+      for (const { index, row } of valid) {
+        results[index] = { slug: row.slug, id: row.id, success: true };
       }
     } catch {
-      // Batch is atomic — all failed
-      for (const v of validated) {
-        results[v.index] = { slug: v.slug, success: false, error: "Insert failed (batch rolled back)" };
+      // db.batch is atomic, so every row failed.
+      for (const { index, row } of valid) {
+        results[index] = { slug: row.slug, success: false, error: "Insert failed (batch rolled back)" };
       }
     }
 
     // Phase 3: Parallel KV cache writes for successfully inserted links (non-blocking)
     c.executionCtx.waitUntil(Promise.all(
-      validated
-        .filter((v) => results[v.index]?.success)
-        .map((v) => {
-          const kvData = buildNewLinkCache(v.id, v.destinationUrl, v.redirectType, v.domainHostname, v.isInternal);
-          return setCachedRedirect(c.env.KV, v.slug, kvData, v.domainHostname);
-        }),
+      valid
+        .filter(({ index }) => results[index]?.success)
+        .map(({ row }) => setCachedRedirect(c.env.KV, row.slug, toCachedRedirect(row, null), row.domainHostname)),
     ));
   }
 

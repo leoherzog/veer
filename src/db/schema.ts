@@ -74,12 +74,9 @@ export const passkey = sqliteTable("passkey", {
 export const teams = sqliteTable("teams", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  slug: text("slug").notNull(),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
-}, (table) => [
-  uniqueIndex("idx_teams_slug").on(table.slug),
-]);
+});
 
 export const teamMembers = sqliteTable("team_members", {
   teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
@@ -101,7 +98,6 @@ export const teamInvites = sqliteTable("team_invites", {
   expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
 }, (table) => [
-  index("idx_team_invites_teamId").on(table.teamId),
   uniqueIndex("idx_team_invites_token").on(table.token),
   uniqueIndex("idx_team_invites_teamId_email").on(table.teamId, table.email),
   check("team_invites_role_check", sql`${table.role} IN ('admin', 'member')`),
@@ -145,9 +141,8 @@ export const links = sqliteTable("links", {
   teamId: text("teamId").references(() => teams.id, { onDelete: "set null" }),
 }, (table) => [
   uniqueIndex("idx_links_slug_domain").on(table.slug, table.domainHostname),
-  // Load-bearing: SQLite treats NULLs as distinct in a composite unique index, so
-  // the index above does NOT constrain primary-domain links. This partial index is
-  // the only thing enforcing slug uniqueness when domainHostname IS NULL.
+  // SQLite treats NULLs as distinct in a composite unique index, so this partial
+  // index alone enforces slug uniqueness for primary-domain links.
   uniqueIndex("idx_links_slug_default").on(table.slug).where(sql`${table.domainHostname} IS NULL`),
   index("idx_links_userId").on(table.userId),
   index("idx_links_domainHostname").on(table.domainHostname),
@@ -176,11 +171,8 @@ export const linkCampaigns = sqliteTable("link_campaigns", {
 export const linkTargets = sqliteTable("link_targets", {
   id: text("id").primaryKey(),
   linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
-  // "geo" | "device" | "ab". The pre-squash migration (0002) constrained this to
-  // ('geo','device') while the API has always accepted "ab" for A/B variants, so
-  // creating an A/B link failed on a real deployment. Tests never caught it —
-  // test/setup.ts built this table without the CHECK at all.
-  type: text("type").notNull(),
+  // The CHECK below must list the same values as this enum.
+  type: text("type", { enum: ["geo", "device", "ab"] }).notNull(),
   matchValue: text("matchValue").notNull(),
   destinationUrl: text("destinationUrl").notNull(),
   priority: integer("priority").notNull().default(0),
@@ -190,13 +182,11 @@ export const linkTargets = sqliteTable("link_targets", {
 ]);
 
 export const linkStats = sqliteTable("link_stats", {
-  id: integer("id").primaryKey({ autoIncrement: true }),
   linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
   date: text("date").notNull(),
   clicks: integer("clicks").notNull().default(0),
-  uniqueClicks: integer("uniqueClicks").notNull().default(0),
 }, (table) => [
-  uniqueIndex("idx_link_stats_linkId_date").on(table.linkId, table.date),
+  primaryKey({ columns: [table.linkId, table.date] }),
 ]);
 
 export const apiKeys = sqliteTable("api_keys", {
@@ -214,12 +204,10 @@ export const apiKeys = sqliteTable("api_keys", {
 ]);
 
 export const publicReports = sqliteTable("public_reports", {
-  id: text("id").primaryKey(),
-  linkId: text("linkId").notNull().references(() => links.id, { onDelete: "cascade" }),
+  linkId: text("linkId").primaryKey().references(() => links.id, { onDelete: "cascade" }),
   token: text("token").notNull(),
   isEnabled: integer("isEnabled", { mode: "boolean" }).notNull().default(true),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
 }, (table) => [
   uniqueIndex("idx_public_reports_token").on(table.token),
-  uniqueIndex("idx_public_reports_linkId").on(table.linkId),
 ]);

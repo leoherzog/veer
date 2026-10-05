@@ -2,20 +2,8 @@ import { describe, it, expect } from "vitest";
 import { generateApiKey, hashApiKey } from "../../src/lib/crypto";
 
 describe("generateApiKey", () => {
-  it("returns a string starting with 'veer_'", () => {
-    const key = generateApiKey();
-    expect(key.startsWith("veer_")).toBe(true);
-  });
-
-  it("returns a string of length 48", () => {
-    const key = generateApiKey();
-    expect(key).toHaveLength(48);
-  });
-
-  it("only contains base62 chars after the prefix", () => {
-    const key = generateApiKey();
-    const suffix = key.slice(5); // remove "veer_"
-    expect(suffix).toMatch(/^[A-Za-z0-9]+$/);
+  it("returns 'veer_' plus 43 base62 characters", () => {
+    expect(generateApiKey()).toMatch(/^veer_[A-Za-z0-9]{43}$/);
   });
 
   it("produces different keys on each call", () => {

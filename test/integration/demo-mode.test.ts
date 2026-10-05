@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
 import { createTestLink, mockExecutionCtx } from "../helpers";
 import { hashPassword } from "../../src/services/password";
+import { DEMO_USER_ID } from "../../src/lib/demo";
 
 const demoEnv = { ...env, DEMO_MODE: "true" } as unknown as Env;
 
@@ -13,12 +14,6 @@ describe("Demo mode", () => {
       const body = await res.json<{ demoMode: boolean }>();
       expect(res.status).toBe(200);
       expect(body.demoMode).toBe(true);
-    });
-
-    it("returns demoMode: false when DEMO_MODE is unset", async () => {
-      const res = await app.request("/api/config", {}, env);
-      const body = await res.json<{ demoMode: boolean }>();
-      expect(body.demoMode).toBe(false);
     });
   });
 
@@ -80,7 +75,7 @@ describe("Demo mode", () => {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: "x", slug: "x" }),
+          body: JSON.stringify({ name: "x" }),
         },
         demoEnv,
       );
@@ -113,58 +108,21 @@ describe("Demo mode", () => {
     });
   });
 
-  describe("allowlist", () => {
-    /** Seed the demo user row (FK on links.userId) plus a password-protected link. */
-    async function seedProtectedLink(slug: string) {
+  describe("non-API writes", () => {
+    // The demo user row satisfies the FK on links.userId.
+    beforeAll(async () => {
       const now = Math.floor(Date.now() / 1000);
       await env.DB
         .prepare(
           `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt)
-           VALUES ('demo-user', 'Demo', 'demo@veer.example', 0, ?, ?)`,
+           VALUES (?, 'Demo', 'demo@veer.example', 0, ?, ?)`,
         )
-        .bind(now, now)
+        .bind(DEMO_USER_ID, now, now)
         .run();
-
-      const passwordHash = await hashPassword("secret");
-      return createTestLink(env.DB, { userId: "demo-user", slug, password: passwordHash });
-    }
-
-    it("POST /api/links/:id/check-password verifies the password", async () => {
-      const link = await seedProtectedLink("demo-protected");
-
-      const res = await app.request(
-        `/api/links/${link.id}/check-password`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: "secret" }),
-        },
-        demoEnv,
-        mockExecutionCtx(),
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ valid: true });
-    });
-
-    it("POST /api/links/:id/check-password reports a wrong password", async () => {
-      const link = await seedProtectedLink("demo-protected-wrong");
-
-      const res = await app.request(
-        `/api/links/${link.id}/check-password`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: "nope" }),
-        },
-        demoEnv,
-        mockExecutionCtx(),
-      );
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({ valid: false });
     });
 
     it("POST /:slug password form is not blocked and redirects", async () => {
-      await seedProtectedLink("demo-gate");
+      await createTestLink({ userId: DEMO_USER_ID, slug: "demo-gate", password: await hashPassword("secret") });
 
       const res = await app.request(
         "/demo-gate",
@@ -176,7 +134,6 @@ describe("Demo mode", () => {
         demoEnv,
         mockExecutionCtx(),
       );
-      expect(res.status).not.toBe(403);
       expect(res.status).toBe(302);
       expect(res.headers.get("location")).toBe("https://example.com");
     });

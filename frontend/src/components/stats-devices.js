@@ -1,16 +1,13 @@
 import { CHART_SKELETON, noData, fetchJSON, statsCard } from "../lib/stats-common.js";
-import { createChart, destroyCharts } from "../lib/chart-helper.js";
+import { createChart } from "../lib/chart-helper.js";
 
 export async function renderStatsDevices(container, linkId, days = 30) {
-  destroyCharts(container);
   container.innerHTML = statsCard("Devices & Browsers", CHART_SKELETON);
 
   try {
     const { data } = await fetchJSON(`/api/stats/${linkId}/devices?days=${days}`);
 
-    const browsers = data.browsers ?? [];
-    const os = data.os ?? [];
-    const devices = data.devices ?? [];
+    const { browsers, os, devices } = data;
 
     const nd = noData();
     container.innerHTML = statsCard("Devices & Browsers", `
@@ -21,17 +18,14 @@ export async function renderStatsDevices(container, linkId, days = 30) {
       </div>
     `);
 
-    const charts = [];
-    container._charts = charts;
     function makeDoughnut(id, items) {
-      const canvas = container.querySelector(`#${id}`);
-      if (!canvas || !items.length) return;
-      charts.push(createChart(canvas, "doughnut", {
+      if (!items.length) return;
+      createChart(container.querySelector(`#${id}`), "doughnut", {
         data: {
           labels: items.map((i) => i.name),
           datasets: [{ label: "Clicks", data: items.map((i) => i.clicks) }],
         },
-      }));
+      });
     }
 
     makeDoughnut("browsers-chart", browsers);

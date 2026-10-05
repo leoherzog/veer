@@ -1,9 +1,10 @@
-import { renderLinkForm } from "../components/link-form.js";
+import { bindLinkFormDialog } from "../components/link-form.js";
 import { renderQrCode } from "../components/qr-code.js";
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
+import { renderAbStats } from "../components/stats-ab.js";
 import { SPINNER, apiFetch, shortUrl, bindConfirmDialog, renderTable } from "../lib/ui.js";
 
 function buildBadges(link) {
@@ -30,10 +31,8 @@ function buildBadges(link) {
     badges.push(`<wa-badge variant="neutral" pill>Param Forwarding</wa-badge>`);
   }
 
-  if (link.campaigns?.length) {
-    for (const c of link.campaigns) {
-      badges.push(`<wa-badge variant="brand" pill>${escapeHtml(c.name)}</wa-badge>`);
-    }
+  for (const c of link.campaigns) {
+    badges.push(`<wa-badge variant="brand" pill>${escapeHtml(c.name)}</wa-badge>`);
   }
 
   if (link.domainHostname) {
@@ -61,7 +60,7 @@ function buildOgPreview(link) {
 }
 
 function buildTargetingRules(targets) {
-  const filtered = (targets || []).filter(t => t.type !== "ab");
+  const filtered = targets.filter(t => t.type !== "ab");
   if (!filtered.length) return "";
   return `
     <wa-card>
@@ -82,11 +81,10 @@ function buildTargetingRules(targets) {
   `;
 }
 
-function buildAbTestCard(targets, link) {
-  const abTargets = (targets || []).filter(t => t.type === "ab");
+function buildAbTestCard(link) {
+  const abTargets = link.targets.filter(t => t.type === "ab");
   if (!abTargets.length) return "";
-  const totalWeight = abTargets.reduce((sum, t) => sum + (parseInt(t.matchValue) || 0), 0);
-  const defaultWeight = Math.max(1, 100 - totalWeight);
+  const defaultWeight = 100 - abTargets.reduce((sum, t) => sum + Number(t.matchValue), 0);
   return `
     <wa-card>
       <h3 slot="header">A/B Test</h3>
@@ -126,12 +124,14 @@ function buildPublicReportCard(report) {
       <wa-switch slot="header-actions" id="report-toggle" ${enabled ? "checked" : ""}><span class="wa-visually-hidden">Enable public report</span></wa-switch>
       <div class="wa-stack wa-gap-s">
         <p class="wa-body-s wa-color-text-quiet">Share your analytics dashboard with others via a public link.</p>
-        <div id="report-link-container" class="wa-cluster wa-gap-2xs" style="display: ${enabled ? "flex" : "none"};">
-          <wa-input id="report-url" readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
-          <wa-copy-button id="report-copy" value="${escapeAttr(reportUrl)}"></wa-copy-button>
-          <wa-button id="report-open" variant="neutral" appearance="outlined" href="${escapeAttr(reportUrl)}" target="_blank" rel="noopener">
-            <wa-icon name="arrow-up-right-from-square" label="Open public report"></wa-icon>
-          </wa-button>
+        <div id="report-link-container" ${enabled ? "" : "hidden"}>
+          <div class="wa-cluster wa-gap-2xs">
+            <wa-input id="report-url" readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
+            <wa-copy-button id="report-copy" value="${escapeAttr(reportUrl)}"></wa-copy-button>
+            <wa-button id="report-open" variant="neutral" appearance="outlined" href="${escapeAttr(reportUrl)}" target="_blank" rel="noopener">
+              <wa-icon name="arrow-up-right-from-square" label="Open public report"></wa-icon>
+            </wa-button>
+          </div>
         </div>
       </div>
     </wa-card>
@@ -145,14 +145,11 @@ export async function renderLinkDetail(container, { id }) {
   if (!linkResult) return;
   const { data: link } = linkResult;
 
-  const targets = link.targets || [];
-
   // Read-only: creating the report here would publish stats nobody asked to share.
   // An internal link gets no card at all — its public report URL always 404s.
   const reportResult = link.isInternal ? null : await apiFetch(`/api/reports/${id}`);
   let report = reportResult?.data ?? null;
 
-  // Use domainHostname from API response (returned by GET /api/links/:id)
   const linkShortUrl = shortUrl(link);
   const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
   const badges = buildBadges(link);
@@ -165,11 +162,11 @@ export async function renderLinkDetail(container, { id }) {
       <div class="wa-split">
         <h1>/${escapeHtml(link.slug)}</h1>
         <div class="wa-cluster wa-gap-xs">
-          <wa-button variant="brand" id="edit-link-btn" data-dialog="open edit-link-dialog">
+          <wa-button variant="brand" data-dialog="open edit-link-dialog">
             <wa-icon slot="start" name="pen-to-square"></wa-icon>
             Edit
           </wa-button>
-          <wa-button variant="danger" appearance="outlined" id="delete-btn">
+          <wa-button variant="danger" appearance="outlined" data-dialog="open delete-link-dialog">
             <wa-icon slot="start" name="trash"></wa-icon>
             Delete
           </wa-button>
@@ -188,7 +185,6 @@ export async function renderLinkDetail(container, { id }) {
             <div><strong>Lifetime Clicks:</strong> <wa-format-number value="${link.totalClicks}"></wa-format-number></div>
             ${maxClicksInfo}
             <div><strong>Created:</strong> <wa-relative-time date="${escapeAttr(link.createdAt)}"></wa-relative-time></div>
-            ${link.paramForwarding ? `<div><strong>Query Params:</strong> Forwarded to destination</div>` : ""}
             ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:var(--wa-space-3xs);">${badges}</div>` : ""}
           </div>
           <div id="qr-container"></div>
@@ -196,15 +192,13 @@ export async function renderLinkDetail(container, { id }) {
       </wa-card>
 
       ${link.isInternal ? "" : buildPublicReportCard(report)}
-      ${buildTargetingRules(targets)}
-      ${buildAbTestCard(targets, link)}
+      ${buildTargetingRules(link.targets)}
+      ${buildAbTestCard(link)}
       ${buildOgPreview(link)}
 
       ${link.totalClicks > 0 ? '<div id="stats-container"></div>' : ''}
 
-      <wa-dialog id="edit-link-dialog" label="Edit Link" style="--width:640px;">
-        <div id="edit-form"></div>
-      </wa-dialog>
+      <wa-dialog id="edit-link-dialog" label="Edit Link" style="--width:640px;"></wa-dialog>
 
       <wa-dialog id="delete-link-dialog" label="Delete Link">
         <p>Are you sure you want to delete <strong>/${escapeHtml(link.slug)}</strong>? This cannot be undone.</p>
@@ -238,34 +232,14 @@ export async function renderLinkDetail(container, { id }) {
       container.querySelector("#report-copy").value = reportUrl;
       container.querySelector("#report-open").href = reportUrl;
       e.target.checked = report.isEnabled;
-      linkRow.style.display = report.isEnabled ? "flex" : "none";
+      linkRow.hidden = !report.isEnabled;
     });
   }
 
-  const editDialog = container.querySelector("#edit-link-dialog");
-  // A partial save leaves the dialog open with stale detail behind it, so the
-  // refresh waits until the dialog is closed by hand.
-  let partialSave = false;
-  editDialog.addEventListener("wa-show", (e) => {
-    if (e.target !== editDialog) return;
-    renderLinkForm(container.querySelector("#edit-form"), {
-      link,
-      onSuccess: () => {
-        editDialog.open = false;
-        renderLinkDetail(container, { id });
-      },
-      onPartialSave: () => { partialSave = true; },
-    });
-  });
-  editDialog.addEventListener("wa-after-hide", (e) => {
-    if (e.target !== editDialog || !partialSave) return;
-    partialSave = false;
-    renderLinkDetail(container, { id });
-  });
+  bindLinkFormDialog(container.querySelector("#edit-link-dialog"), () => ({ link }), () => renderLinkDetail(container, { id }));
 
   bindConfirmDialog({
     dialog: container.querySelector("#delete-link-dialog"),
-    trigger: container.querySelector("#delete-btn"),
     confirmBtn: container.querySelector("#delete-link-confirm-btn"),
     onConfirm: async () => {
       const delRes = await apiFetch(`/api/links/${id}`, { method: "DELETE" });
@@ -275,13 +249,11 @@ export async function renderLinkDetail(container, { id }) {
     },
   });
 
-  // Render analytics charts (only if link has clicks)
+  // #stats-container exists only when the link has clicks.
   const statsEl = container.querySelector("#stats-container");
   if (statsEl) renderStatsCharts(statsEl, link.id);
 
-  // Render A/B test stats if variants exist
+  // #ab-stats-container exists only when the link has A/B variants.
   const abStatsEl = container.querySelector("#ab-stats-container");
-  if (abStatsEl && link.totalClicks > 0) {
-    import("../components/stats-ab.js").then(m => m.renderAbStats(abStatsEl, link.id));
-  }
+  if (abStatsEl && link.totalClicks > 0) renderAbStats(abStatsEl, link.id);
 }

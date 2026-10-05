@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx, trackedExecutionCtx, createTestLink, createTestDomain, insertClickStat } from "../helpers";
+import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat, cachedRedirect, cfRequest } from "../helpers";
 import { hashPassword } from "../../src/services/password";
 import { setCachedRedirect } from "../../src/services/kv-cache";
 
@@ -21,16 +22,25 @@ async function insertTarget(
     .run();
 }
 
+/** Submit the password gate form for `slug`, omitting the field when `password` is undefined. */
+function postPassword(slug: string, password?: string) {
+  return app.request(`/${slug}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams(password === undefined ? {} : { password }).toString(),
+  }, env, mockExecutionCtx());
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
+let owner: Awaited<ReturnType<typeof setupAuth>>;
+
+beforeAll(async () => {
+  owner = await setupAuth();
+});
+
 describe("Redirect engine – advanced", () => {
-  let auth: Awaited<ReturnType<typeof setupAuth>>;
-
-  beforeAll(async () => {
-    auth = await setupAuth(env);
-  });
-
-  // ── Task 2: handleRedirectPost (password gate POST) ────────────────────
+  // ── handleRedirectPost (password gate POST) ────────────────────────────
 
   describe("handleRedirectPost – password gate", () => {
     const PASSWORD = "s3cret!";
@@ -38,38 +48,28 @@ describe("Redirect engine – advanced", () => {
 
     beforeAll(async () => {
       passwordHash = await hashPassword(PASSWORD);
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "pw-post",
         destinationUrl: "https://example.com/pw-dest",
         password: passwordHash,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "no-pw-post",
         destinationUrl: "https://example.com/nopw",
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
     });
 
     it("POST with correct password redirects to destination", async () => {
-      const body = new URLSearchParams({ password: PASSWORD });
-      const res = await app.request("/pw-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, env, mockExecutionCtx());
+      const res = await postPassword("pw-post", PASSWORD);
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/pw-dest");
     });
 
     it("POST with wrong password shows error page", async () => {
-      const body = new URLSearchParams({ password: "wrong" });
-      const res = await app.request("/pw-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, env, mockExecutionCtx());
+      const res = await postPassword("pw-post", "wrong");
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -77,12 +77,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("POST with empty password shows error page", async () => {
-      const body = new URLSearchParams({ password: "" });
-      const res = await app.request("/pw-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, env, mockExecutionCtx());
+      const res = await postPassword("pw-post", "");
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -90,11 +85,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("POST with missing password field shows error page", async () => {
-      const res = await app.request("/pw-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "",
-      }, env, mockExecutionCtx());
+      const res = await postPassword("pw-post");
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -102,32 +93,22 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("POST for non-password link returns 405", async () => {
-      const body = new URLSearchParams({ password: "whatever" });
-      const res = await app.request("/no-pw-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, env, mockExecutionCtx());
+      const res = await postPassword("no-pw-post", "whatever");
 
       expect(res.status).toBe(405);
     });
 
     it("POST re-checks constraints (expired link)", async () => {
       const pastTs = now - 3600; // 1 hour ago
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "pw-expired-post",
         destinationUrl: "https://example.com/expired",
         password: passwordHash,
         expiresAt: pastTs,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
 
-      const body = new URLSearchParams({ password: PASSWORD });
-      const res = await app.request("/pw-expired-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, env, mockExecutionCtx());
+      const res = await postPassword("pw-expired-post", PASSWORD);
 
       expect(res.status).toBe(410);
       const html = await res.text();
@@ -135,21 +116,16 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("POST re-checks constraints (maxClicks exceeded)", async () => {
-      const { id: linkId } = await createTestLink(env.DB, {
+      const { id: linkId } = await createTestLink({
         slug: "pw-maxclicks-post",
         destinationUrl: "https://example.com/maxed",
         password: passwordHash,
         maxClicks: 5,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
-      await insertClickStat(env.DB, linkId, 5, "2026-03-20");
+      await insertClickStat(linkId, 5, "2026-03-20");
 
-      const body = new URLSearchParams({ password: PASSWORD });
-      const res = await app.request("/pw-maxclicks-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: body.toString(),
-      }, env, mockExecutionCtx());
+      const res = await postPassword("pw-maxclicks-post", PASSWORD);
 
       expect(res.status).toBe(410);
       const html = await res.text();
@@ -157,16 +133,16 @@ describe("Redirect engine – advanced", () => {
     });
   });
 
-  // ── Task 5: checkConstraints ───────────────────────────────────────────
+  // ── checkConstraints ───────────────────────────────────────────────────
 
   describe("checkConstraints – expired / maxClicks / internal", () => {
     it("GET with expiresAt in the past returns 410", async () => {
       const pastTs = now - 7200;
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "expired-link",
         destinationUrl: "https://example.com/expired",
         expiresAt: pastTs,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
 
       const res = await app.request("/expired-link", {}, env, mockExecutionCtx());
@@ -177,14 +153,14 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET with maxClicks exceeded returns 410", async () => {
-      const { id: linkId } = await createTestLink(env.DB, {
+      const { id: linkId } = await createTestLink({
         slug: "maxclicks-link",
         destinationUrl: "https://example.com/maxed",
         maxClicks: 10,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
-      await insertClickStat(env.DB, linkId, 7, "2026-03-20");
-      await insertClickStat(env.DB, linkId, 5, "2026-03-21");
+      await insertClickStat(linkId, 7, "2026-03-20");
+      await insertClickStat(linkId, 5, "2026-03-21");
 
       const res = await app.request("/maxclicks-link", {}, env, mockExecutionCtx());
 
@@ -194,11 +170,11 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET with isInternal and no session returns 403", async () => {
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "internal-link",
         destinationUrl: "https://example.com/internal",
         isInternal: true,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
 
       // No auth cookies — should be forbidden
@@ -210,15 +186,15 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET with isInternal and valid session redirects normally", async () => {
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "internal-authed",
         destinationUrl: "https://example.com/internal-ok",
         isInternal: true,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
 
       const res = await app.request("/internal-authed", {
-        headers: { Cookie: auth.headers.Cookie },
+        headers: { Cookie: owner.headers.Cookie },
       }, env, mockExecutionCtx());
 
       expect(res.status).toBe(302);
@@ -226,26 +202,26 @@ describe("Redirect engine – advanced", () => {
     });
   });
 
-  // ── Task 6: bot / OG meta page ────────────────────────────────────────
+  // ── bot / OG meta page ─────────────────────────────────────────────────
 
   describe("Bot OG meta page", () => {
     beforeAll(async () => {
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "og-link",
         destinationUrl: "https://example.com/og-dest",
         ogTitle: "My Link Title",
         ogDescription: "A description for social previews",
         ogImage: "https://example.com/og-image.png",
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "og-pw-link",
         destinationUrl: "https://example.com/og-pw-dest",
         ogTitle: "Protected Link",
         ogDescription: "OG for a password link",
         ogImage: "https://example.com/og-pw.png",
         password: await hashPassword("test"),
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
     });
 
@@ -259,6 +235,7 @@ describe("Redirect engine – advanced", () => {
       expect(html).toContain('<meta property="og:title" content="My Link Title">');
       expect(html).toContain('<meta property="og:description" content="A description for social previews">');
       expect(html).toContain('<meta property="og:image" content="https://example.com/og-image.png">');
+      expect(html).toContain('<meta http-equiv="refresh" content="0;url=https://example.com/og-dest">');
     });
 
     it("normal UA with OG data redirects normally", async () => {
@@ -286,25 +263,16 @@ describe("Redirect engine – advanced", () => {
       // og:url still points at the short link.
       expect(html).toContain('<meta property="og:url" content="http://localhost/og-pw-link">');
     });
-
-    it("bot UA on an unprotected link still gets the meta refresh", async () => {
-      const res = await app.request("/og-link", {
-        headers: { "User-Agent": "facebookexternalhit/1.1" },
-      }, env, mockExecutionCtx());
-
-      const html = await res.text();
-      expect(html).toContain('<meta http-equiv="refresh" content="0;url=https://example.com/og-dest">');
-    });
   });
 
-  // ── Task 8: handleCustomDomainRoot ─────────────────────────────────────
+  // ── handleCustomDomainRoot ─────────────────────────────────────────────
 
   describe("handleCustomDomainRoot", () => {
     beforeAll(async () => {
-      await createTestDomain(env.DB, "custom-root.example.com", {
+      await createTestDomain("custom-root.example.com", {
         rootRedirect: "https://example.com/root-dest",
       });
-      await createTestDomain(env.DB, "custom-noroot.example.com", {
+      await createTestDomain("custom-noroot.example.com", {
         rootRedirect: null,
       });
     });
@@ -334,8 +302,7 @@ describe("Redirect engine – advanced", () => {
         headers: { Host: "unknown-domain.example.com" },
       }, env, mockExecutionCtx());
 
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
+      expect(res.headers.get("Location")).toBeNull();
     });
 
     it("GET / with primary domain falls through (200 SPA)", async () => {
@@ -350,14 +317,14 @@ describe("Redirect engine – advanced", () => {
     });
   });
 
-  // ── Task 9: custom domain notFoundRedirect ─────────────────────────────
+  // ── custom domain notFoundRedirect ─────────────────────────────────────
 
   describe("Custom domain notFoundRedirect", () => {
     beforeAll(async () => {
-      await createTestDomain(env.DB, "custom-nf.example.com", {
+      await createTestDomain("custom-nf.example.com", {
         notFoundRedirect: "https://example.com/not-found-page",
       });
-      await createTestDomain(env.DB, "custom-nonf.example.com", {
+      await createTestDomain("custom-nonf.example.com", {
         notFoundRedirect: null,
       });
     });
@@ -394,89 +361,49 @@ describe("Redirect engine – advanced", () => {
         headers: { Host: "custom-nonf.example.com" },
       }, env, mockExecutionCtx());
 
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
+      expect(res.headers.get("Location")).toBeNull();
     });
   });
 
-  // ── isSafeRedirectUrl defense-in-depth: protocol smuggling ─────────────
+  // ── isHttpUrl defense-in-depth: protocol smuggling ─────────────────────
   //
   // rootRedirect and notFoundRedirect are editable by domain admins; we must
   // never honor javascript:, data:, or malformed URLs — even if the row in
-  // domain_config somehow contains one. See AGENTS.md "Redirect hot path".
+  // domain_config somehow contains one.
 
-  describe("isSafeRedirectUrl — domain_config values", () => {
-    it("ignores javascript: in rootRedirect and falls through to SPA", async () => {
-      await createTestDomain(env.DB, "hostile-root.example.com", {
-        rootRedirect: "javascript:alert(1)",
-      });
+  describe("isHttpUrl — domain_config values", () => {
+    it.each([
+      ["hostile-root.example.com", { rootRedirect: "javascript:alert(1)" }, "/"],
+      ["hostile-data.example.com", { rootRedirect: "data:text/html,<script>alert(1)</script>" }, "/"],
+      ["hostile-nf.example.com", { notFoundRedirect: "not a real url at all" }, "/some-missing-slug"],
+      ["hostile-nf-js.example.com", { notFoundRedirect: "javascript:alert('xss')" }, "/also-missing"],
+    ])("ignores an unsafe redirect on %s", async (hostname, config, path) => {
+      await createTestDomain(hostname, config);
 
-      const res = await app.request("/", {
-        headers: { Host: "hostile-root.example.com" },
-      }, env, mockExecutionCtx());
+      const res = await app.request(path, { headers: { Host: hostname } }, env, mockExecutionCtx());
 
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
-    });
-
-    it("ignores data: URL in rootRedirect", async () => {
-      await createTestDomain(env.DB, "hostile-data.example.com", {
-        rootRedirect: "data:text/html,<script>alert(1)</script>",
-      });
-
-      const res = await app.request("/", {
-        headers: { Host: "hostile-data.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
-    });
-
-    it("ignores malformed URL in notFoundRedirect", async () => {
-      await createTestDomain(env.DB, "hostile-nf.example.com", {
-        notFoundRedirect: "not a real url at all",
-      });
-
-      const res = await app.request("/some-missing-slug", {
-        headers: { Host: "hostile-nf.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
-    });
-
-    it("ignores javascript: in notFoundRedirect", async () => {
-      await createTestDomain(env.DB, "hostile-nf-js.example.com", {
-        notFoundRedirect: "javascript:alert('xss')",
-      });
-
-      const res = await app.request("/also-missing", {
-        headers: { Host: "hostile-nf-js.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
+      expect(res.headers.get("Location")).toBeNull();
     });
   });
 
-  // ── Task 10: domain-scoped slug lookup ─────────────────────────────────
+  // ── domain-scoped slug lookup ──────────────────────────────────────────
 
   describe("Domain-scoped slug lookup", () => {
     beforeAll(async () => {
-      await createTestDomain(env.DB, "scope.example.com");
+      await createTestDomain("scope.example.com");
       // Same slug on custom domain → different destination
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "shared-slug",
         destinationUrl: "https://example.com/custom-domain-dest",
         domainHostname: "scope.example.com",
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
       // Same slug on default domain (domainHostname NULL)
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "shared-slug",
         destinationUrl: "https://example.com/default-domain-dest",
         domainHostname: null,
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
     });
 
@@ -500,26 +427,25 @@ describe("Redirect engine – advanced", () => {
 
     it("GET /:slug with wrong Host does not find domain-scoped slug", async () => {
       // A slug that only exists on scope.example.com — try from a different custom domain
-      await createTestDomain(env.DB, "other.example.com");
+      await createTestDomain("other.example.com");
 
       const res = await app.request("/shared-slug", {
         headers: { Host: "other.example.com" },
       }, env, mockExecutionCtx());
 
       // Should not redirect — slug doesn't exist on other.example.com
-      expect(res.status).not.toBe(301);
-      expect(res.status).not.toBe(302);
+      expect(res.headers.get("Location")).toBeNull();
     });
   });
 
-  // ── Task 22: D1-path targeting resolution ──────────────────────────────
+  // ── D1-path targeting resolution ───────────────────────────────────────
 
   describe("D1-path targeting resolution", () => {
     it("geo targeting: request with matching country redirects to target URL", async () => {
-      const { id: linkId } = await createTestLink(env.DB, {
+      const { id: linkId } = await createTestLink({
         slug: "geo-target",
         destinationUrl: "https://example.com/default-geo",
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
       await insertTarget(env.DB, {
         linkId,
@@ -529,23 +455,17 @@ describe("Redirect engine – advanced", () => {
         priority: 10,
       });
 
-      // app.request doesn't natively support cf properties, but the redirect handler
-      // reads (c.req.raw as Request & { cf?: ... }).cf?.country.
-      // We create a Request with a cf property to simulate this.
-      const req = new Request("http://localhost/geo-target");
-      Object.defineProperty(req, "cf", { value: { country: "DE" }, writable: false });
-
-      const res = await app.fetch(req, env, mockExecutionCtx());
+      const res = await app.fetch(cfRequest("/geo-target", { cf: { country: "DE" } }), env, mockExecutionCtx());
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/germany");
     });
 
     it("device targeting: mobile UA redirects to mobile target URL", async () => {
-      const { id: linkId } = await createTestLink(env.DB, {
+      const { id: linkId } = await createTestLink({
         slug: "device-target",
         destinationUrl: "https://example.com/default-device",
-        userId: auth.user.id,
+        userId: owner.user.id,
       });
       await insertTarget(env.DB, {
         linkId,
@@ -568,14 +488,8 @@ describe("Redirect engine – advanced", () => {
 });
 
 describe("Redirect engine – password gate GET", () => {
-  let owner: Awaited<ReturnType<typeof setupAuth>>;
-
-  beforeAll(async () => {
-    owner = await setupAuth(env);
-  });
-
   it("D1 path: serves the form with no Location header", async () => {
-    await createTestLink(env.DB, {
+    await createTestLink({
       slug: "pw-gate-d1",
       destinationUrl: "https://example.com/pw-gate-d1-dest",
       password: await hashPassword("hunter2"),
@@ -603,22 +517,11 @@ describe("Redirect engine – password gate GET", () => {
   });
 
   it("KV-cached path: serves the form with no Location header", async () => {
-    await setCachedRedirect(env.KV, "pw-gate-kv", {
+    await setCachedRedirect(env.KV, "pw-gate-kv", cachedRedirect({
       url: "https://example.com/pw-gate-kv-dest",
-      redirectType: 302,
       linkId: "pw-gate-kv-link",
-      isActive: true,
-      expiresAt: null,
-      maxClicks: null,
       hasPassword: true,
-      isInternal: false,
-      ogTitle: null,
-      ogDescription: null,
-      ogImage: null,
-      paramForwarding: false,
-      targets: null,
-      domainHostname: null,
-    });
+    }));
 
     const res = await app.request("/pw-gate-kv", {}, env, mockExecutionCtx());
 
@@ -631,14 +534,8 @@ describe("Redirect engine – password gate GET", () => {
 });
 
 describe("Redirect engine – password POST rate limit", () => {
-  let owner: Awaited<ReturnType<typeof setupAuth>>;
-
-  beforeAll(async () => {
-    owner = await setupAuth(env);
-  });
-
   it("returns 429 on the sixth attempt in a window", async () => {
-    await createTestLink(env.DB, {
+    await createTestLink({
       slug: "pw-brute",
       destinationUrl: "https://example.com/pw-brute-dest",
       password: await hashPassword("correct-horse"),
@@ -646,14 +543,14 @@ describe("Redirect engine – password POST rate limit", () => {
     });
 
     const attempt = async (password: string) => {
-      const { ctx, settled } = trackedExecutionCtx();
+      const ctx = createExecutionContext();
       const res = await app.request("/pw-brute", {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded", "CF-Connecting-IP": "203.0.113.7" },
         body: new URLSearchParams({ password }).toString(),
       }, env, ctx);
       // The counter is written in waitUntil; await it so attempts are ordered.
-      await settled();
+      await waitOnExecutionContext(ctx);
       return res;
     };
 

@@ -58,36 +58,18 @@ import { renderAcceptInvite } from "./views/accept-invite.js";
 let currentUser = null;
 
 async function init() {
-  // Load instance branding before first render so titles/logos aren't empty
+  // The title, nav brand and login view read the instance config synchronously.
   await loadConfig();
 
-  if (isDemoMode()) {
-    // Skip OAuth entirely — backend auto-injects the synthetic user.
-    currentUser = {
-      id: "demo-user",
-      name: "Demo User",
-      email: "demo@veer.example",
-      image: null,
-      isAdmin: false,
-    };
-  } else {
-    // Check auth state
-    try {
-      const session = await authClient.getSession();
-      currentUser = session?.data?.user || null;
-      // Enrich with server-side user data (isAdmin, etc.)
-      if (currentUser) {
-        try {
-          const meRes = await fetch("/api/me");
-          if (meRes.ok) {
-            const { data: meData } = await meRes.json();
-            if (meData) currentUser = { ...currentUser, ...meData };
-          }
-        } catch { /* use basic session data */ }
-      }
-    } catch {
-      currentUser = null;
-    }
+  // Outside demo mode, the client get-session call is the only request that
+  // rolls the session cookie and refills the cookie cache, because the
+  // server-side session check drops its Set-Cookie headers.
+  try {
+    const signedIn = isDemoMode() || (await authClient.getSession())?.data?.user;
+    const res = signedIn ? await fetch("/api/me") : null;
+    currentUser = res?.ok ? (await res.json()).data : null;
+  } catch {
+    currentUser = null;
   }
 
   const nav = document.getElementById("nav");
@@ -95,12 +77,10 @@ async function init() {
 
   renderNavBar(nav, currentUser);
 
-  // Move focus to #main on route changes so screen-reader users land on the new
-  // content. Skip this during the initial bootstrap, otherwise the first paint
-  // leaves a focus ring on #main (Firefox shows :focus-visible for programmatic
-  // focus until the next pointer interaction). The flag must be module-scoped to
-  // the bootstrap rather than per-render: the "/" → "/links" redirect renders
-  // reentrantly during the first load, and that nested render is still bootstrap.
+  // Focus #main on navigation for screen readers, but not during bootstrap,
+  // where it leaves a focus ring on first paint. The flag spans the whole
+  // bootstrap, not one render, because the "/" to "/links" redirect renders
+  // reentrantly during first load.
   let bootstrapping = true;
   function render(viewFn) {
     // Each render owns a fresh element, so a view that resolves after a newer
@@ -114,57 +94,29 @@ async function init() {
     if (!bootstrapping) main.focus();
   }
 
-  // Routes
+  // A signed-out visit renders the login view in place, so the URL survives as
+  // the OAuth callbackURL.
+  const authed = (view) => (params) => render(currentUser ? (el) => view(el, params) : renderLogin);
+
   addRoute("/", () => render((el) => renderHome(el, currentUser)));
   addRoute("/login", () => {
     // Replace rather than push: /login must not sit in history behind /links.
     if (currentUser) return navigate("/links", true);
-    render((el) => renderLogin(el));
+    render(renderLogin);
   });
-  addRoute("/links", () => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderDashboard(el));
-  });
-  addRoute("/campaigns", () => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderDashboard(el, { activeTab: "campaigns" }));
-  });
-  addRoute("/links/:id", (params) => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderLinkDetail(el, params));
-  });
-  addRoute("/campaigns/:id", (params) => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderCampaignDetail(el, params));
-  });
-  addRoute("/settings", () => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderSettings(el));
-  });
-  addRoute("/teams", () => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderDashboard(el, { activeTab: "teams" }));
-  });
-  addRoute("/teams/:id", (params) => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderDashboard(el, { activeTab: "teams", teamId: params.id }));
-  });
-  addRoute("/admin", () => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    if (!currentUser.isAdmin) {
-      render((el) => { el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center"><h2>Access denied</h2><p>You do not have admin access.</p></div>`; });
-      return;
-    }
-    render((el) => renderAdmin(el));
-  });
-  addRoute("/r/:token", (params) => {
-    render((el) => renderReport(el, params));
-  });
-
-  addRoute("/invite/:token", (params) => {
-    if (!currentUser) return render((el) => renderLogin(el));
-    render((el) => renderAcceptInvite(el, params));
-  });
+  addRoute("/links", authed((el) => renderDashboard(el, { user: currentUser })));
+  addRoute("/campaigns", authed((el) => renderDashboard(el, { activeTab: "campaigns", user: currentUser })));
+  addRoute("/links/:id", authed(renderLinkDetail));
+  addRoute("/campaigns/:id", authed(renderCampaignDetail));
+  addRoute("/settings", authed((el) => renderSettings(el, { user: currentUser })));
+  addRoute("/teams", authed((el) => renderDashboard(el, { activeTab: "teams", user: currentUser })));
+  addRoute("/teams/:id", authed((el, params) => renderDashboard(el, { activeTab: "teams", teamId: params.id, user: currentUser })));
+  addRoute("/admin", authed((el) => {
+    if (currentUser.isAdmin) return renderAdmin(el);
+    el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center"><h2>Access denied</h2><p>You do not have admin access.</p></div>`;
+  }));
+  addRoute("/r/:token", (params) => render((el) => renderReport(el, params)));
+  addRoute("/invite/:token", authed(renderAcceptInvite));
 
   setNotFound(() => {
     render((el) => {
@@ -172,12 +124,10 @@ async function init() {
     });
   });
 
-  // Banners render in wa-page's `banner` slot (sticky above the header; the
-  // page measures the slot itself, so no manual body padding is needed).
+  // The impersonation banner goes in wa-page's sticky banner slot.
   const page = document.querySelector("wa-page");
 
-  // Impersonation banner (suppressed in demo mode — impersonation isn't a
-  // thing without real users, and stacking with the demo banner clips content)
+  // Impersonation is meaningless in demo mode.
   if (isImpersonating() && !isDemoMode()) {
     page.insertAdjacentHTML("afterbegin", getImpersonationBanner());
     bindImpersonationBanner();
@@ -209,14 +159,9 @@ document.addEventListener("click", (e) => {
   navigate(link.getAttribute("href"));
 });
 
-// Drop the FOUCE cloak once the app has booted. `.wa-cloak:has(:not(:defined))`
-// hides the entire document for 2s every time it starts matching, and nothing
-// else removes the class — we import components individually instead of using
-// WA's loader, which is what normally clears it. All components this bundle
-// registers are defined by the time the module finishes evaluating, so the
-// cloak has done its job; leaving it on would re-hide the whole app on any
-// later navigation that introduces an element we forgot to import. `finally`
-// so a failed boot can't strand the page behind the cloak.
+// Nothing else clears the FOUCE cloak when components are imported
+// individually. Left on, it re-hides the page for 2s whenever an undefined
+// element appears. `finally` so a failed boot cannot strand the page behind it.
 init().finally(() => {
   document.documentElement.classList.remove("wa-cloak");
 });

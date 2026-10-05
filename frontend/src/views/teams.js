@@ -1,17 +1,8 @@
 import { showToast } from "../components/toast.js";
-import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, emptyState } from "../lib/ui.js";
+import { apiFetch, withLoadingBtn, emptyState } from "../lib/ui.js";
 
-export async function renderTeamsPanel(container, { teams = null, currentUser = null, onTeamSelect, onTeamsChanged } = {}) {
-  container.innerHTML = SPINNER;
-
-  if (teams === null) {
-    const result = await apiFetch("/api/teams");
-    if (!result) return;
-    ({ data: teams } = result);
-  }
-
+export function renderTeamsPanel(container, { teams, onTeamSelect }) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
@@ -22,25 +13,21 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
         </wa-button>
       </div>
 
-      <div id="teams-grid">
         ${teams.length === 0
           ? emptyState("people-group", "You're not a member of any teams yet. Create one to get started.")
           : `<div class="wa-grid wa-gap-m" style="--min-column-size:280px;">
               ${teams.map(t => `
                 <wa-card class="team-card" data-id="${escapeAttr(t.id)}" role="button" tabindex="0" aria-label="Open team ${escapeAttr(t.name)}">
                   <div class="wa-stack wa-gap-s">
-                    <div class="wa-split">
-                      <strong>${escapeHtml(t.name)}</strong>
-                      <wa-badge variant="neutral" pill>/${escapeHtml(t.slug)}</wa-badge>
-                    </div>
+                    <strong>${escapeHtml(t.name)}</strong>
                     <div class="wa-cluster wa-gap-s">
                       <span class="wa-body-s wa-color-text-quiet">
                         <wa-icon name="users" class="wa-font-size-xs"></wa-icon>
-                        ${Number(t.memberCount) || 0} member${(Number(t.memberCount) || 0) !== 1 ? "s" : ""}
+                        ${t.memberCount} member${t.memberCount === 1 ? "" : "s"}
                       </span>
                       <span class="wa-body-s wa-color-text-quiet">
                         <wa-icon name="link" class="wa-font-size-xs"></wa-icon>
-                        ${Number(t.linkCount) || 0} link${(Number(t.linkCount) || 0) !== 1 ? "s" : ""}
+                        ${t.linkCount} link${t.linkCount === 1 ? "" : "s"}
                       </span>
                     </div>
                   </div>
@@ -48,20 +35,15 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
               `).join("")}
             </div>`
         }
-      </div>
 
       <wa-dialog id="create-team-dialog" label="Create Team" light-dismiss>
-        <div class="wa-stack wa-gap-m">
-          <wa-input id="team-name-input" label="Team Name" placeholder="My Team" required></wa-input>
-          <wa-input id="team-slug-input" label="Team Slug" placeholder="my-team" required hint="Used in URLs. Letters, numbers, hyphens, and underscores only."></wa-input>
-        </div>
+        <wa-input id="team-name-input" label="Team Name" placeholder="My Team" required></wa-input>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" id="confirm-create-team">Create</wa-button>
       </wa-dialog>
     </div>
   `;
 
-  // Navigate to team detail on card click or keyboard activation
   container.querySelectorAll(".team-card").forEach((card) => {
     card.addEventListener("click", () => {
       onTeamSelect(card.dataset.id);
@@ -73,40 +55,24 @@ export async function renderTeamsPanel(container, { teams = null, currentUser = 
     });
   });
 
-  // Create team dialog
   const dialog = container.querySelector("#create-team-dialog");
   const confirmBtn = container.querySelector("#confirm-create-team");
   const nameInput = container.querySelector("#team-name-input");
-  const slugInput = container.querySelector("#team-slug-input");
-
-  // Auto-generate the slug from the name until the user types their own.
-  let slugEdited = false;
-  slugInput.addEventListener("input", () => { slugEdited = true; });
-  nameInput.addEventListener("input", () => {
-    if (slugEdited) return;
-    slugInput.value = nameInput.value.trim().toLowerCase().replace(/[^a-z0-9_]+/g, "-").replace(/^-|-$/g, "");
-  });
 
   confirmBtn.addEventListener("click", async () => {
     const name = nameInput.value.trim();
-    const slug = slugInput.value.trim();
-    if (!name || !slug) { showToast("Name and slug are required", "warning"); return; }
+    if (!name) { showToast("Team name is required", "warning"); return; }
 
     await withLoadingBtn(confirmBtn, async () => {
       const result = await apiFetch("/api/teams", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, slug }),
+        body: JSON.stringify({ name }),
       });
       if (!result) return;
       dialog.open = false;
       showToast("Team created", "success");
-      onTeamsChanged?.();
-      if (onTeamSelect) {
-        onTeamSelect(result.data.id);
-      } else {
-        navigate(`/teams/${result.data.id}`);
-      }
+      onTeamSelect(result.data.id);
     });
   });
 }

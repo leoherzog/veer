@@ -1,13 +1,13 @@
 import { Hono } from "hono";
-import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { trimTrailingSlash } from "hono/trailing-slash";
+import { bodyLimit } from "hono/body-limit";
+import { except } from "hono/combine";
 import type { AppEnv } from "./types";
-import { corsMiddleware } from "./middleware/cors";
+import { getAuth } from "./auth";
 import { requireAuth, requireAdmin, requireAuthOrApiKey } from "./middleware/auth";
 import { rateLimitApiKeyCheck, rateLimitApiKeyIncrement, checkRateLimit } from "./middleware/rate-limit";
-import authRoutes from "./routes/api/auth";
-import linkRoutes, { checkPassword } from "./routes/api/links";
+import linkRoutes from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
 import campaignRoutes from "./routes/api/campaigns";
 import domainRoutes from "./routes/api/domains";
@@ -18,28 +18,15 @@ import teamRoutes from "./routes/api/teams";
 import adminRoutes from "./routes/api/admin";
 import { handleRedirect, handleRedirectPost, handleCustomDomainRoot } from "./routes/redirect";
 import { getInstanceName, isDemoMode } from "./lib/branding";
+import { getConfiguredProviders } from "./lib/providers";
 import { DEMO_BLOCKED_MESSAGE } from "./lib/demo";
 import { scheduled } from "./scheduled";
 import { CSP } from "./lib/csp";
 
 export const app = new Hono<AppEnv>();
 
-/** Security headers every response carries, error responses included. */
-function setSecurityHeaders(c: Context<AppEnv>): void {
-  c.header("X-Content-Type-Options", "nosniff");
-  c.header("X-Frame-Options", "DENY");
-  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-  // A handler that emitted its own policy keeps it — the password gate serves a
-  // CSP without form-action.
-  if (!c.finalized || !c.res.headers.has("Content-Security-Policy")) {
-    c.header("Content-Security-Policy", CSP);
-  }
-}
-
 // Global error handler: consistent JSON errors, no internal detail leaks.
-// It builds a fresh response, so it re-applies the security headers itself.
 app.onError((err, c) => {
-  setSecurityHeaders(c);
   if (err instanceof HTTPException) {
     return c.json({ error: err.message }, err.status);
   }
@@ -53,12 +40,20 @@ app.onError((err, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-// Security headers on all responses
+// Security headers on every response. Hono runs onError below this middleware,
+// so the finally also decorates error responses.
 app.use("*", async (c, next) => {
   try {
     await next();
   } finally {
-    setSecurityHeaders(c);
+    c.header("X-Content-Type-Options", "nosniff");
+    c.header("X-Frame-Options", "DENY");
+    c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+    // A handler that emitted its own policy keeps it: the password gate serves a
+    // CSP without form-action.
+    if (!c.res.headers.has("Content-Security-Policy")) {
+      c.header("Content-Security-Policy", CSP);
+    }
   }
 });
 
@@ -67,46 +62,43 @@ app.use("*", async (c, next) => {
 // would never fire.
 app.use("*", trimTrailingSlash({ alwaysRedirect: true }));
 
-// CORS for API routes
-app.use("/api/*", corsMiddleware);
-
-// Demo mode: block mutating /api/* requests with a friendly 403.
-// Allowlist: the public password gate (/api/links/:id/check-password). Non-/api/
-// writes (e.g. the /:slug password POST) pass through unchanged. POST /api/auth/*
-// is intentionally blocked — there is no login flow in demo mode (see src/lib/demo.ts).
-const CHECK_PASSWORD_PATH = /^\/api\/links\/[^/]+\/check-password$/;
-app.use("*", async (c, next) => {
+// Demo mode: every mutating /api/* request gets a friendly 403, POST /api/auth/*
+// included, since demo has no login flow. Non-/api/ writes such as the /:slug
+// password form pass through.
+app.use("/api/*", async (c, next) => {
   if (!isDemoMode(c.env)) return next();
   const method = c.req.method;
   if (method === "GET" || method === "HEAD" || method === "OPTIONS") return next();
-  const path = c.req.path;
-  if (!path.startsWith("/api/")) return next();
-  if (CHECK_PASSWORD_PATH.test(path)) return next();
   return c.json({ error: DEMO_BLOCKED_MESSAGE, demoMode: true }, 403);
 });
 
-// Auth routes (no auth middleware - handles its own)
-app.route("/api/auth", authRoutes);
+// Request body caps, enforced on streamed bodies too: 10 KB for the JSON API,
+// 100 KB for bulk, none for Better Auth.
+const tooLarge = (): never => {
+  throw new HTTPException(413, { message: "Request body too large" });
+};
+app.use("/api/*", except(["/api/auth/*", "/api/bulk/*"], bodyLimit({ maxSize: 10_000, onError: tooLarge })));
+app.use("/api/bulk/*", bodyLimit({ maxSize: 100_000, onError: tooLarge }));
 
-// Public API endpoint: instance config (no auth required — public branding)
+// Better Auth handles its own auth.
+app.on(["GET", "POST"], "/api/auth/*", (c) => getAuth(c.env).handler(c.req.raw));
+
+// Public instance config: branding plus the login options the SPA renders.
 app.get("/api/config", (c) => {
   return c.json({
     instanceName: getInstanceName(c.env),
     demoMode: isDemoMode(c.env),
+    providers: Object.keys(getConfiguredProviders(c.env)),
+    passkey: c.env.PASSKEY_ENABLED === "true",
   });
 });
 
-// Public API endpoint: password check (no auth required)
-app.post("/api/links/:id/check-password", checkPassword);
+// In Hono `/x/*` also matches `/x`, so each prefix below is registered once.
 
-// Team routes (auth required). Session traffic is deliberately unmetered — see
-// the rate-limiting design decision in AGENTS.md.
-app.use("/api/teams", requireAuth);
+// Teams and admin are session-only and deliberately unmetered.
 app.use("/api/teams/*", requireAuth);
 app.route("/api/teams", teamRoutes);
 
-// Admin routes (auth + admin required). Session traffic is deliberately unmetered.
-app.use("/api/admin", requireAuth, requireAdmin);
 app.use("/api/admin/*", requireAuth, requireAdmin);
 app.route("/api/admin", adminRoutes);
 
@@ -115,33 +107,25 @@ app.route("/api/admin", adminRoutes);
 // over-limit key is rejected without spending an HMAC and two D1 queries. The
 // counter is only written after authentication, so an unknown key costs no KV write.
 app.use("/api/me", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/links", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 app.use("/api/links/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 app.use("/api/stats/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/campaigns", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 app.use("/api/campaigns/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/domains", requireAuth);
 app.use("/api/domains/*", requireAuth);
-app.use("/api/keys", requireAuth);
 app.use("/api/keys/*", requireAuth);
-app.use("/api/bulk", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 app.use("/api/bulk/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/reports", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 app.use("/api/reports/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
 
 // Admin-only domain management routes (sync, individual config, access)
 app.post("/api/domains/sync", requireAdmin);
 app.get("/api/domains/:hostname", requireAdmin);
 app.put("/api/domains/:hostname", requireAdmin);
-app.get("/api/domains/:hostname/access", requireAdmin);
 app.put("/api/domains/:hostname/access", requireAdmin);
 
-// Current user profile
 app.get("/api/me", async (c) => {
   return c.json({ data: c.var.user! });
 });
 
-// Protected API routes
+// Mounted after their auth middleware; Hono runs handlers in registration order.
 app.route("/api/links", linkRoutes);
 app.route("/api/stats", statsRoutes);
 app.route("/api/campaigns", campaignRoutes);
@@ -150,24 +134,17 @@ app.route("/api/keys", keyRoutes);
 app.route("/api/bulk", bulkRoutes);
 app.route("/api/reports", reportRoutes);
 
-// Public report viewer API (no auth, IP rate limited — 30 req/min per IP)
+// Public report viewer: no auth, IP rate limited.
 app.get("/api/public-report/:token", async (c, next) => {
   const ip = c.req.header("cf-connecting-ip") || "unknown";
-  const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-  const rlKey = `rl:pub:${ip}:${windowEpoch}`;
-
-  const rl = await checkRateLimit(c.env.KV, rlKey, 30, 60);
+  const rl = await checkRateLimit(c.env.KV, `rl:pub:${ip}`, 30, 60);
   if (rl.exceeded) {
     return Response.json(
       { error: "Rate limit exceeded", retryAfter: rl.secondsRemaining },
       { status: 429, headers: { "Retry-After": String(rl.secondsRemaining) } }
     );
   }
-
-  // Increment asynchronously — non-blocking, advisory enforcement
-  c.executionCtx.waitUntil(
-    c.env.KV.put(rlKey, String(rl.count + 1), rl.stored === null ? { expirationTtl: 120 } : {})
-  );
+  c.executionCtx.waitUntil(rl.hit());
 
   await next();
 }, publicReportRoute);
@@ -182,15 +159,9 @@ app.get("/", handleCustomDomainRoot);
 app.get("/:slug", handleRedirect);
 app.post("/:slug", handleRedirectPost);
 
-// SPA fallback - serve static asset if it exists, otherwise index.html
-app.all("*", async (c) => {
-  const res = await c.env.ASSETS.fetch(c.req.raw);
-  if (res.status !== 404) return res;
-  // Not a real static file — serve the SPA shell
-  const url = new URL(c.req.url);
-  url.pathname = "/";
-  return c.env.ASSETS.fetch(new Request(url, c.req.raw));
-});
+// Static assets. The binding applies `not_found_handling: single-page-application`
+// from wrangler.jsonc, so a path with no file gets the SPA shell.
+app.all("*", (c) => c.env.ASSETS.fetch(c.req.raw));
 
 export default {
   fetch: app.fetch,

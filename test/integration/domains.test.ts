@@ -1,43 +1,11 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestDomain as sharedCreateTestDomain, createTestLink, mockExecutionCtx, type JsonBody } from "../helpers";
+import { setupAuth, createTestDomain, createTestLink, mockExecutionCtx, api, adminEnv } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/** Env with ADMIN_EMAILS set so a given email is treated as admin. */
-function adminEnv(email: string) {
-  return { ...env, ADMIN_EMAILS: email };
-}
-
-async function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string>; body?: JsonBody; env?: typeof env } = {}
-) {
-  const e = opts.env ?? env;
-  const init: RequestInit = { method, headers: { ...(opts.headers ?? {}) } };
-  if (opts.body !== undefined) {
-    init.body = JSON.stringify(opts.body);
-    (init.headers as Record<string, string>)["Content-Type"] =
-      (init.headers as Record<string, string>)["Content-Type"] || "application/json";
-  }
-  return app.request(path, init, e, mockExecutionCtx());
-}
-
-/** Insert a domain_config row directly into D1. */
-function createTestDomain(
-  hostname: string,
-  overrides: Partial<{
-    rootRedirect: string | null;
-    notFoundRedirect: string | null;
-    accessMode: string;
-  }> = {}
-) {
-  return sharedCreateTestDomain(env.DB, hostname, overrides);
-}
 
 /** Insert a domain_access row. */
 async function createDomainAccess(hostname: string, email: string) {
@@ -63,11 +31,11 @@ describe("Domains API", () => {
   let adminEnvObj: typeof env;
 
   beforeAll(async () => {
-    const userAuth = await setupAuth(env, { email: "domains-user@test.com" });
+    const userAuth = await setupAuth({ email: "domains-user@test.com" });
     userHeaders = userAuth.headers;
     userEmail = userAuth.user.email;
 
-    const adminAuth = await setupAuth(env, { email: "domains-admin@test.com" });
+    const adminAuth = await setupAuth({ email: "domains-admin@test.com" });
     adminHeaders = adminAuth.headers;
     adminEmail = adminAuth.user.email;
     adminEnvObj = adminEnv(adminEmail);
@@ -77,11 +45,6 @@ describe("Domains API", () => {
   // LIST  GET /api/domains
   // -----------------------------------------------------------------------
   describe("GET /api/domains", () => {
-    it("returns 401 when unauthenticated", async () => {
-      const res = await api("GET", "/api/domains");
-      expect(res.status).toBe(401);
-    });
-
     it("admin sees all domains", async () => {
       await createTestDomain("all-visible.example.com");
       await createTestDomain("restricted-visible.example.com", { accessMode: "restricted" });
@@ -92,7 +55,6 @@ describe("Domains API", () => {
       });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { hostname: string }[] };
-      expect(Array.isArray(json.data)).toBe(true);
       const hostnames = json.data.map((d) => d.hostname);
       expect(hostnames).toContain("all-visible.example.com");
       expect(hostnames).toContain("restricted-visible.example.com");
@@ -120,17 +82,6 @@ describe("Domains API", () => {
       const json = await res.json() as { data: { hostname: string }[] };
       const hostnames = json.data.map((d) => d.hostname);
       expect(hostnames).toContain(hostname);
-    });
-
-    it("non-admin does not see restricted domain without access", async () => {
-      const hostname = "no-access.example.com";
-      await createTestDomain(hostname, { accessMode: "restricted" });
-
-      const res = await api("GET", "/api/domains", { headers: userHeaders });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: { hostname: string }[] };
-      const hostnames = json.data.map((d) => d.hostname);
-      expect(hostnames).not.toContain(hostname);
     });
 
     it("flags the primary hostname with isPrimary", async () => {
@@ -175,11 +126,6 @@ describe("Domains API", () => {
   // GET DETAIL  GET /api/domains/:hostname
   // -----------------------------------------------------------------------
   describe("GET /api/domains/:hostname", () => {
-    it("returns 401 when unauthenticated", async () => {
-      const res = await api("GET", "/api/domains/some.example.com");
-      expect(res.status).toBe(401);
-    });
-
     it("returns 403 for non-admin user", async () => {
       const hostname = "detail-forbidden.example.com";
       await createTestDomain(hostname);
@@ -239,13 +185,6 @@ describe("Domains API", () => {
   // UPDATE CONFIG  PUT /api/domains/:hostname
   // -----------------------------------------------------------------------
   describe("PUT /api/domains/:hostname", () => {
-    it("returns 401 when unauthenticated", async () => {
-      const res = await api("PUT", "/api/domains/some.example.com", {
-        body: { accessMode: "all" },
-      });
-      expect(res.status).toBe(401);
-    });
-
     it("returns 403 for non-admin user", async () => {
       const hostname = "put-forbidden.example.com";
       await createTestDomain(hostname);
@@ -371,73 +310,9 @@ describe("Domains API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // ACCESS LIST  GET /api/domains/:hostname/access
-  // -----------------------------------------------------------------------
-  describe("GET /api/domains/:hostname/access", () => {
-    it("returns 401 when unauthenticated", async () => {
-      const res = await api("GET", "/api/domains/some.example.com/access");
-      expect(res.status).toBe(401);
-    });
-
-    it("returns 403 for non-admin user", async () => {
-      const hostname = "access-list-forbidden.example.com";
-      await createTestDomain(hostname);
-
-      const res = await api("GET", `/api/domains/${hostname}/access`, {
-        headers: userHeaders,
-      });
-      expect(res.status).toBe(403);
-    });
-
-    it("admin can list access emails", async () => {
-      const hostname = "access-list.example.com";
-      await createTestDomain(hostname, { accessMode: "restricted" });
-      await createDomainAccess(hostname, "alice@test.com");
-      await createDomainAccess(hostname, "bob@test.com");
-
-      const res = await api("GET", `/api/domains/${hostname}/access`, {
-        headers: adminHeaders,
-        env: adminEnvObj,
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: string[] };
-      expect(json.data).toContain("alice@test.com");
-      expect(json.data).toContain("bob@test.com");
-    });
-
-    it("returns empty array when no access entries exist", async () => {
-      const hostname = "access-empty.example.com";
-      await createTestDomain(hostname, { accessMode: "restricted" });
-
-      const res = await api("GET", `/api/domains/${hostname}/access`, {
-        headers: adminHeaders,
-        env: adminEnvObj,
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: string[] };
-      expect(json.data).toEqual([]);
-    });
-
-    it("returns 404 for non-existent domain", async () => {
-      const res = await api("GET", "/api/domains/nonexistent.example.com/access", {
-        headers: adminHeaders,
-        env: adminEnvObj,
-      });
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // SET ACCESS  PUT /api/domains/:hostname/access
   // -----------------------------------------------------------------------
   describe("PUT /api/domains/:hostname/access", () => {
-    it("returns 401 when unauthenticated", async () => {
-      const res = await api("PUT", "/api/domains/some.example.com/access", {
-        body: { emails: [] },
-      });
-      expect(res.status).toBe(401);
-    });
-
     it("returns 403 for non-admin user", async () => {
       const hostname = "set-access-forbidden.example.com";
       await createTestDomain(hostname);
@@ -466,14 +341,14 @@ describe("Domains API", () => {
       expect(json.data).not.toContain("old@test.com");
 
       // Read back persisted state — guards against a PUT that only echoes the input
-      const getRes = await api("GET", `/api/domains/${hostname}/access`, {
+      const getRes = await api("GET", `/api/domains/${hostname}`, {
         headers: adminHeaders,
         env: adminEnvObj,
       });
-      const getJson = await getRes.json() as { data: string[] };
-      expect(getJson.data).toContain("new1@test.com");
-      expect(getJson.data).toContain("new2@test.com");
-      expect(getJson.data).not.toContain("old@test.com");
+      const getJson = await getRes.json() as { data: { accessEmails: string[] } };
+      expect(getJson.data.accessEmails).toContain("new1@test.com");
+      expect(getJson.data.accessEmails).toContain("new2@test.com");
+      expect(getJson.data.accessEmails).not.toContain("old@test.com");
     });
 
     it("admin can clear access by setting empty array", async () => {
@@ -497,12 +372,12 @@ describe("Domains API", () => {
       ).bind(hostname, "someone@test.com").first();
       expect(row).toBeNull();
 
-      const getRes = await api("GET", `/api/domains/${hostname}/access`, {
+      const getRes = await api("GET", `/api/domains/${hostname}`, {
         headers: adminHeaders,
         env: adminEnvObj,
       });
-      const getJson = await getRes.json() as { data: string[] };
-      expect(getJson.data).toEqual([]);
+      const getJson = await getRes.json() as { data: { accessEmails: string[] } };
+      expect(getJson.data.accessEmails).toEqual([]);
     });
 
     it("emails are normalized to lowercase", async () => {
@@ -538,7 +413,7 @@ describe("Domains API", () => {
       const res = await api("PUT", `/api/domains/${hostname}/access`, {
         headers: adminHeaders,
         env: adminEnvObj,
-        body: { emails: "not-an-array" as unknown as string[] },
+        body: { emails: "not-an-array" },
       });
       expect(res.status).toBe(400);
     });
@@ -583,16 +458,21 @@ describe("Domains API", () => {
       vi.restoreAllMocks();
     });
 
+    /** Admin env plus the Cloudflare API credentials sync requires. */
+    function syncEnv() {
+      return { ...adminEnvObj, CF_ACCOUNT_ID: "test-account-id", CF_API_TOKEN: "test-api-token" };
+    }
+
     it("removes a dropped domain's links instead of moving them onto the primary host", async () => {
       const removed = "sync-removed.example.com";
       await createTestDomain(removed);
-      const userAuth = await setupAuth(env, { email: "sync-links@test.com" });
-      const customLink = await createTestLink(env.DB, {
+      const userAuth = await setupAuth({ email: "sync-links@test.com" });
+      const customLink = await createTestLink({
         slug: "sync-collide",
         userId: userAuth.user.id,
         domainHostname: removed,
       });
-      const primaryLink = await createTestLink(env.DB, {
+      const primaryLink = await createTestLink({
         slug: "sync-collide",
         userId: userAuth.user.id,
         domainHostname: null,
@@ -603,7 +483,7 @@ describe("Domains API", () => {
 
       const res = await api("POST", "/api/domains/sync", {
         headers: adminHeaders,
-        env: adminEnvObj,
+        env: syncEnv(),
       });
       expect(res.status).toBe(200);
 
@@ -627,7 +507,7 @@ describe("Domains API", () => {
 
       const res = await api("POST", "/api/domains/sync", {
         headers: adminHeaders,
-        env: adminEnvObj,
+        env: syncEnv(),
       });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: { hostname: string }[] };

@@ -13,7 +13,8 @@ export function parseUserAgent(ua: string): UAInfo {
 }
 
 function parseBrowser(ua: string): string {
-  // Order matters: Edge contains "Chrome", Safari UA contains "Chrome" too
+  // Order matters: Samsung, Opera and Edge UAs also contain "Chrome/", and
+  // Chrome and iOS Firefox UAs contain "Safari/".
   if (/SamsungBrowser\//i.test(ua)) return "Samsung Internet";
   if (/OPR\/|Opera\//i.test(ua)) return "Opera";
   if (/Edg\//i.test(ua)) return "Edge";
@@ -39,13 +40,12 @@ function parseOS(ua: string): string {
  * request always lands in the same bucket in both places.
  */
 export function parseDevice(ua: string): "desktop" | "mobile" | "tablet" {
-  // Tablet checks first
+  // Tablets first: iPad UAs also contain "Mobile/".
   if (/iPad/i.test(ua)) return "tablet";
   if (/Tablet/i.test(ua)) return "tablet";
   // Android without "Mobile" is typically a tablet
   if (/Android/i.test(ua) && !/Mobile/i.test(ua)) return "tablet";
 
-  // Mobile checks
   if (/Mobile|iPhone|iPod|webOS|BlackBerry|BB10|Opera Mini|Windows Phone/i.test(ua)) return "mobile";
   if (/Android/i.test(ua)) return "mobile";
 

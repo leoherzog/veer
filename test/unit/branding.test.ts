@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getInstanceName, isDemoMode, DEFAULT_INSTANCE_NAME } from "../../src/lib/branding";
+import { getInstanceName, isDemoMode } from "../../src/lib/branding";
 
 function envWith(instanceName: string | undefined): Env {
   return { INSTANCE_NAME: instanceName } as unknown as Env;
@@ -10,16 +10,16 @@ function envWithDemo(demoMode: string | undefined): Env {
 }
 
 describe("getInstanceName", () => {
-  it("falls back to the default when INSTANCE_NAME is undefined", () => {
-    expect(getInstanceName(envWith(undefined))).toBe(DEFAULT_INSTANCE_NAME);
+  it("falls back to 'Veer' when INSTANCE_NAME is undefined", () => {
+    expect(getInstanceName(envWith(undefined))).toBe("Veer");
   });
 
-  it("falls back to the default when INSTANCE_NAME is an empty string", () => {
-    expect(getInstanceName(envWith(""))).toBe(DEFAULT_INSTANCE_NAME);
+  it("falls back to 'Veer' when INSTANCE_NAME is an empty string", () => {
+    expect(getInstanceName(envWith(""))).toBe("Veer");
   });
 
-  it("falls back to the default when INSTANCE_NAME is only whitespace", () => {
-    expect(getInstanceName(envWith("   "))).toBe(DEFAULT_INSTANCE_NAME);
+  it("falls back to 'Veer' when INSTANCE_NAME is only whitespace", () => {
+    expect(getInstanceName(envWith("   "))).toBe("Veer");
   });
 
   it("returns the configured name when INSTANCE_NAME is set", () => {
@@ -28,10 +28,6 @@ describe("getInstanceName", () => {
 
   it("trims surrounding whitespace from a configured name", () => {
     expect(getInstanceName(envWith("  Acme  "))).toBe("Acme");
-  });
-
-  it("default is exactly 'Veer'", () => {
-    expect(DEFAULT_INSTANCE_NAME).toBe("Veer");
   });
 });
 

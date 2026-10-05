@@ -32,18 +32,17 @@ export function renderNavBar(container, user) {
   const avatarAttrs = user
     ? `${user.image ? `image="${escapeAttr(user.image)}"` : ""} initials="${escapeAttr(getInitials(user.name))}" label="${escapeAttr(user.name || "")}"`
     : "";
+  const isDark = document.documentElement.classList.contains("wa-dark");
   // #nav is slotted straight into wa-page's `header`, which already supplies
   // display:flex, align-items:center, justify-content:space-between, gap and padding.
   container.innerHTML = `
-      <div class="wa-cluster wa-gap-m">
-        <a href="${user ? "/links" : "/"}" class="wa-link-plain wa-font-size-l wa-font-weight-bold" data-link>${escapeHtml(getInstanceName())}</a>
-      </div>
+      <a href="${user ? "/links" : "/"}" class="wa-link-plain wa-font-size-l wa-font-weight-bold" data-link>${escapeHtml(getInstanceName())}</a>
       <div class="wa-cluster wa-gap-m">
         ${user
           ? `
             <wa-dropdown placement="bottom-end">
               <wa-button slot="trigger" variant="neutral" appearance="plain" pill>
-                <wa-avatar id="user-avatar" ${avatarAttrs} style="--size: 2rem;"></wa-avatar>
+                <wa-avatar ${avatarAttrs} style="--size: 2rem;"></wa-avatar>
               </wa-button>
               <wa-dropdown-item id="settings-link">
                 <wa-icon slot="icon" name="gear"></wa-icon>
@@ -56,8 +55,8 @@ export function renderNavBar(container, user) {
               </wa-dropdown-item>
               ` : ""}
               <wa-dropdown-item id="theme-toggle">
-                <wa-icon slot="icon" name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}"></wa-icon>
-                <span class="theme-label">${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}</span>
+                <wa-icon slot="icon" name="${isDark ? "sun" : "moon"}"></wa-icon>
+                <span class="theme-label">${isDark ? "Light Mode" : "Dark Mode"}</span>
               </wa-dropdown-item>
               ${isDemoMode() ? "" : `
               <wa-divider></wa-divider>
@@ -69,14 +68,13 @@ export function renderNavBar(container, user) {
             </wa-dropdown>
           `
           : `
-            <wa-button id="theme-toggle" size="s" variant="neutral" appearance="plain" pill><wa-icon name="${document.documentElement.classList.contains("wa-dark") ? "sun" : "moon"}" label="${document.documentElement.classList.contains("wa-dark") ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
-            <wa-button size="s" variant="brand" id="login-btn">Login</wa-button>
+            <wa-button id="theme-toggle" size="s" variant="neutral" appearance="plain" pill><wa-icon name="${isDark ? "sun" : "moon"}" label="${isDark ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
+            <wa-button size="s" variant="brand" href="/login" data-link>Login</wa-button>
           `
         }
       </div>
   `;
 
-  // Avatar dropdown menu
   const dropdown = container.querySelector("wa-dropdown");
   if (dropdown) {
     dropdown.addEventListener("wa-select", async (e) => {
@@ -95,7 +93,6 @@ export function renderNavBar(container, user) {
     });
   }
 
-  // Theme toggle (logged-out state)
   if (!user) {
     container.querySelector("#theme-toggle")?.addEventListener("click", () => {
       const icon = container.querySelector("#theme-toggle wa-icon");
@@ -103,7 +100,4 @@ export function renderNavBar(container, user) {
       if (icon) icon.label = icon.name === "moon" ? "Dark Mode" : "Light Mode";
     });
   }
-
-  // Navigation ([data-link] elements are handled by a global delegate in app.js)
-  container.querySelector("#login-btn")?.addEventListener("click", () => navigate("/login"));
 }

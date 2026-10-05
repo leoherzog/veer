@@ -2,9 +2,12 @@ import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, shortUrl, emptyState, statCard, renderTable } from "../lib/ui.js";
+import { fetchJSON } from "../lib/stats-common.js";
 
 export async function renderCampaignDetail(container, { id }) {
-  container.innerHTML = SPINNER;
+  // A refresh keeps the current markup until the new data lands, so adding or
+  // removing a link neither flashes the spinner nor resets the scroll position.
+  if (!container.childElementCount) container.innerHTML = SPINNER;
 
   const campResult = await apiFetch(`/api/campaigns/${id}`);
   if (!campResult) return;
@@ -13,30 +16,23 @@ export async function renderCampaignDetail(container, { id }) {
 
   // Aggregate stats cover a 30-day window, unlike the lifetime per-link totals
   // below. Best-effort — no toast on failure.
-  let recentClicks = 0;
-  try {
-    const statsRes = await fetch(`/api/campaigns/${id}/stats`);
-    if (statsRes.ok) {
-      const statsResult = await statsRes.json();
-      recentClicks = statsResult?.data?.totalClicks || 0;
-    }
-  } catch { /* stats are best-effort */ }
+  const recentClicks = await fetchJSON(`/api/campaigns/${id}/stats`).then((r) => r.data?.totalClicks ?? 0, () => 0);
 
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
         <div class="wa-cluster wa-gap-s wa-align-items-center">
-          <wa-button variant="neutral" appearance="plain" pill id="back-btn" aria-label="Back to campaigns">
+          <wa-button variant="neutral" appearance="plain" pill href="/campaigns" data-link aria-label="Back to campaigns">
             <wa-icon name="arrow-left"></wa-icon>
           </wa-button>
-          <h1 id="campaign-name">${escapeHtml(campaign.name)}</h1>
+          <h1>${escapeHtml(campaign.name)}</h1>
         </div>
         <div class="wa-cluster wa-gap-xs">
-          <wa-button variant="neutral" id="edit-campaign-btn" data-dialog="open edit-campaign-dialog">
+          <wa-button variant="neutral" data-dialog="open edit-campaign-dialog">
             <wa-icon slot="start" name="pen-to-square"></wa-icon>
             Edit
           </wa-button>
-          <wa-button variant="danger" appearance="outlined" id="delete-campaign-btn">
+          <wa-button variant="danger" appearance="outlined" data-dialog="open delete-campaign-dialog">
             <wa-icon slot="start" name="trash"></wa-icon>
             Delete
           </wa-button>
@@ -46,7 +42,7 @@ export async function renderCampaignDetail(container, { id }) {
       ${campaign.description ? `<p class="wa-color-text-quiet">${escapeHtml(campaign.description)}</p>` : ""}
 
       <div class="wa-grid wa-gap-m">
-        ${statCard("Links", `<wa-format-number id="campaign-link-count" value="${campaignLinks.length}"></wa-format-number>`)}
+        ${statCard("Links", `<wa-format-number value="${campaignLinks.length}"></wa-format-number>`)}
         ${statCard("Clicks (30 days)", `<wa-format-number value="${recentClicks}"></wa-format-number>`)}
       </div>
 
@@ -83,10 +79,6 @@ export async function renderCampaignDetail(container, { id }) {
 
   renderCampaignLinks(container.querySelector("#campaign-links-list"), campaignLinks, id, container);
 
-  // Back button
-  container.querySelector("#back-btn").addEventListener("click", () => navigate("/campaigns"));
-
-  // Edit submit
   const saveBtn = container.querySelector("#save-campaign-btn");
   container.querySelector("#edit-campaign-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -105,10 +97,8 @@ export async function renderCampaignDetail(container, { id }) {
     });
   });
 
-  // Delete campaign
   bindConfirmDialog({
     dialog: container.querySelector("#delete-campaign-dialog"),
-    trigger: container.querySelector("#delete-campaign-btn"),
     confirmBtn: container.querySelector("#confirm-delete-campaign"),
     onConfirm: async () => {
       const res = await apiFetch(`/api/campaigns/${id}`, { method: "DELETE" });
@@ -118,7 +108,6 @@ export async function renderCampaignDetail(container, { id }) {
     },
   });
 
-  // Add links dialog
   const dialog = container.querySelector("#add-links-dialog");
   container.querySelector("#add-links-btn").addEventListener("click", async () => {
     dialog.open = true;
@@ -140,11 +129,11 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
         <td>
           <div class="wa-cluster wa-gap-2xs">
             <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
-            <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
+            <wa-copy-button value="${escapeAttr(shortUrl(link))}" class="wa-font-size-s"></wa-copy-button>
           </div>
         </td>
         <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
-        <td>${link.totalClicks || 0}</td>
+        <td>${link.totalClicks}</td>
         <td>
           <wa-button size="s" variant="danger" appearance="plain" pill class="remove-link-btn" data-link-id="${escapeAttr(link.id)}" aria-label="Remove from campaign">
             <wa-icon name="xmark"></wa-icon>
@@ -163,11 +152,7 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
         const res = await apiFetch(`/api/campaigns/${campaignId}/links/${linkId}`, { method: "DELETE" });
         if (!res) return;
         showToast("Link removed from campaign", "success");
-        const idx = links.findIndex(l => l.id === linkId);
-        if (idx !== -1) links.splice(idx, 1);
-        renderCampaignLinks(container, links, campaignId, rootContainer);
-        const countEl = rootContainer.querySelector("#campaign-link-count");
-        if (countEl) countEl.value = links.length;
+        renderCampaignDetail(rootContainer, { id: campaignId });
       });
     });
   });
@@ -190,19 +175,15 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
     return;
   }
 
-  container.innerHTML = `
-    <div class="wa-stack wa-gap-s">
-      ${available.map(link => `
-        <div class="wa-split available-link-row">
-          <div class="wa-stack wa-gap-2xs">
-            <strong>${escapeHtml(link.slug)}</strong>
-            <span class="text-truncate wa-text-truncate wa-body-s wa-color-text-quiet">${escapeHtml(link.destinationUrl)}</span>
-          </div>
-          <wa-button size="s" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
-        </div>
-      `).join("")}
+  container.innerHTML = available.map(link => `
+    <div class="wa-split">
+      <div class="wa-stack wa-gap-2xs">
+        <strong>${escapeHtml(link.slug)}</strong>
+        <span class="text-truncate wa-text-truncate wa-body-s wa-color-text-quiet">${escapeHtml(link.destinationUrl)}</span>
+      </div>
+      <wa-button size="s" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
     </div>
-  `;
+  `).join("");
 
   container.querySelectorAll(".add-link-to-campaign-btn").forEach(btn => {
     btn.addEventListener("click", async () => {
@@ -215,17 +196,8 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
         });
         if (!res) return;
         showToast("Link added to campaign", "success");
-        btn.closest(".available-link-row").remove();
-        // Mutate local state and re-render links section
-        const addedLink = available.find(l => l.id === linkId);
-        if (addedLink) existingLinks.push(addedLink);
-        const linksContainer = rootContainer.querySelector("#campaign-links-list");
-        if (linksContainer) renderCampaignLinks(linksContainer, existingLinks, campaignId, rootContainer);
-        const countEl = rootContainer.querySelector("#campaign-link-count");
-        if (countEl) countEl.value = existingLinks.length;
-        // Close dialog
-        const dlg = rootContainer.querySelector("#add-links-dialog");
-        if (dlg) dlg.open = false;
+        rootContainer.querySelector("#add-links-dialog").open = false;
+        renderCampaignDetail(rootContainer, { id: campaignId });
       });
     });
   });

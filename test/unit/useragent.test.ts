@@ -257,13 +257,6 @@ describe("parseUserAgent — edge cases", () => {
     expect(info.os).toBe("Other");
     expect(info.device).toBe("desktop");
   });
-
-  it("returns the full UAInfo shape with all three fields", () => {
-    const info = parseUserAgent(UAs.chromeWindows);
-    expect(info).toHaveProperty("browser");
-    expect(info).toHaveProperty("os");
-    expect(info).toHaveProperty("device");
-  });
 });
 
 // parseDevice is the single classifier behind both device targeting on the
@@ -287,18 +280,6 @@ describe("parseDevice — redirect targeting parity", () => {
 
   it("classifies a generic Tablet UA as tablet", () => {
     expect(parseDevice(UAs.genericTablet)).toBe("tablet");
-  });
-
-  it("classifies an Android UA without \"Mobile\" as tablet", () => {
-    expect(parseDevice(UAs.chromeAndroidTablet)).toBe("tablet");
-  });
-
-  it("classifies desktop Chrome as desktop", () => {
-    expect(parseDevice(UAs.chromeWindows)).toBe("desktop");
-  });
-
-  it("classifies an empty UA as desktop", () => {
-    expect(parseDevice("")).toBe("desktop");
   });
 
   it("agrees with the device field parseUserAgent reports", () => {

@@ -27,28 +27,24 @@ export function statCard(label, value) {
 
 /**
  * Render a `.link-table` scaffold. `columns` entries are either a plain string
- * or `{ label, sortKey, html }`, where `html` carries a trusted fragment (sort
- * indicators). `rows` are pre-rendered `<tr>` strings.
+ * or `{ sortKey, html }`, where `html` is a trusted header fragment. `rows` are
+ * pre-rendered `<tr>` strings.
  */
-export function renderTable({ label, columns, rows, tbodyId = "", style = "" }) {
+export function renderTable({ label, columns, rows }) {
   const headCells = columns.map((c) => {
     if (typeof c === "string") return `<th class="wa-color-text-quiet">${escapeHtml(c)}</th>`;
     const sortAttr = c.sortKey ? ` data-sort="${escapeAttr(c.sortKey)}"` : "";
-    return `<th class="wa-color-text-quiet"${sortAttr}>${escapeHtml(c.label ?? "")}${c.html ?? ""}</th>`;
+    return `<th class="wa-color-text-quiet"${sortAttr}>${c.html}</th>`;
   }).join("");
-  return `<table class="link-table" aria-label="${escapeAttr(label)}"${style ? ` style="${escapeAttr(style)}"` : ""}>
+  return `<table class="link-table" aria-label="${escapeAttr(label)}">
       <thead><tr>${headCells}</tr></thead>
-      <tbody${tbodyId ? ` id="${escapeAttr(tbodyId)}"` : ""}>${rows.join("")}</tbody>
+      <tbody>${rows.join("")}</tbody>
     </table>`;
 }
 
 /**
- * Construct short URL from link object.
- *
- * The slug is percent-encoded so the result is safe as an href, a copy target
- * and QR payload. Slugs are stored lowercased and NFC-normalized by the API, so
- * this needs no normalization of its own; plain ASCII slugs pass through
- * unchanged and only emoji/Unicode ones show escapes.
+ * Short URL for a link, slug percent-encoded so it is safe as an href, copy
+ * target and QR payload. The API returns slugs already normalized.
  */
 export function shortUrl(link) {
   const slug = encodeURIComponent(link.slug ?? "");
@@ -58,34 +54,37 @@ export function shortUrl(link) {
 }
 
 /**
- * Fetch wrapper with 401 redirect and error toast.
+ * Fetch wrapper with 401 redirect and error toast. Never rejects.
  * Returns the parsed JSON body on success, `{}` for a 2xx with no body, or
- * null on failure. Callers destructure the result (e.g. { data }, { data, pagination }).
+ * null on an HTTP, network or parse failure. Callers destructure the result
+ * (e.g. { data }, { data, pagination }).
  */
 export async function apiFetch(url, opts = {}) {
-  const res = await fetch(url, opts);
-  if (res.status === 401) {
-    window.location.href = "/login";
+  try {
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
+      window.location.href = "/login";
+      return null;
+    }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      const variant = err.demoMode ? "warning" : "danger";
+      showToast(err.error || err.message || "Request failed", variant);
+      return null;
+    }
+    // A 204 or an empty 200 body still counts as success, so callers can keep
+    // testing the result for truthiness.
+    if (res.status === 204) return {};
+    const text = await res.text();
+    if (!text.trim()) return {};
+    return JSON.parse(text);
+  } catch {
+    showToast("Request failed", "danger");
     return null;
   }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    const variant = err.demoMode ? "warning" : "danger";
-    showToast(err.error || err.message || "Request failed", variant);
-    return null;
-  }
-  // A 204 or an empty 200 body still counts as success, so callers can keep
-  // testing the result for truthiness.
-  if (res.status === 204) return {};
-  const text = await res.text();
-  if (!text.trim()) return {};
-  return JSON.parse(text);
 }
 
-/**
- * Wrap async handler with button loading/disabled guard.
- * Does NOT catch errors — callers are responsible for their own error handling.
- */
+/** Show a loading/disabled state on `btn` while `fn` runs. Errors propagate to the caller. */
 export async function withLoadingBtn(btn, fn) {
   btn.loading = true;
   btn.disabled = true;
@@ -98,13 +97,12 @@ export async function withLoadingBtn(btn, fn) {
 }
 
 /**
- * Wire a confirmation dialog. An optional `trigger` opens the dialog on click;
- * the `confirmBtn` runs `onConfirm` inside withLoadingBtn and closes the dialog
- * once it resolves (return `false` to keep it open, e.g. on failure).
- * `onConfirm` owns its own success toast and any navigation/reload.
+ * Wire a confirmation dialog. `confirmBtn` runs `onConfirm` inside
+ * withLoadingBtn and closes the dialog once it resolves (return `false` to keep
+ * it open, e.g. on failure). `onConfirm` owns its own success toast and any
+ * navigation/reload.
  */
-export function bindConfirmDialog({ dialog, trigger, confirmBtn, onConfirm }) {
-  if (trigger) trigger.addEventListener("click", () => { dialog.open = true; });
+export function bindConfirmDialog({ dialog, confirmBtn, onConfirm }) {
   confirmBtn.addEventListener("click", () => withLoadingBtn(confirmBtn, async () => {
     const ok = await onConfirm();
     if (ok !== false) dialog.open = false;
@@ -127,7 +125,6 @@ export function renderPagination(container, { page, total, limit, onPageChange }
   pager.pageSize = limit;
   pager.page = page;
   pager.format = "compact";
-  pager.label = "Pagination";
   pager.addEventListener("wa-page-change", (e) => onPageChange(e.detail.page));
   row.append(pager);
   container.append(row);
@@ -139,24 +136,14 @@ export function renderPagination(container, { page, total, limit, onPageChange }
  * null when nothing was rendered.
  */
 export async function loadTableSection(el, { url, label, headers, renderRow, empty, error, onPageChange }) {
-  el.innerHTML = `<div class="wa-stack wa-align-items-center"><wa-spinner></wa-spinner></div>`;
-  try {
-    const result = await apiFetch(url);
-    if (!result) { el.innerHTML = errorCallout(error); return null; }
-    const { data, pagination } = result;
-    if (!data.length) { el.innerHTML = `<p class="wa-color-text-quiet">${escapeHtml(empty)}</p>`; return null; }
-    el.innerHTML = renderTable({ label, columns: headers, rows: data.map((row) => renderRow(row)) });
-    renderPagination(el, {
-      page: Number(pagination.page),
-      total: Number(pagination.total),
-      limit: Number(pagination.limit),
-      onPageChange,
-    });
-    return el;
-  } catch {
-    el.innerHTML = errorCallout(error);
-    return null;
-  }
+  el.innerHTML = SPINNER;
+  const result = await apiFetch(url);
+  if (!result) { el.innerHTML = errorCallout(error); return null; }
+  const { data, pagination } = result;
+  if (!data.length) { el.innerHTML = `<p class="wa-color-text-quiet">${escapeHtml(empty)}</p>`; return null; }
+  el.innerHTML = renderTable({ label, columns: headers, rows: data.map((row) => renderRow(row)) });
+  renderPagination(el, { ...pagination, onPageChange });
+  return el;
 }
 
 /**
@@ -175,15 +162,11 @@ export function setTeamOptions(select, teams, { prefix = "", selected = "" } = {
     }).join(""));
 }
 
-/** Debounced search input with wa-clear support. */
+/** Debounced search input. */
 export function bindSearchInput(input, onSearch) {
   let timer;
   input.addEventListener("input", (e) => {
     clearTimeout(timer);
     timer = setTimeout(() => onSearch(e.target.value), 300);
-  });
-  input.addEventListener("wa-clear", () => {
-    clearTimeout(timer);
-    onSearch("");
   });
 }

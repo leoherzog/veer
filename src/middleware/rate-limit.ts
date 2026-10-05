@@ -1,3 +1,9 @@
+/**
+ * Fixed-window rate limits backed by KV counters. KV has no atomic increment,
+ * so concurrent requests can read the same count and all pass: every limit here
+ * is advisory. The Workers Rate Limiting binding is also permissive and counts
+ * per Cloudflare location, so it would not make them strict either.
+ */
 import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../types";
 
@@ -11,43 +17,38 @@ export interface RateLimitState {
   secondsRemaining: number;
   /** Current counter value (0 when the key is unset). */
   count: number;
-  /** Raw stored value, or null when the key is unset (used to gate TTL on first write). */
-  stored: string | null;
+  /** Writes the incremented counter. Pass it to `waitUntil` or await it. */
+  hit: () => Promise<void>;
 }
 
 /**
- * Standalone advisory rate-limit check for non-middleware callers. Reads the
- * counter, parses it, and reports whether the limit is exceeded plus the
- * seconds left in the window. Callers own their own responses and increments
- * (typically a non-blocking `waitUntil(kv.put(...))`).
- *
- * NOTE: KV does not support atomic increment. Under high concurrency,
- * concurrent requests may read the same counter value and all pass through.
- * This makes the limit advisory, not strict. For strict enforcement,
- * use Cloudflare's native Rate Limiting API binding instead.
+ * Reads the counter for `{prefix}:{windowEpoch}` and reports whether the limit
+ * is reached. The caller sends its own 429 and records the attempt with `hit()`.
  */
 export async function checkRateLimit(
   kv: KVNamespace,
-  key: string,
+  prefix: string,
   limit: number,
   windowSecs: number,
 ): Promise<RateLimitState> {
+  const now = Math.floor(Date.now() / 1000);
+  const key = `${prefix}:${Math.floor(now / windowSecs)}`;
   const stored = await kv.get(key);
   // A corrupted counter must not disable the limit for the rest of the window.
   const parsed = stored ? parseInt(stored, 10) : 0;
   const count = Number.isFinite(parsed) ? parsed : 0;
-  const secondsRemaining = windowSecs - (Math.floor(Date.now() / 1000) % windowSecs);
-  return { exceeded: count >= limit, secondsRemaining, count, stored };
+  return {
+    exceeded: count >= limit,
+    secondsRemaining: windowSecs - (now % windowSecs),
+    count,
+    // A put without expirationTtl clears the key's expiry, so every write sets it.
+    hit: () => kv.put(key, String(count + 1), { expirationTtl: windowSecs * 2 }),
+  };
 }
 
-/** Counter read by `rateLimitApiKeyCheck` and applied by `rateLimitApiKeyIncrement`. */
-export interface ApiKeyRateLimitState {
-  /** KV key holding the counter for this key and window. */
-  kvKey: string;
-  /** Counter value read before the request ran. */
-  count: number;
-  /** Raw stored value, or null when the key is unset (used to gate TTL on first write). */
-  stored: string | null;
+/** Password guesses per link and IP on the `POST /:slug` gate. */
+export function checkPasswordRateLimit(kv: KVNamespace, linkId: string, ip: string): Promise<RateLimitState> {
+  return checkRateLimit(kv, `rl:pw:${linkId}:${ip}`, 5, 900);
 }
 
 /**
@@ -57,37 +58,22 @@ export interface ApiKeyRateLimitState {
  */
 export const rateLimitApiKeyCheck = createMiddleware<AppEnv>(async (c, next) => {
   const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) return next();
 
-  // Only rate-limit API key requests (Bearer token auth)
-  if (!authHeader?.startsWith("Bearer ")) {
-    await next();
-    return;
-  }
-
-  // Use first 16 chars of the bearer token as a stable identifier
-  const tokenPrefix = authHeader.slice(7, 23);
-  const windowEpoch = Math.floor(Date.now() / 1000 / WINDOW_SECONDS);
-  const kvKey = `rl:${tokenPrefix}:${windowEpoch}`;
-
-  const { exceeded, secondsRemaining, count, stored } = await checkRateLimit(
-    c.env.KV,
-    kvKey,
-    RATE_LIMIT,
-    WINDOW_SECONDS,
-  );
-
-  if (exceeded) {
-    c.header("Retry-After", String(secondsRemaining));
+  // The first 16 characters of the token identify the key without storing it.
+  const rl = await checkRateLimit(c.env.KV, `rl:${authHeader.slice(7, 23)}`, RATE_LIMIT, WINDOW_SECONDS);
+  if (rl.exceeded) {
+    c.header("Retry-After", String(rl.secondsRemaining));
     c.header("X-RateLimit-Limit", String(RATE_LIMIT));
     c.header("X-RateLimit-Remaining", "0");
-    return c.json({ error: "Rate limit exceeded", retryAfter: secondsRemaining }, 429);
+    return c.json({ error: "Rate limit exceeded", retryAfter: rl.secondsRemaining }, 429);
   }
 
-  c.set("apiKeyRateLimit", { kvKey, count, stored });
+  c.set("apiKeyRateLimitHit", rl.hit);
 
-  // Set headers before next() so they appear even on error responses
+  // Set before next() so the headers survive error responses too.
   c.header("X-RateLimit-Limit", String(RATE_LIMIT));
-  c.header("X-RateLimit-Remaining", String(RATE_LIMIT - (count + 1)));
+  c.header("X-RateLimit-Remaining", String(RATE_LIMIT - (rl.count + 1)));
 
   return next();
 });
@@ -97,14 +83,6 @@ export const rateLimitApiKeyCheck = createMiddleware<AppEnv>(async (c, next) => 
  * `requireAuthOrApiKey` so a rejected key never spends a KV write.
  */
 export const rateLimitApiKeyIncrement = createMiddleware<AppEnv>(async (c, next) => {
-  const state = c.var.apiKeyRateLimit;
-  if (state) {
-    // Only set TTL on first write — subsequent writes preserve the window.
-    await c.env.KV.put(
-      state.kvKey,
-      String(state.count + 1),
-      state.stored === null ? { expirationTtl: WINDOW_SECONDS * 2 } : {},
-    );
-  }
+  await c.var.apiKeyRateLimitHit?.();
   return next();
 });

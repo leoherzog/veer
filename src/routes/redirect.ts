@@ -1,21 +1,18 @@
 import type { Context, Next } from "hono";
 import type { AppEnv } from "../types";
-import { getDb } from "../db";
-import { links, linkStats, linkTargets, domainConfig } from "../db/schema";
-import { eq, and, sql } from "drizzle-orm";
-import { getCachedRedirect, setCachedRedirect, toCachedRedirect } from "../services/kv-cache";
-import { writeClickEvent, upsertDailyStats } from "../services/analytics";
+import { getDb, type Database } from "../db";
+import { links, domainConfig } from "../db/schema";
+import { eq, and, isNull } from "drizzle-orm";
+import { getCachedRedirect, setCachedRedirect, loadCachedRedirect, type CachedRedirect } from "../services/kv-cache";
+import { writeClickEvent, upsertDailyStats, requestVisitor, sumClicks } from "../services/analytics";
 import { verifyPassword } from "../services/password";
 import { getAuth } from "../auth";
 import { getInstanceName } from "../lib/branding";
 import { normalizeSlug, RESERVED_SLUGS } from "../services/slug";
 import { parseDevice } from "../services/useragent";
-import { checkRateLimit } from "../middleware/rate-limit";
+import { checkPasswordRateLimit } from "../middleware/rate-limit";
 import { PASSWORD_GATE_CSP } from "../lib/csp";
-
-/** Password attempts allowed per IP per link, matching /api/links/:id/check-password. */
-const PW_ATTEMPT_LIMIT = 5;
-const PW_ATTEMPT_WINDOW_SECONDS = 900;
+import { getPrimaryHostname, isHttpUrl } from "../lib/validators";
 
 /** Render a minimal self-contained HTML page. */
 function htmlPage(title: string, bodyHtml: string, instanceName: string): string {
@@ -64,28 +61,24 @@ ${errorHtml}
     headers: {
       "Content-Type": "text/html;charset=utf-8",
       // Overrides the global policy, whose form-action would block the 302 a
-      // correct password returns. See src/lib/csp.ts.
+      // correct password returns.
       "Content-Security-Policy": PASSWORD_GATE_CSP,
     },
   });
 }
 
-function gonePage(message: string, instanceName: string): Response {
+/** A branded page carrying one message: the 410 for an unavailable link, the 403 for an internal one. */
+function messagePage(title: string, message: string, status: 403 | 410, instanceName: string): Response {
   const body = `
 <div class="brand">${escapeHtml(instanceName)}</div>
 <p class="message">${escapeHtml(message)}</p>`;
-  return new Response(htmlPage("Link Unavailable", body, instanceName), {
-    status: 410,
+  return new Response(htmlPage(title, body, instanceName), {
+    status,
     headers: { "Content-Type": "text/html;charset=utf-8" },
   });
 }
 
 const BOT_UA_PATTERN = /facebookexternalhit|Twitterbot|LinkedInBot|Discordbot|Slackbot|WhatsApp|Telegram|Googlebot|bingbot|Applebot/i;
-
-function isBotRequest(c: Context<AppEnv, "/:slug">): boolean {
-  const ua = c.req.header("user-agent") ?? "";
-  return BOT_UA_PATTERN.test(ua);
-}
 
 /**
  * Crawler preview page. `dest` is null for password-protected links: the meta
@@ -115,72 +108,36 @@ ${tags.join("\n")}
   });
 }
 
-/** Returns true if the URL is an absolute HTTP(S) URL. */
-function isSafeRedirectUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    return parsed.protocol === "http:" || parsed.protocol === "https:";
-  } catch {
-    return false;
-  }
-}
-
 function escapeHtml(s: string): string {
   return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
-function forbiddenPage(instanceName: string): Response {
-  const body = `
-<div class="brand">${escapeHtml(instanceName)}</div>
-<p class="message">This link requires authentication.</p>`;
-  return new Response(htmlPage("Access Denied", body, instanceName), {
-    status: 403,
-    headers: { "Content-Type": "text/html;charset=utf-8" },
-  });
-}
-
-/** Check whether a host is a custom domain (not primary, localhost, or 127.0.0.1). */
-function isCustomDomainHost(host: string, primaryUrl: string): boolean {
-  const primaryHost = new URL(primaryUrl).hostname;
-  return host !== primaryHost && host !== "localhost" && host !== "127.0.0.1";
-}
-
-/** Determine if the request is for a custom domain vs the primary domain. */
-function resolveHostInfo(c: Context<AppEnv, "/:slug">) {
+/** The request's host, and whether it is a custom domain rather than the primary host or a local one. */
+function requestHost<P extends string>(c: Context<AppEnv, P>) {
   const host = c.req.header("host")?.split(":")[0]?.toLowerCase() || "";
-  const isCustomDomain = isCustomDomainHost(host, c.env.BETTER_AUTH_URL);
+  const isCustomDomain = host !== getPrimaryHostname(c.env.BETTER_AUTH_URL) && host !== "localhost" && host !== "127.0.0.1";
   return { host, isCustomDomain };
 }
 
+/** Look up a slug on one host: custom-domain links carry the hostname, primary-host links NULL. */
+function findLink(db: Database, slug: string, hostname: string | null) {
+  return db.select().from(links)
+    .where(and(eq(links.slug, slug), hostname ? eq(links.domainHostname, hostname) : isNull(links.domainHostname)))
+    .get();
+}
+
 /** Resolve a slug to cached redirect data, populating KV on miss. */
-async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname?: string | null) {
+async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname: string | null) {
   let cached = await getCachedRedirect(c.env.KV, slug, hostname);
 
   if (cached && !cached.isActive) return null;
 
   if (!cached) {
     const db = getDb(c.env.DB);
-
-    // Scope slug lookup by domain: custom domain links have domainHostname set,
-    // default domain links have domainHostname NULL
-    const whereClause = hostname
-      ? and(eq(links.slug, slug), eq(links.domainHostname, hostname))
-      : and(eq(links.slug, slug), sql`${links.domainHostname} IS NULL`);
-
-    const link = await db.select().from(links).where(whereClause).get();
-
+    const link = await findLink(db, slug, hostname);
     if (!link || !link.isActive) return null;
 
-    // Fetch targeting rules for this link
-    const targets = await db.select().from(linkTargets)
-      .where(eq(linkTargets.linkId, link.id));
-
-    cached = toCachedRedirect(link, targets.length > 0 ? targets.map(t => ({
-      type: t.type as "geo" | "device" | "ab",
-      matchValue: t.matchValue,
-      destinationUrl: t.destinationUrl,
-      priority: t.priority,
-    })) : null);
+    cached = await loadCachedRedirect(db, link);
 
     c.executionCtx.waitUntil(
       setCachedRedirect(c.env.KV, slug, cached, hostname)
@@ -191,50 +148,36 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname?
 }
 
 /** Check expiration, max clicks, and internal-only constraints. Returns a Response if blocked, null if OK. */
-async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: NonNullable<Awaited<ReturnType<typeof resolveSlug>>>) {
+async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: CachedRedirect) {
   const instanceName = getInstanceName(c.env);
 
-  // Expiration check
   if (resolved.expiresAt && Date.now() > resolved.expiresAt * 1000) {
-    return gonePage("This link has expired.", instanceName);
+    return messagePage("Link Unavailable", "This link has expired.", 410, instanceName);
   }
 
-  // Internal link check
   if (resolved.isInternal) {
+    let signedIn = false;
     try {
-      const auth = getAuth(c.env);
-      const session = await auth.api.getSession({ headers: c.req.raw.headers });
-      if (!session) return forbiddenPage(instanceName);
-    } catch {
-      return forbiddenPage(instanceName);
-    }
+      signedIn = !!(await getAuth(c.env).api.getSession({ headers: c.req.raw.headers }));
+    } catch { /* an auth error counts as signed out */ }
+    if (!signedIn) return messagePage("Access Denied", "This link requires authentication.", 403, instanceName);
   }
 
-  // Max clicks check (soft cap: concurrent requests may slightly exceed maxClicks
-  // since the check and increment are not atomic across D1 tables)
-  if (resolved.maxClicks != null) {
-    const db = getDb(c.env.DB);
-    const statsResult = await db
-      .select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
-      .from(linkStats)
-      .where(eq(linkStats.linkId, resolved.linkId));
-    const total = statsResult[0]?.totalClicks ?? 0;
-    if (total >= resolved.maxClicks) {
-      return gonePage("This link is no longer available.", instanceName);
-    }
+  // Soft cap: this read and the deferred click upsert are not atomic, so
+  // concurrent requests can each pass.
+  if (resolved.maxClicks != null && await sumClicks(getDb(c.env.DB), resolved.linkId) >= resolved.maxClicks) {
+    return messagePage("Link Unavailable", "This link is no longer available.", 410, instanceName);
   }
 
   return null;
 }
 
 /** Evaluate targeting rules and param forwarding, returning the final destination URL. */
-function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<Awaited<ReturnType<typeof resolveSlug>>>): string {
+function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: CachedRedirect): string {
   let destinationUrl = resolved.url;
 
-  // Evaluate targeting rules (higher priority first, first match wins)
   if (resolved.targets?.length) {
-    const cf = (c.req.raw as Request & { cf?: IncomingRequestCfProperties }).cf;
-    const country = (cf?.country as string) || "";
+    const country = (c.req.raw.cf?.country as string) || "";
     const ua = c.req.header("user-agent") || "";
     const device = parseDevice(ua);
 
@@ -250,20 +193,15 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
       }
     }
 
-    // A/B testing: weighted random selection among "ab" variants + default
     if (destinationUrl === resolved.url) {
       const abTargets = resolved.targets.filter(t => t.type === "ab");
       if (abTargets.length > 0) {
         const weights = abTargets.map(t => Math.max(1, Math.min(99, parseInt(t.matchValue) || 0)));
         const totalWeight = weights.reduce((s, w) => s + w, 0);
-        // Weights are validated to sum to < 100; the remainder goes to the
-        // default destination. Math.max(1, …) floors the default share so it
-        // stays selectable even if malformed data pushes the sum to >= 100.
+        // Variants fill [0, totalWeight); the default takes the remainder,
+        // floored at 1 so it stays selectable even if stored weights reach 100.
         const defaultWeight = Math.max(1, 100 - totalWeight);
         const roll = Math.random() * (defaultWeight + totalWeight);
-        // Variants occupy [0, totalWeight); the default is the fall-through
-        // tail [totalWeight, totalWeight + defaultWeight), so destinationUrl
-        // stays resolved.url when no variant bucket matches.
         let cumulative = 0;
         for (let i = 0; i < abTargets.length; i++) {
           cumulative += weights[i];
@@ -276,7 +214,6 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
     }
   }
 
-  // Param forwarding: append incoming params not already in the destination
   if (resolved.paramForwarding) {
     const incomingUrl = new URL(c.req.url);
     if (incomingUrl.search) {
@@ -296,16 +233,8 @@ function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: NonNullable<
 
 /** Fire analytics (sync) and upsert the permanent daily aggregate (background). */
 function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, destinationUrl: string) {
-  if (c.env.ANALYTICS) {
-    writeClickEvent(c.env.ANALYTICS, {
-      linkId,
-      slug,
-      destinationUrl,
-      request: c.req.raw,
-    });
-  }
-  const today = new Date().toISOString().slice(0, 10);
-  c.executionCtx.waitUntil(upsertDailyStats(getDb(c.env.DB), linkId, today, 1));
+  writeClickEvent(c.env.ANALYTICS, { linkId, slug, destinationUrl, ...requestVisitor(c.req.raw) });
+  c.executionCtx.waitUntil(upsertDailyStats(getDb(c.env.DB), linkId, 1));
 }
 
 /**
@@ -321,10 +250,10 @@ function redirectResponse<P extends string>(c: Context<AppEnv, P>, url: string, 
 
 export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
   // Slugs are stored normalized, so the incoming one is normalized too:
-  // /Blah and /blah resolve to the same link. See services/slug.ts.
+  // /Blah and /blah resolve to the same link.
   const slug = normalizeSlug(c.req.param("slug"));
   if (!slug) return next();
-  const { host, isCustomDomain } = resolveHostInfo(c);
+  const { host, isCustomDomain } = requestHost(c);
   // Reserved slugs can never be links (validateSlug rejects them), so skip the
   // lookup. On the primary host they fall through to the SPA or a static file;
   // on a custom domain they take the same notFoundRedirect as any unknown slug.
@@ -334,30 +263,27 @@ export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
   const resolved = reserved ? null : await resolveSlug(c, slug, isCustomDomain ? host : null);
 
   if (!resolved) {
-    // Custom domain: check notFoundRedirect before falling through
     if (isCustomDomain) {
       const domain = await getDb(c.env.DB).select().from(domainConfig)
         .where(eq(domainConfig.hostname, host))
         .get();
-      if (domain?.notFoundRedirect && isSafeRedirectUrl(domain.notFoundRedirect)) {
+      if (domain?.notFoundRedirect && isHttpUrl(domain.notFoundRedirect)) {
         return redirectResponse(c, domain.notFoundRedirect, 302);
       }
     }
     return next();
   }
 
-  // Check constraints (expiration, internal, max clicks)
   const blocked = await checkConstraints(c, resolved);
   if (blocked) return blocked;
 
-  // Bot/OG check BEFORE password gate — bots should see OG meta tags even for protected links
+  // Bot/OG check runs before the password gate so crawlers get previews of protected links.
   const hasOg = resolved.ogTitle || resolved.ogDescription || resolved.ogImage;
-  if (hasOg && isBotRequest(c)) {
+  if (hasOg && BOT_UA_PATTERN.test(c.req.header("user-agent") ?? "")) {
     const shortUrl = new URL(`/${slug}`, c.req.url).href;
     return ogMetaPage(resolved.hasPassword ? null : resolveDestination(c, resolved), resolved, shortUrl);
   }
 
-  // Password gate — serve the form on GET
   if (resolved.hasPassword) {
     return passwordGatePage(slug, getInstanceName(c.env));
   }
@@ -376,39 +302,23 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   const slug = normalizeSlug(c.req.param("slug"));
   if (!slug) return next();
   if (RESERVED_SLUGS.has(slug)) return next();
-  const { host, isCustomDomain } = resolveHostInfo(c);
+  const { host, isCustomDomain } = requestHost(c);
 
-  const hostname = isCustomDomain ? host : null;
-
-  // Query D1 directly — no need to go through KV cache on the POST path
+  // D1, not KV: the cache holds no password hash.
   const db = getDb(c.env.DB);
-  const whereClause = hostname
-    ? and(eq(links.slug, slug), eq(links.domainHostname, hostname))
-    : and(eq(links.slug, slug), sql`${links.domainHostname} IS NULL`);
-  const link = await db.select().from(links).where(whereClause).get();
+  const link = await findLink(db, slug, isCustomDomain ? host : null);
 
   if (!link || !link.isActive) return next();
 
-  // POST is only for password-protected links
   if (!link.password) {
     return c.text("Method Not Allowed", 405);
   }
 
-  // Build resolved shape for checkConstraints and resolveDestination
-  const targets = await db.select().from(linkTargets)
-    .where(eq(linkTargets.linkId, link.id));
-  const resolved = toCachedRedirect(link, targets.length > 0 ? targets.map(t => ({
-    type: t.type as "geo" | "device" | "ab",
-    matchValue: t.matchValue,
-    destinationUrl: t.destinationUrl,
-    priority: t.priority,
-  })) : null);
+  const resolved = await loadCachedRedirect(db, link);
 
-  // Check constraints before processing password
   const blocked = await checkConstraints(c, resolved);
   if (blocked) return blocked;
 
-  // Parse form body
   const formData = await c.req.parseBody();
   const submittedPassword = typeof formData.password === "string" ? formData.password : "";
 
@@ -418,25 +328,18 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
     return passwordGatePage(slug, instanceName, "Please enter a password.");
   }
 
-  // Brute-force protection: same limit and KV key shape as
-  // POST /api/links/:id/check-password, the other way to guess this password.
   const ip = c.req.header("cf-connecting-ip") || "unknown";
-  const windowEpoch = Math.floor(Date.now() / 1000 / PW_ATTEMPT_WINDOW_SECONDS);
-  const rlKey = `rl:pw:${link.id}:${ip}:${windowEpoch}`;
-  const rl = await checkRateLimit(c.env.KV, rlKey, PW_ATTEMPT_LIMIT, PW_ATTEMPT_WINDOW_SECONDS);
+  const rl = await checkPasswordRateLimit(c.env.KV, link.id, ip);
   if (rl.exceeded) {
     return passwordGatePage(slug, instanceName, "Too many attempts, try again later.", 429);
   }
-  c.executionCtx.waitUntil(
-    c.env.KV.put(rlKey, String(rl.count + 1), rl.stored === null ? { expirationTtl: PW_ATTEMPT_WINDOW_SECONDS * 2 } : {})
-  );
+  c.executionCtx.waitUntil(rl.hit());
 
   const valid = await verifyPassword(submittedPassword, link.password);
   if (!valid) {
     return passwordGatePage(slug, instanceName, "Incorrect password. Please try again.");
   }
 
-  // Password correct — resolve targeting + param forwarding, then track and redirect
   const destinationUrl = resolveDestination(c, resolved);
   trackClick(c, slug, resolved.linkId, destinationUrl);
   return redirectResponse(c, destinationUrl, resolved.redirectType);
@@ -444,22 +347,17 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
 
 /** Handle root path on custom domains (rootRedirect). */
 export async function handleCustomDomainRoot(c: Context<AppEnv, "/">, next: Next) {
-  const host = c.req.header("host")?.split(":")[0]?.toLowerCase() || "";
-  if (!isCustomDomainHost(host, c.env.BETTER_AUTH_URL)) {
-    return next();
-  }
+  const { host, isCustomDomain } = requestHost(c);
+  if (!isCustomDomain) return next();
 
   const db = getDb(c.env.DB);
   const domain = await db.select().from(domainConfig)
     .where(eq(domainConfig.hostname, host))
     .get();
 
-  if (!domain) return next();
-
-  if (domain.rootRedirect && isSafeRedirectUrl(domain.rootRedirect)) {
+  if (domain?.rootRedirect && isHttpUrl(domain.rootRedirect)) {
     return redirectResponse(c, domain.rootRedirect, 302);
   }
 
-  // Custom domain root with no redirect configured — fall through to SPA
   return next();
 }

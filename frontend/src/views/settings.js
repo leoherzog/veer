@@ -1,6 +1,7 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { authClient } from "../auth-client.js";
+import { getLoginOptions } from "../lib/config.js";
 import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable } from "../lib/ui.js";
 
 /* ── API Keys helpers ─────────────────────────────────────────────── */
@@ -33,7 +34,6 @@ function renderKeysList(keys) {
       label: "API keys",
       columns: ["Name", "Prefix", "Created", "Last Used", "Expires", "Actions"],
       rows: keys.map(k => renderKeyRow(k)),
-      tbodyId: "keys-tbody",
     });
 }
 
@@ -52,7 +52,7 @@ function renderApiKeysPanel(keys) {
                 Create
               </wa-button>
             </form>
-            <div id="new-key-callout" style="display:none;"></div>
+            <div id="new-key-callout" hidden></div>
           </div>
         </wa-card>
 
@@ -81,7 +81,6 @@ function bindDeleteKeyButtons(container) {
 
 function bindDeleteKeyDialog(container, reload) {
   const dialog = container.querySelector("#delete-key-dialog");
-  if (!dialog) return;
   bindConfirmDialog({
     dialog,
     confirmBtn: container.querySelector("#confirm-delete-key"),
@@ -139,7 +138,6 @@ function renderPasskeyPanel(passkeys) {
               label: "Passkeys",
               columns: ["Name", "Credential", "Created", "Actions"],
               rows: passkeys.map(pk => renderPasskeyRow(pk)),
-              tbodyId: "passkeys-tbody",
             })
           }
         </wa-card>
@@ -156,8 +154,6 @@ function renderPasskeyPanel(passkeys) {
 
 function bindPasskeyRegister(container, reload) {
   const form = container.querySelector("#register-passkey-form");
-  if (!form) return;
-
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
     const nameInput = form.querySelector("#passkey-name");
@@ -187,8 +183,6 @@ function bindPasskeyRegister(container, reload) {
 
 function bindPasskeyDelete(container, reload) {
   const dialog = container.querySelector("#delete-passkey-dialog");
-  if (!dialog) return;
-
   container.querySelectorAll(".delete-passkey-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
       const nameEl = container.querySelector("#delete-passkey-name");
@@ -252,18 +246,16 @@ function renderEditRow(domain) {
   return `
     <tr class="domain-edit-row">
       <td colspan="5">
-        <form class="wa-stack wa-gap-s edit-domain-form" data-hostname="${escapeAttr(domain.hostname)}">
+        <form class="wa-stack wa-gap-s">
           <div class="wa-cluster wa-gap-s wa-align-items-end">
             <wa-input name="rootRedirect" label="Root Redirect" placeholder="https://example.com" value="${escapeAttr(domain.rootRedirect || "")}" style="flex:1;min-width:200px;"></wa-input>
             <wa-input name="notFoundRedirect" label="404 Redirect" placeholder="https://example.com/404" value="${escapeAttr(domain.notFoundRedirect || "")}" style="flex:1;min-width:200px;"></wa-input>
             <wa-select name="accessMode" label="Access" style="min-width:140px;">
-              <wa-option value="all" ${(domain.accessMode || "all") === "all" ? "selected" : ""}>Everyone</wa-option>
+              <wa-option value="all" ${domain.accessMode === "all" ? "selected" : ""}>Everyone</wa-option>
               <wa-option value="restricted" ${domain.accessMode === "restricted" ? "selected" : ""}>Restricted</wa-option>
             </wa-select>
           </div>
-          <div class="access-emails-section" style="display:${domain.accessMode === "restricted" ? "block" : "none"};">
-            <wa-textarea name="accessEmails" label="Allowed Emails (one per line)" rows="3" placeholder="user@example.com" value="${escapeAttr((domain.accessEmails || []).join("\n")).replace(/\n/g, "&#10;")}"></wa-textarea>
-          </div>
+          <wa-textarea name="accessEmails" label="Allowed Emails (one per line)" rows="3" placeholder="user@example.com" value="${escapeAttr((domain.accessEmails || []).join("\n"))}" ${domain.accessMode === "restricted" ? "" : "hidden"}></wa-textarea>
           <div class="wa-cluster wa-gap-s">
             <wa-button type="submit" variant="brand" size="s">Save</wa-button>
             <wa-button variant="neutral" size="s" class="cancel-edit-btn">Cancel</wa-button>
@@ -274,42 +266,32 @@ function renderEditRow(domain) {
   `;
 }
 
-export async function renderSettings(container, { activeTab = "api-keys" } = {}) {
+export async function renderSettings(container, { activeTab = "api-keys", user }) {
   container.innerHTML = SPINNER;
 
-  const meResult = await apiFetch("/api/me");
-  if (!meResult) return;
-  const { data: user } = meResult;
-
-  const isAdmin = user?.isAdmin ?? false;
+  const { isAdmin } = user;
 
   let domains = [];
   if (isAdmin) {
-    const domainsResult = await apiFetch("/api/domains").catch(() => null);
+    const domainsResult = await apiFetch("/api/domains");
     if (domainsResult?.data) domains = domainsResult.data;
   }
 
-  // Fetch API keys for all users
   let apiKeys = [];
-  const keysResult = await apiFetch("/api/keys").catch(() => null);
+  const keysResult = await apiFetch("/api/keys");
   if (keysResult?.data) apiKeys = keysResult.data;
 
-  // Check if passkeys are enabled and fetch user's passkeys
-  let passkeyEnabled = false;
+  const passkeyEnabled = getLoginOptions()?.passkey === true;
   let passkeys = [];
-  const provResult = await apiFetch("/api/auth/providers").catch(() => null);
-  if (provResult) passkeyEnabled = provResult.passkey === true;
-
   if (passkeyEnabled) {
-    const pkResult = await apiFetch("/api/auth/passkey/list-user-passkeys").catch(() => null);
-    if (pkResult) {
-      passkeys = Array.isArray(pkResult) ? pkResult : (pkResult.data ?? []);
-    }
+    const pkResult = await apiFetch("/api/auth/passkey/list-user-passkeys");
+    passkeys = pkResult ?? [];
   }
 
   // Re-render in place, keeping whichever tab the user is looking at.
   const reload = () => renderSettings(container, {
     activeTab: container.querySelector("#settings-tabs")?.active || activeTab,
+    user,
   });
 
   const tabs = ["api-keys", ...(passkeyEnabled ? ["passkeys"] : []), ...(isAdmin ? ["domains"] : [])];
@@ -340,7 +322,6 @@ export async function renderSettings(container, { activeTab = "api-keys" } = {})
               label: "Custom domains",
               columns: ["Hostname", "Root Redirect", "404 Redirect", "Access", "Actions"],
               rows: domains.map(d => renderDomainRow(d)),
-              tbodyId: "domains-tbody",
             })
           }
         </wa-card>
@@ -369,75 +350,68 @@ export async function renderSettings(container, { activeTab = "api-keys" } = {})
 
   // ── API Keys event handlers ──────────────────────────────────────
   const createKeyForm = container.querySelector("#create-key-form");
-  if (createKeyForm) {
-    createKeyForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const submitBtn = createKeyForm.querySelector('wa-button[type="submit"]');
-      const nameInput = createKeyForm.querySelector("#key-name");
-      const expiresInput = createKeyForm.querySelector("#key-expires");
+  createKeyForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const submitBtn = createKeyForm.querySelector('wa-button[type="submit"]');
+    const nameInput = createKeyForm.querySelector("#key-name");
+    const expiresInput = createKeyForm.querySelector("#key-expires");
 
-      const name = nameInput.value.trim();
+    const name = nameInput.value.trim();
 
-      const body = { name };
-      const expiresVal = expiresInput.value;
-      if (expiresVal) {
-        // A date-only value parses as UTC midnight, which is already past for
-        // most of the day. Expire at the end of the chosen local day instead.
-        const [y, m, d] = expiresVal.split("-").map(Number);
-        body.expiresAt = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+    const body = { name };
+    const expiresVal = expiresInput.value;
+    if (expiresVal) {
+      // A date-only value parses as UTC midnight, which is already past for
+      // most of the day. Expire at the end of the chosen local day instead.
+      const [y, m, d] = expiresVal.split("-").map(Number);
+      body.expiresAt = new Date(y, m - 1, d, 23, 59, 59, 999).toISOString();
+    }
+
+    await withLoadingBtn(submitBtn, async () => {
+      const result = await apiFetch("/api/keys", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      if (!result) return;
+
+      const callout = container.querySelector("#new-key-callout");
+      callout.hidden = false;
+      callout.innerHTML = `
+        <wa-callout variant="warning">
+          <wa-icon slot="icon" name="triangle-exclamation"></wa-icon>
+          <strong>Copy your API key now — it will not be shown again.</strong>
+          <div class="wa-cluster wa-gap-xs" style="margin-top:var(--wa-space-xs);">
+            <code style="word-break:break-all;">${escapeHtml(result.data.key)}</code>
+            <wa-copy-button value="${escapeAttr(result.data.key)}"></wa-copy-button>
+          </div>
+        </wa-callout>
+      `;
+
+      nameInput.value = "";
+      expiresInput.value = "";
+
+      const keysResult = await apiFetch("/api/keys");
+      if (keysResult?.data) {
+        const list = container.querySelector("#existing-keys");
+        if (list) {
+          list.innerHTML = renderKeysList(keysResult.data);
+          bindDeleteKeyButtons(container);
+        }
       }
 
-      await withLoadingBtn(submitBtn, async () => {
-        const result = await apiFetch("/api/keys", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body),
-        });
-        if (!result) return;
-
-        // Show the newly created key
-        const callout = container.querySelector("#new-key-callout");
-        callout.style.display = "block";
-        callout.innerHTML = `
-          <wa-callout variant="warning">
-            <wa-icon slot="icon" name="triangle-exclamation"></wa-icon>
-            <strong>Copy your API key now — it will not be shown again.</strong>
-            <div class="wa-cluster wa-gap-xs" style="margin-top:var(--wa-space-xs);">
-              <code style="word-break:break-all;">${escapeHtml(result.data.key)}</code>
-              <wa-copy-button value="${escapeAttr(result.data.key)}"></wa-copy-button>
-            </div>
-          </wa-callout>
-        `;
-
-        // Reset form and refresh key list
-        nameInput.value = "";
-        expiresInput.value = "";
-
-        // Re-fetch and update the keys table
-        const keysResult = await apiFetch("/api/keys").catch(() => null);
-        if (keysResult?.data) {
-          const list = container.querySelector("#existing-keys");
-          if (list) {
-            list.innerHTML = renderKeysList(keysResult.data);
-            bindDeleteKeyButtons(container);
-          }
-        }
-
-        showToast("API key created", "success");
-      });
+      showToast("API key created", "success");
     });
-  }
+  });
 
   bindDeleteKeyButtons(container);
   bindDeleteKeyDialog(container, reload);
 
-  // Passkey event handlers
   if (passkeyEnabled) {
     bindPasskeyRegister(container, reload);
     bindPasskeyDelete(container, reload);
   }
 
-  // Sync domains button
   const syncBtn = container.querySelector("#sync-domains-btn");
   if (syncBtn) {
     syncBtn.addEventListener("click", async () => {
@@ -452,15 +426,12 @@ export async function renderSettings(container, { activeTab = "api-keys" } = {})
     });
   }
 
-  // Edit domain
   container.querySelectorAll(".edit-domain-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const hostname = btn.dataset.hostname;
 
-      // Remove any existing edit rows
       container.querySelectorAll(".domain-edit-row").forEach(r => r.remove());
 
-      // Fetch domain details with access list
       const detailResult = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}`);
       if (!detailResult) return;
       const domainDetail = detailResult.data;
@@ -468,13 +439,12 @@ export async function renderSettings(container, { activeTab = "api-keys" } = {})
       const row = btn.closest("tr");
       row.insertAdjacentHTML("afterend", renderEditRow(domainDetail));
 
-      const editForm = container.querySelector(`.edit-domain-form[data-hostname="${CSS.escape(hostname)}"]`);
+      const editForm = row.nextElementSibling.querySelector("form");
 
-      // Toggle email section visibility based on access mode
       const accessSelect = editForm.querySelector('[name="accessMode"]');
-      const emailsSection = editForm.querySelector(".access-emails-section");
+      const emailsInput = editForm.querySelector('[name="accessEmails"]');
       accessSelect.addEventListener("change", () => {
-        emailsSection.style.display = accessSelect.value === "restricted" ? "block" : "none";
+        emailsInput.hidden = accessSelect.value !== "restricted";
       });
 
       editForm.addEventListener("submit", async (e) => {
@@ -495,7 +465,7 @@ export async function renderSettings(container, { activeTab = "api-keys" } = {})
           if (!configRes) return;
 
           if (accessMode === "restricted") {
-            const emailsText = editForm.querySelector('[name="accessEmails"]').value;
+            const emailsText = emailsInput.value;
             const emails = emailsText.split("\n").map(e => e.trim()).filter(Boolean);
             const accessRes = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}/access`, {
               method: "PUT",

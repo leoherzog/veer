@@ -12,7 +12,7 @@
 - 🔒 Password-protected, expiring, click-capped, and sign-in-only links
 - 🖼️ Per-link Open Graph title, description, and image — crawlers see the preview even on password-protected links
 - 📱 A QR code for every link, with custom colors and PNG download
-- 👥 Teams with shared link ownership, member roles, and email invitations
+- 👥 Teams with shared link ownership, member roles, and email-bound invite links
 - 🔑 OAuth sign-in with Google, GitHub, Microsoft, and Discord, plus optional passkeys
 - 🤖 A REST API with Bearer keys for links, campaigns, stats, and bulk creation, metered at an advisory 60 requests/minute per key
 - 🎨 Set the branding on the entire instance with one environment variable
@@ -21,7 +21,7 @@
 
 ### Prerequisites
 
-- Node.js 22+
+- Node.js 22.18+
 - A [Cloudflare account](https://dash.cloudflare.com/sign-up)
 - A domain with its nameservers pointed at Cloudflare
 
@@ -52,7 +52,8 @@ Both commands print an ID. Open `wrangler.jsonc` and paste them in, then set `BE
   "WORKER_NAME": "veer",
   "BETTER_AUTH_URL": "https://links.example.com",
   "INSTANCE_NAME": "",
-  "DEMO_MODE": ""
+  "DEMO_MODE": "",
+  "AE_DATASET": "veer_clicks"
 },
 "routes": [
   { "pattern": "links.example.com", "custom_domain": true }
@@ -64,6 +65,9 @@ Both commands print an ID. Open `wrangler.jsonc` and paste them in, then set `BE
 
 > [!IMPORTANT]
 > `WORKER_NAME` has to match the `name` field at the top of `wrangler.jsonc`. Domain sync asks the Cloudflare API which hostnames route to the Worker of that name, so a mismatch imports another Worker's hostnames.
+
+> [!IMPORTANT]
+> `AE_DATASET` has to match the `dataset` in `analytics_engine_datasets`. Stats queries read the dataset it names, so a missing or wrong value drops stats to daily totals with no geo, device, referrer or A/B breakdown.
 
 Two of the secrets come from Cloudflare, so have them ready before you start — each `wrangler secret put` prompts you to paste the value:
 
@@ -82,7 +86,7 @@ npx wrangler secret put BETTER_AUTH_SECRET
 # Comma-separated. Include your own address, or you'll have no admin
 npx wrangler secret put ADMIN_EMAILS
 
-# The two Cloudflare values from above — these power the stats dashboard
+# The two Cloudflare values from above, for stats and domain sync
 npx wrangler secret put CF_ACCOUNT_ID
 npx wrangler secret put CF_API_TOKEN
 
@@ -113,7 +117,7 @@ You can run Veer entirely on the Workers Free plan.
 | [Analytics Engine writes](https://developers.cloudflare.com/analytics/analytics-engine/pricing/) | 100,000/day | One event per click |
 | [KV deletes](https://developers.cloudflare.com/kv/platform/pricing/) | **1,000/day** | One per link deleted. A `Settings → Domains → Sync` that drops a domain clears the cache for every link on it, one delete each |
 
-KV has room for roughly 7,000 actively-hit slugs. The other three scale with traffic instead, at around 100,000 clicks per day. Which one you reach first depends on your mix. Signed-in dashboard browsing isn't metered.
+KV has room for roughly 7,000 actively-hit slugs. The other three scale with traffic instead, at around 100,000 clicks per day. Signed-in dashboard browsing isn't metered.
 
 ### Additional Domains
 
@@ -130,7 +134,7 @@ Set these in the `vars` block of `wrangler.jsonc`, or as secrets where noted:
 | --- | --- |
 | `INSTANCE_NAME` | Renames the instance everywhere in the UI. Defaults to "Veer" when empty |
 | `PASSKEY_ENABLED` | Set to `true` (as a secret) to offer passkey sign-in alongside OAuth |
-| `DEMO_MODE` | Set to `true` to turn the deployment into a public read-only showcase — auth is bypassed, all writes return `403`, and an hourly cron generates synthetic traffic |
+| `DEMO_MODE` | Set to `true` to turn the deployment into a public read-only showcase — auth is bypassed, all API writes return `403`, and an hourly cron generates synthetic traffic |
 
 ### Demo Instance
 
@@ -149,9 +153,9 @@ cp .dev.vars.example .dev.vars   # then fill it in
 npm run dev
 ```
 
-`npm run dev` migrates a local D1, builds the frontend, and starts Wrangler at `http://localhost:8787` with esbuild watching for changes. `npm test` runs the suite against a real workerd instance, and `npm run seed:local` fills your local database with the demo fixtures.
+`npm run dev` migrates a local D1 and starts Wrangler at `http://localhost:8787`. Wrangler builds the frontend itself and rebuilds it when anything under `frontend/src` or `src` changes. `npm test` runs the suite against a real workerd instance, and `npm run seed:local` fills your local database with the demo fixtures.
 
-`npm run build` and `npm run typecheck` both run `wrangler types` first, which writes `worker-configuration.d.ts` from `wrangler.jsonc` and your `.dev.vars`. The file is generated and not checked in.
+`npm run typecheck` runs `wrangler types` first, which writes `worker-configuration.d.ts` from `wrangler.jsonc` and your `.dev.vars`. `npm run dev` regenerates an existing file when it falls out of date but never creates one, so run `npm run typecheck` once after cloning. The file is generated and not checked in.
 
 ### Updating
 

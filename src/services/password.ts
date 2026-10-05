@@ -1,4 +1,9 @@
-import { PBKDF2_ITERATIONS, PBKDF2_KEY_LENGTH, PBKDF2_SALT_LENGTH } from "../lib/password-params";
+// PBKDF2-SHA256 hashing for link passwords, stored as `saltHex:hashHex`.
+// scripts/seed.ts also runs this module under Node's type stripping, so any
+// relative import here needs an explicit `.ts` extension.
+const PBKDF2_ITERATIONS = 100_000;
+const PBKDF2_KEY_LENGTH = 32;
+const PBKDF2_SALT_LENGTH = 16;
 
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");

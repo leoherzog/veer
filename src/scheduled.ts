@@ -3,7 +3,7 @@ import { getDb } from "./db";
 import { links } from "./db/schema";
 import { isDemoMode } from "./lib/branding";
 import { DEMO_USER_ID } from "./lib/demo";
-import { upsertDailyStats } from "./services/analytics";
+import { upsertDailyStats, writeClickEvent } from "./services/analytics";
 
 const SYNTHETIC_VISITORS: Array<{
   country: string;
@@ -39,31 +39,17 @@ export async function scheduled(
     .from(links)
     .where(eq(links.userId, DEMO_USER_ID));
 
-  if (seededLinks.length === 0) return;
-
-  const today = new Date().toISOString().slice(0, 10);
-
   for (const link of seededLinks) {
     const clickCount = Math.floor(Math.random() * 5) + 1;
-    // 60–85% unique, plausible vs an always-equal count.
-    const uniqueCount = Math.max(1, Math.round(clickCount * (0.6 + Math.random() * 0.25)));
     for (let i = 0; i < clickCount; i++) {
-      const visitor = pick(SYNTHETIC_VISITORS);
-      env.ANALYTICS.writeDataPoint({
-        indexes: [link.id],
-        blobs: [
-          link.slug,
-          visitor.country,
-          visitor.userAgent,
-          visitor.referer,
-          visitor.city,
-          link.destinationUrl,
-          visitor.region,
-        ],
-        doubles: [Date.now()],
+      writeClickEvent(env.ANALYTICS, {
+        linkId: link.id,
+        slug: link.slug,
+        destinationUrl: link.destinationUrl,
+        ...pick(SYNTHETIC_VISITORS),
       });
     }
 
-    await upsertDailyStats(db, link.id, today, clickCount, uniqueCount);
+    await upsertDailyStats(db, link.id, clickCount);
   }
 }

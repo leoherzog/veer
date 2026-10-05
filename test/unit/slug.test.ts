@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateSlug, validateTeamSlug, normalizeSlug, RESERVED_SLUGS } from "../../src/services/slug";
+import { validateSlug, normalizeSlug, RESERVED_SLUGS } from "../../src/services/slug";
 
 /** Assert a slug is valid and return its canonical form. */
 function canonical(input: string): string {
@@ -148,6 +148,13 @@ describe("validateSlug", () => {
   });
 
   describe("reserved slugs", () => {
+    it("reserves the SPA routes and well-known static paths", () => {
+      expect([...RESERVED_SLUGS]).toEqual(expect.arrayContaining([
+        "api", "auth", "login", "logout", "dashboard", "settings", "admin",
+        "favicon.ico", "robots.txt", "sitemap.xml",
+      ]));
+    });
+
     it("rejects every reserved slug", () => {
       for (const slug of RESERVED_SLUGS) {
         expect(validateSlug(slug)).toEqual({ valid: false, error: "This slug is reserved" });
@@ -159,28 +166,5 @@ describe("validateSlug", () => {
         expect(validateSlug(slug)).toEqual({ valid: false, error: "This slug is reserved" });
       }
     });
-  });
-
-  describe("case-insensitive collisions", () => {
-    it("maps case variants onto the same canonical slug", () => {
-      expect(canonical("blah")).toBe(canonical("Blah"));
-      expect(canonical("BLAH")).toBe(canonical("bLaH"));
-    });
-  });
-});
-
-describe("validateTeamSlug", () => {
-  it("canonicalizes to lowercase", () => {
-    expect(validateTeamSlug("My-Team")).toEqual({ valid: true, slug: "my-team" });
-  });
-
-  it("accepts letters, numbers, hyphens, underscores", () => {
-    expect(validateTeamSlug("team_1-a").valid).toBe(true);
-  });
-
-  it("rejects non-ASCII and the punctuation link slugs allow", () => {
-    for (const slug of ["café", "🎉", "a.b", "a@b", "a b", ""]) {
-      expect(validateTeamSlug(slug).valid).toBe(false);
-    }
   });
 });

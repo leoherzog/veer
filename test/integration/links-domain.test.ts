@@ -1,19 +1,7 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll, beforeEach } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, createTestLink, apiRequest, type JsonBody } from "../helpers";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
-  return apiRequest(app, method, path, opts);
-}
-
-function postLink(body: JsonBody, headers: Record<string, string>) {
-  return api("POST", "/api/links", { headers, body });
-}
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { describe, it, expect, beforeAll } from "vitest";
+import { setupAuth, createTestLink, createTestDomain, api, postLink } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -22,24 +10,13 @@ function postLink(body: JsonBody, headers: Record<string, string>) {
 describe("Links API — domain-scoped operations", () => {
   let headers: Record<string, string>;
   let userId: string;
-  let userEmail: string;
 
   beforeAll(async () => {
-    const auth = await setupAuth(env, { email: "domain-links@test.com" });
+    const auth = await setupAuth({ email: "domain-links@test.com" });
     headers = auth.headers;
     userId = auth.user.id;
-    userEmail = auth.user.email;
-  });
-
-  beforeEach(async () => {
-    // Ensure domain_config rows exist for tests
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO domain_config (hostname, accessMode, updatedAt) VALUES (?, ?, ?)"
-    ).bind("custom.example.com", "all", now).run();
-    await env.DB.prepare(
-      "INSERT OR IGNORE INTO domain_config (hostname, accessMode, updatedAt) VALUES (?, ?, ?)"
-    ).bind("restricted.example.com", "restricted", now).run();
+    await createTestDomain("custom.example.com");
+    await createTestDomain("restricted.example.com", { accessMode: "restricted" });
   });
 
   // -------------------------------------------------------------------------
@@ -65,9 +42,8 @@ describe("Links API — domain-scoped operations", () => {
         domainHostname: "nonexistent.example.com",
       }, headers);
       expect(res.status).toBe(400);
-      const json = await res.json() as { message?: string; error?: string };
-      const msg = json.message || json.error || "";
-      expect(msg).toContain("Domain not found");
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain("Domain not found");
     });
 
     it("rejects restricted domain without access with 400", async () => {
@@ -77,18 +53,19 @@ describe("Links API — domain-scoped operations", () => {
         domainHostname: "restricted.example.com",
       }, headers);
       expect(res.status).toBe(400);
-      const json = await res.json() as { message?: string; error?: string };
-      const msg = json.message || json.error || "";
-      expect(msg).toContain("access");
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain("access");
     });
 
     it("treats the primary hostname as the default domain", async () => {
       // BETTER_AUTH_URL is http://localhost:8787 in the test env, so "localhost" is primary.
-      const res = await postLink({
-        slug: "primary-host-link",
-        destinationUrl: "https://example.com/primary",
-        domainHostname: "localhost",
-      }, headers);
+      const ctx = createExecutionContext();
+      const res = await api("POST", "/api/links", {
+        headers,
+        body: { slug: "primary-host-link", destinationUrl: "https://example.com/primary", domainHostname: "localhost" },
+        ctx,
+      });
+      await waitOnExecutionContext(ctx);
       expect(res.status).toBe(201);
       const json = await res.json() as { data: { id: string; domainHostname: string | null } };
       expect(json.data.domainHostname).toBeNull();
@@ -103,7 +80,7 @@ describe("Links API — domain-scoped operations", () => {
     });
 
     it("collides with an existing default-domain slug when given the primary hostname", async () => {
-      await createTestLink(env.DB, { slug: "primary-host-taken", userId, domainHostname: null });
+      await createTestLink({ slug: "primary-host-taken", userId, domainHostname: null });
       const res = await postLink({
         slug: "primary-host-taken",
         destinationUrl: "https://example.com",
@@ -120,8 +97,8 @@ describe("Links API — domain-scoped operations", () => {
         isInternal: true,
       }, headers);
       expect(res.status).toBe(400);
-      const json = await res.json() as { error?: string; message?: string };
-      expect(json.error || json.message).toContain("Internal links");
+      const json = await res.json() as { error: string };
+      expect(json.error).toContain("Internal links");
     });
 
     it("allows same slug on different domains", async () => {
@@ -147,7 +124,7 @@ describe("Links API — domain-scoped operations", () => {
   // -------------------------------------------------------------------------
   describe("PUT /api/links/:id changing domainHostname", () => {
     it("updates domainHostname and KV key", async () => {
-      const link = await createTestLink(env.DB, {
+      const link = await createTestLink({
         slug: "dom-update-kv",
         userId,
         domainHostname: null,
@@ -173,7 +150,7 @@ describe("Links API — domain-scoped operations", () => {
 
     it("returns 409 when slug collides on target domain", async () => {
       // Create existing link on custom domain with slug "collision-slug"
-      await createTestLink(env.DB, {
+      await createTestLink({
         slug: "collision-slug",
         userId,
         domainHostname: "custom.example.com",
@@ -182,7 +159,7 @@ describe("Links API — domain-scoped operations", () => {
       await env.KV.put("custom.example.com:collision-slug", JSON.stringify({ url: "https://example.com" }));
 
       // Create another link on default domain with same slug
-      const link2 = await createTestLink(env.DB, {
+      const link2 = await createTestLink({
         slug: "collision-slug",
         userId,
         domainHostname: null,
@@ -197,7 +174,7 @@ describe("Links API — domain-scoped operations", () => {
     });
 
     it("moving to the primary hostname clears domainHostname", async () => {
-      const link = await createTestLink(env.DB, {
+      const link = await createTestLink({
         slug: "move-to-primary",
         userId,
         domainHostname: "custom.example.com",
@@ -218,7 +195,7 @@ describe("Links API — domain-scoped operations", () => {
     });
 
     it("rejects making a custom-domain link internal with 400", async () => {
-      const link = await createTestLink(env.DB, {
+      const link = await createTestLink({
         slug: "internal-on-custom",
         userId,
         domainHostname: "custom.example.com",
@@ -236,7 +213,7 @@ describe("Links API — domain-scoped operations", () => {
     });
 
     it("rejects moving an internal link onto a custom domain with 400", async () => {
-      const link = await createTestLink(env.DB, {
+      const link = await createTestLink({
         slug: "internal-move",
         userId,
         isInternal: true,

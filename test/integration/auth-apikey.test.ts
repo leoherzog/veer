@@ -1,11 +1,7 @@
 import { env } from "cloudflare:workers";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, apiRequest, createTestDomain, mockExecutionCtx, type JsonBody } from "../helpers";
-
-function api(method: string, path: string, opts: { headers?: Record<string, string>; body?: JsonBody } = {}) {
-  return apiRequest(app, method, path, opts);
-}
+import { setupAuth, api, adminEnv, createTestDomain, type JsonBody } from "../helpers";
 
 /** Create an API key via the API, returns { id, key, prefix }. */
 async function createApiKey(
@@ -26,7 +22,7 @@ describe("API key auth (requireAuthOrApiKey)", () => {
   let userId: string;
 
   beforeAll(async () => {
-    const auth = await setupAuth(env);
+    const auth = await setupAuth();
     authHeaders = auth.headers;
     userId = auth.user.id;
   });
@@ -82,52 +78,19 @@ describe("API key auth (requireAuthOrApiKey)", () => {
       .first() as { lastUsedAt: number | null };
     expect(before.lastUsedAt).toBeNull();
 
-    // Use the key
+    // The update happens in waitUntil.
+    const ctx = createExecutionContext();
     const res = await api("GET", "/api/links", {
       headers: { Authorization: `Bearer ${key}` },
+      ctx,
     });
+    await waitOnExecutionContext(ctx);
     expect(res.status).toBe(200);
-
-    // The update happens in waitUntil — give it a tick to settle
-    await new Promise((r) => setTimeout(r, 50));
 
     const after = await env.DB.prepare("SELECT lastUsedAt FROM api_keys WHERE id = ?")
       .bind(id)
       .first() as { lastUsedAt: number | null };
     expect(after.lastUsedAt).not.toBeNull();
-  });
-
-  // -------------------------------------------------------------------------
-  // No auth at all
-  // -------------------------------------------------------------------------
-  it("request without any auth returns 401", async () => {
-    const res = await api("GET", "/api/links", {
-      headers: { "Content-Type": "application/json" },
-    });
-    expect(res.status).toBe(401);
-  });
-
-  // -------------------------------------------------------------------------
-  // Session auth still works on requireAuthOrApiKey routes
-  // -------------------------------------------------------------------------
-  it("session cookie auth also works on GET /api/links", async () => {
-    const res = await api("GET", "/api/links", { headers: authHeaders });
-    expect(res.status).toBe(200);
-  });
-
-  // -------------------------------------------------------------------------
-  // List keys via session auth
-  // -------------------------------------------------------------------------
-  it("GET /api/keys with session auth returns created keys", async () => {
-    const { id } = await createApiKey(authHeaders, "list-test-key");
-    const res = await api("GET", "/api/keys", { headers: authHeaders });
-    expect(res.status).toBe(200);
-    const json = await res.json() as { data: { id: string; name: string; prefix: string }[] };
-    const found = json.data.find((k) => k.id === id);
-    expect(found).toBeDefined();
-    expect(found?.name).toBe("list-test-key");
-    // The full key is never returned in list, only prefix
-    expect(found?.prefix).toMatch(/^veer_/);
   });
 
   // -------------------------------------------------------------------------
@@ -167,14 +130,6 @@ describe("API key auth (requireAuthOrApiKey)", () => {
     expect(Object.keys(json.data).sort()).toEqual(["email", "id", "image", "isAdmin", "name"]);
   });
 
-  it("same API key works on GET /api/links (requireAuthOrApiKey route)", async () => {
-    const { key } = await createApiKey(authHeaders, "links-route-verify");
-    const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    expect(res.status).toBe(200);
-  });
-
   // -------------------------------------------------------------------------
   // Integrated rate limiter test (full stack with real API key)
   // -------------------------------------------------------------------------
@@ -198,9 +153,25 @@ describe("API key auth (requireAuthOrApiKey)", () => {
       headers: { Authorization: `Bearer ${key}` },
     });
     expect(res61.status).toBe(429);
+    expect((await res61.json() as { error: string }).error).toBe("Rate limit exceeded");
     expect(res61.headers.get("Retry-After")).toBeTruthy();
     expect(res61.headers.get("X-RateLimit-Remaining")).toBe("0");
     expect(res61.headers.get("X-RateLimit-Limit")).toBe("60");
+  });
+
+  it("meters a collection-root request once", async () => {
+    // `/api/links` matches the `/api/links/*` middleware; a second registration
+    // for the bare path would run the whole chain twice and count two requests.
+    const { key } = await createApiKey(authHeaders, "ratelimit-once");
+    const res = await api("GET", "/api/links", {
+      headers: { Authorization: `Bearer ${key}` },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-RateLimit-Remaining")).toBe("59");
+
+    const { keys } = await env.KV.list({ prefix: `rl:${key.slice(0, 16)}:` });
+    expect(keys).toHaveLength(1);
+    expect(await env.KV.get(keys[0].name)).toBe("1");
   });
 
   it("rate limit is checked before key verification (429, not 401, for an over-limit unknown key)", async () => {
@@ -233,53 +204,40 @@ describe("API key auth (requireAuthOrApiKey)", () => {
   // -------------------------------------------------------------------------
   it("user in ADMIN_EMAILS is treated as admin when using API key: bypasses restricted domain access", async () => {
     // requireAuthOrApiKey computes isAdmin from env.ADMIN_EMAILS on each request, so the
-    // env passed to app.request (not the env used to seed the session/key) controls the check.
+    // request env controls the check.
     const adminEmail = "admin-apikey@example.com";
-    const adminEnv = { ...env, ADMIN_EMAILS: adminEmail };
-    const adminAuth = await setupAuth(adminEnv, { email: adminEmail });
-    await createTestDomain(env.DB, "admin-apikey-restricted.example.com", { accessMode: "restricted" });
+    const adminAuth = await setupAuth({ email: adminEmail });
+    await createTestDomain("admin-apikey-restricted.example.com", { accessMode: "restricted" });
 
     const { key } = await createApiKey(adminAuth.headers, "admin-key-test");
-    const res = await app.request(
-      "/api/links",
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          slug: "admin-apikey-bypass",
-          destinationUrl: "https://example.com/admin",
-          domainHostname: "admin-apikey-restricted.example.com",
-        }),
+    const res = await api("POST", "/api/links", {
+      headers: { Authorization: `Bearer ${key}` },
+      body: {
+        slug: "admin-apikey-bypass",
+        destinationUrl: "https://example.com/admin",
+        domainHostname: "admin-apikey-restricted.example.com",
       },
-      adminEnv,
-      mockExecutionCtx()
-    );
+      env: adminEnv(adminEmail),
+    });
 
     // Admin bypasses the restricted-domain access check (validateDomainAccess short-circuits on isAdmin).
     expect(res.status).toBe(201);
   });
 
   it("user NOT in ADMIN_EMAILS is rejected from a restricted domain when using API key", async () => {
-    const plainEmail = "nonadmin-apikey@example.com";
-    const nonAdminEnv = { ...env, ADMIN_EMAILS: "someone-else@example.com" };
-    const plainAuth = await setupAuth(nonAdminEnv, { email: plainEmail });
-    await createTestDomain(env.DB, "nonadmin-apikey-restricted.example.com", { accessMode: "restricted" });
+    const plainAuth = await setupAuth({ email: "nonadmin-apikey@example.com" });
+    await createTestDomain("nonadmin-apikey-restricted.example.com", { accessMode: "restricted" });
 
     const { key } = await createApiKey(plainAuth.headers, "nonadmin-key-test");
-    const res = await app.request(
-      "/api/links",
-      {
-        method: "POST",
-        headers: { Authorization: `Bearer ${key}`, "Content-Type": "application/json" },
-        body: JSON.stringify({
-          slug: "nonadmin-apikey-bypass",
-          destinationUrl: "https://example.com/nonadmin",
-          domainHostname: "nonadmin-apikey-restricted.example.com",
-        }),
+    const res = await api("POST", "/api/links", {
+      headers: { Authorization: `Bearer ${key}` },
+      body: {
+        slug: "nonadmin-apikey-bypass",
+        destinationUrl: "https://example.com/nonadmin",
+        domainHostname: "nonadmin-apikey-restricted.example.com",
       },
-      nonAdminEnv,
-      mockExecutionCtx()
-    );
+      env: adminEnv("someone-else@example.com"),
+    });
 
     expect(res.status).toBe(400);
     const json = await res.json() as { error: string };

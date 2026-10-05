@@ -1,10 +1,9 @@
 import { apiFetch } from "../lib/ui.js";
-import { createChart, destroyCharts } from "../lib/chart-helper.js";
+import { createChart } from "../lib/chart-helper.js";
 
 export async function renderAbStats(container, linkId) {
-  destroyCharts(container);
   const result = await apiFetch(`/api/stats/${linkId}/ab`);
-  if (!result || !result.data?.length) return;
+  if (!result?.data.length) return;
 
   const variants = result.data;
   const totalClicks = variants.reduce((sum, v) => sum + v.clicks, 0);
@@ -21,7 +20,7 @@ export async function renderAbStats(container, linkId) {
   const labels = variants.map(v => (v.url.length > 40 ? v.url.slice(0, 37) + "..." : v.url));
   const data = variants.map(v => v.clicks);
 
-  container._charts = [createChart(canvas, "bar", {
+  createChart(canvas, "bar", {
     data: {
       labels,
       datasets: [{ label: "Clicks", data }],
@@ -40,5 +39,5 @@ export async function renderAbStats(container, linkId) {
         },
       },
     },
-  })];
+  });
 }

@@ -7,22 +7,8 @@ import { deleteCachedRedirect } from "../../services/kv-cache";
 import { HTTPException } from "hono/http-exception";
 import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
-import { getPrimaryHostname } from "../../lib/validators";
+import { getPrimaryHostname, parseOptionalHttpUrl } from "../../lib/validators";
 import type { AppEnv } from "../../types";
-
-function validateRedirectUrl(url: string | undefined | null): string | null {
-  if (!url) return null;
-  try {
-    const parsed = new URL(url);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw badRequest("Redirect URL must use http or https");
-    }
-    return url;
-  } catch (e) {
-    if (e instanceof HTTPException) throw e;
-    throw badRequest("Invalid redirect URL");
-  }
-}
 
 const domainRoutes = new Hono<AppEnv>();
 
@@ -34,24 +20,13 @@ domainRoutes.get("/", async (c) => {
   // its links live with domainHostname NULL. Clients use isPrimary to hide it where a
   // custom domain is being chosen.
   const primaryHost = getPrimaryHostname(c.env.BETTER_AUTH_URL);
-  const withIsPrimary = <T extends { hostname: string }>(rows: T[]) =>
-    rows.map(row => ({ ...row, isPrimary: row.hostname.toLowerCase() === primaryHost }));
-
-  if (user.isAdmin) {
-    const rows = await db.select().from(domainConfig);
-    return c.json({ data: withIsPrimary(rows) });
-  }
 
   // Non-admin: domains where accessMode='all' OR user's email is in domain_access
-  const rows = await db.select({ hostname: domainConfig.hostname, rootRedirect: domainConfig.rootRedirect, notFoundRedirect: domainConfig.notFoundRedirect, accessMode: domainConfig.accessMode, updatedAt: domainConfig.updatedAt })
-    .from(domainConfig)
-    .where(
-      or(
-        eq(domainConfig.accessMode, "all"),
-        sql`${domainConfig.hostname} IN (SELECT ${domainAccess.hostname} FROM ${domainAccess} WHERE ${domainAccess.email} = ${user.email.toLowerCase()})`
-      )
-    );
-  return c.json({ data: withIsPrimary(rows) });
+  const rows = await db.select().from(domainConfig).where(user.isAdmin ? undefined : or(
+    eq(domainConfig.accessMode, "all"),
+    sql`${domainConfig.hostname} IN (SELECT ${domainAccess.hostname} FROM ${domainAccess} WHERE ${domainAccess.email} = ${user.email.toLowerCase()})`
+  ));
+  return c.json({ data: rows.map(row => ({ ...row, isPrimary: row.hostname.toLowerCase() === primaryHost })) });
 });
 
 // Sync domains from Cloudflare API → D1 (admin only, guarded in index.ts)
@@ -103,11 +78,9 @@ domainRoutes.post("/sync", async (c) => {
   const db = getDb(c.env.DB);
   const now = new Date();
 
-  // Get existing domains
   const existing = await db.select().from(domainConfig);
   const existingHostnames = new Set(existing.map(d => d.hostname));
 
-  // Upsert new hostnames (preserve existing config)
   const batchOps: BatchItem<"sqlite">[] = [];
   for (const hostname of cfHostnames) {
     if (!existingHostnames.has(hostname)) {
@@ -140,12 +113,11 @@ domainRoutes.post("/sync", async (c) => {
     await db.batch(batchOps as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
   }
 
-  // Return updated list
   const updated = await db.select().from(domainConfig);
   return c.json({ data: updated });
 });
 
-// Get domain config + access list (admin only)
+// Every route below is admin-only, guarded in index.ts.
 domainRoutes.get("/:hostname", async (c) => {
   const hostname = c.req.param("hostname").toLowerCase();
   const db = getDb(c.env.DB);
@@ -158,23 +130,19 @@ domainRoutes.get("/:hostname", async (c) => {
   return c.json({ data: { ...config, accessEmails: access.map(a => a.email) } });
 });
 
-// Update domain config (admin only)
 domainRoutes.put("/:hostname", async (c) => {
   const hostname = c.req.param("hostname").toLowerCase();
   const db = getDb(c.env.DB);
-
-  const existing = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
-  if (!existing) throw notFound("Domain not found");
 
   const body = await parseJsonBody<{ rootRedirect?: string | null; notFoundRedirect?: string | null; accessMode?: string }>(c);
 
   const updates: Partial<typeof domainConfig.$inferInsert> = { updatedAt: new Date() };
 
   if (body.rootRedirect !== undefined) {
-    updates.rootRedirect = body.rootRedirect === null ? null : validateRedirectUrl(body.rootRedirect);
+    updates.rootRedirect = parseOptionalHttpUrl(body.rootRedirect, "rootRedirect");
   }
   if (body.notFoundRedirect !== undefined) {
-    updates.notFoundRedirect = body.notFoundRedirect === null ? null : validateRedirectUrl(body.notFoundRedirect);
+    updates.notFoundRedirect = parseOptionalHttpUrl(body.notFoundRedirect, "notFoundRedirect");
   }
   if (body.accessMode !== undefined) {
     if (body.accessMode !== "all" && body.accessMode !== "restricted") {
@@ -183,26 +151,11 @@ domainRoutes.put("/:hostname", async (c) => {
     updates.accessMode = body.accessMode;
   }
 
-  await db.update(domainConfig).set(updates).where(eq(domainConfig.hostname, hostname));
-
-  // Re-fetch to return consistent data (avoids Date vs integer mismatch)
-  const updated = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
+  const updated = await db.update(domainConfig).set(updates).where(eq(domainConfig.hostname, hostname)).returning().get();
+  if (!updated) throw notFound("Domain not found");
   return c.json({ data: updated });
 });
 
-// List access emails for a domain (admin only)
-domainRoutes.get("/:hostname/access", async (c) => {
-  const hostname = c.req.param("hostname").toLowerCase();
-  const db = getDb(c.env.DB);
-
-  const config = await db.select().from(domainConfig).where(eq(domainConfig.hostname, hostname)).get();
-  if (!config) throw notFound("Domain not found");
-
-  const access = await db.select().from(domainAccess).where(eq(domainAccess.hostname, hostname));
-  return c.json({ data: access.map(a => a.email) });
-});
-
-// Set access emails for a domain (admin only)
 domainRoutes.put("/:hostname/access", async (c) => {
   const hostname = c.req.param("hostname").toLowerCase();
   const db = getDb(c.env.DB);
@@ -227,7 +180,6 @@ domainRoutes.put("/:hostname/access", async (c) => {
     }
   }
 
-  // Replace all access entries atomically
   const batchOps: BatchItem<"sqlite">[] = [
     db.delete(domainAccess).where(eq(domainAccess.hostname, hostname)),
   ];

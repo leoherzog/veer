@@ -1,57 +1,16 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx, type JsonBody } from "../helpers";
+import { setupAuth, createTestLink, createTestTeam, api, adminEnv, newUser, uniq } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Env in which the given email is treated as an admin. */
-function adminEnv(email: string) {
-  return { ...env, ADMIN_EMAILS: email } as typeof env;
-}
-
-function api(
-  method: string,
-  path: string,
-  opts: { headers?: Record<string, string>; body?: JsonBody; env?: typeof env } = {}
-) {
-  const init: RequestInit = { method, headers: { ...(opts.headers ?? {}) } };
-  if (opts.body !== undefined) {
-    init.body = JSON.stringify(opts.body);
-    (init.headers as Record<string, string>)["Content-Type"] = "application/json";
-  }
-  return app.request(path, init, opts.env ?? env, mockExecutionCtx());
-}
-
-let seq = 0;
-function uniq(prefix: string): string {
-  seq++;
-  return `${prefix}-${Date.now().toString(36)}-${seq}`;
-}
-
 /** An authenticated user plus the env that makes them an admin. */
 async function newAdmin() {
   const email = `${uniq("admin")}@example.com`;
-  const auth = await setupAuth(env, { email });
+  const auth = await setupAuth({ email });
   return { ...auth, env: adminEnv(email) };
-}
-
-function newUser(label = "user") {
-  return setupAuth(env, { email: `${uniq(label)}@example.com` });
-}
-
-async function createTeam(userId: string, name = "Admin Team") {
-  const id = crypto.randomUUID();
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare("INSERT INTO teams (id, name, slug, createdAt, updatedAt) VALUES (?, ?, ?, ?, ?)")
-    .bind(id, name, uniq("ateam"), now, now)
-    .run();
-  await env.DB.prepare("INSERT INTO team_members (teamId, userId, role, joinedAt) VALUES (?, ?, 'admin', ?)")
-    .bind(id, userId, now)
-    .run();
-  return { id, name };
 }
 
 // ---------------------------------------------------------------------------
@@ -62,13 +21,10 @@ describe("Admin API", () => {
   describe("authorization", () => {
     const routes: [string, string][] = [
       ["GET", "/api/admin/users"],
-      ["GET", "/api/admin/users/someone"],
       ["PATCH", "/api/admin/users/someone"],
       ["POST", "/api/admin/impersonate/someone"],
       ["POST", "/api/admin/stop-impersonate"],
       ["GET", "/api/admin/teams"],
-      ["GET", "/api/admin/teams/some-team"],
-      ["GET", "/api/admin/teams/some-team/links"],
       ["DELETE", "/api/admin/teams/some-team"],
     ];
 
@@ -85,16 +41,15 @@ describe("Admin API", () => {
   });
 
   describe("GET /api/admin/users", () => {
-    it("lists users with pagination and link/team counts", async () => {
+    it("lists users with pagination and link counts", async () => {
       const admin = await newAdmin();
       const target = await newUser("listed");
-      await createTeam(target.user.id);
-      await createTestLink(env.DB, { userId: target.user.id, slug: uniq("adm-user-count") });
+      await createTestLink({ userId: target.user.id, slug: uniq("adm-user-count") });
 
       const res = await api("GET", "/api/admin/users?limit=100", { headers: admin.headers, env: admin.env });
       expect(res.status).toBe(200);
       const json = await res.json() as {
-        data: { id: string; email: string; maxLinks: number | null; teamCount: number; linkCount: number }[];
+        data: { id: string; email: string; maxLinks: number | null; linkCount: number }[];
         pagination: { page: number; limit: number; total: number };
       };
       expect(json.pagination).toMatchObject({ page: 1, limit: 100 });
@@ -103,7 +58,6 @@ describe("Admin API", () => {
       expect(row).toBeDefined();
       expect(row!.email).toBe(target.user.email);
       expect(row!.maxLinks).toBeNull();
-      expect(row!.teamCount).toBe(1);
       // Correlated subqueries must reference the outer column table-qualified, or
       // the subquery's own table shadows the bare name and the count is always 0.
       expect(row!.linkCount).toBe(1);
@@ -112,7 +66,7 @@ describe("Admin API", () => {
     it("searches by name", async () => {
       const admin = await newAdmin();
       const name = uniq("Searchable");
-      const target = await setupAuth(env, { email: `${uniq("byname")}@example.com`, name });
+      const target = await setupAuth({ email: `${uniq("byname")}@example.com`, name });
 
       const res = await api(`GET`, `/api/admin/users?q=${encodeURIComponent(name)}`, { headers: admin.headers, env: admin.env });
       const json = await res.json() as { data: { id: string }[] };
@@ -122,10 +76,10 @@ describe("Admin API", () => {
     it("treats an underscore in the query as a literal, not a wildcard", async () => {
       const admin = await newAdmin();
       const stem = uniq("under");
-      const withUnderscore = await setupAuth(env, { email: `${stem}_score@example.com` });
+      const withUnderscore = await setupAuth({ email: `${stem}_score@example.com` });
       // Differs from the search term only where the underscore sits — a LIKE without
       // the ESCAPE clause would match this too.
-      await setupAuth(env, { email: `${stem}Xscore@example.com` });
+      await setupAuth({ email: `${stem}Xscore@example.com` });
 
       const res = await api("GET", `/api/admin/users?q=${encodeURIComponent(`${stem}_score`)}`, { headers: admin.headers, env: admin.env });
       expect(res.status).toBe(200);
@@ -143,28 +97,6 @@ describe("Admin API", () => {
     });
   });
 
-  describe("GET /api/admin/users/:id", () => {
-    it("returns the user with their teams and link count", async () => {
-      const admin = await newAdmin();
-      const target = await newUser("detail");
-      const team = await createTeam(target.user.id);
-      await createTestLink(env.DB, { userId: target.user.id, slug: uniq("adm") });
-
-      const res = await api("GET", `/api/admin/users/${target.user.id}`, { headers: admin.headers, env: admin.env });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: { email: string; linkCount: number; teams: { id: string; role: string }[] } };
-      expect(json.data.email).toBe(target.user.email);
-      expect(json.data.linkCount).toBe(1);
-      expect(json.data.teams).toEqual([expect.objectContaining({ id: team.id, role: "admin" })]);
-    });
-
-    it("returns 404 for an unknown user", async () => {
-      const admin = await newAdmin();
-      const res = await api("GET", "/api/admin/users/no-such-user", { headers: admin.headers, env: admin.env });
-      expect(res.status).toBe(404);
-    });
-  });
-
   describe("PATCH /api/admin/users/:id", () => {
     it("rejects maxLinks of 0 with 400", async () => {
       const admin = await newAdmin();
@@ -174,7 +106,7 @@ describe("Admin API", () => {
         headers: admin.headers, env: admin.env, body: { maxLinks: 0 },
       });
       expect(res.status).toBe(400);
-      expect((await res.json() as { error: string }).error).toContain("maxLinks");
+      expect((await res.json() as { error: string }).error).toBe("maxLinks must be at least 1, or null for unlimited");
 
       const row = await env.DB.prepare("SELECT maxLinks FROM user WHERE id = ?").bind(target.user.id).first<{ maxLinks: number | null }>();
       expect(row?.maxLinks).toBeNull();
@@ -205,6 +137,19 @@ describe("Admin API", () => {
       const admin = await newAdmin();
       const res = await api("PATCH", "/api/admin/users/no-such-user", { headers: admin.headers, env: admin.env, body: { maxLinks: 5 } });
       expect(res.status).toBe(404);
+    });
+
+    it("treats an absent maxLinks as a no-op", async () => {
+      const admin = await newAdmin();
+      const target = await newUser("quota");
+      await api("PATCH", `/api/admin/users/${target.user.id}`, { headers: admin.headers, env: admin.env, body: { maxLinks: 7 } });
+
+      const res = await api("PATCH", `/api/admin/users/${target.user.id}`, { headers: admin.headers, env: admin.env, body: {} });
+      expect(res.status).toBe(200);
+      expect((await res.json() as { data: { maxLinks: number | null } }).data.maxLinks).toBe(7);
+
+      const missing = await api("PATCH", "/api/admin/users/no-such-user", { headers: admin.headers, env: admin.env, body: {} });
+      expect(missing.status).toBe(404);
     });
 
     it("enforces a positive maxLinks on POST /api/links, and null lifts the cap", async () => {
@@ -240,8 +185,8 @@ describe("Admin API", () => {
     it("lists all teams regardless of membership", async () => {
       const admin = await newAdmin();
       const owner = await newUser("owner");
-      const team = await createTeam(owner.user.id);
-      await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("adm-team-count"), teamId: team.id });
+      const team = await createTestTeam(owner.user.id);
+      await createTestLink({ userId: owner.user.id, slug: uniq("adm-team-count"), teamId: team.id });
 
       const res = await api("GET", "/api/admin/teams?limit=100", { headers: admin.headers, env: admin.env });
       expect(res.status).toBe(200);
@@ -252,52 +197,25 @@ describe("Admin API", () => {
       expect(row!.linkCount).toBe(1);
     });
 
-    it("returns team detail and links for a team the admin does not belong to", async () => {
-      const admin = await newAdmin();
-      const owner = await newUser("owner");
-      const team = await createTeam(owner.user.id);
-      const link = await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("adm-team"), teamId: team.id, password: "hashed" });
-
-      const detail = await api("GET", `/api/admin/teams/${team.id}`, { headers: admin.headers, env: admin.env });
-      expect(detail.status).toBe(200);
-      const detailJson = await detail.json() as { data: { members: { userId: string }[]; linkCount: number } };
-      expect(detailJson.data.members.map(m => m.userId)).toEqual([owner.user.id]);
-      expect(detailJson.data.linkCount).toBe(1);
-
-      const linksRes = await api("GET", `/api/admin/teams/${team.id}/links`, { headers: admin.headers, env: admin.env });
-      expect(linksRes.status).toBe(200);
-      const linksJson = await linksRes.json() as { data: { id: string; hasPassword: boolean; password?: string }[] };
-      expect(linksJson.data.map(l => l.id)).toEqual([link.id]);
-      expect(linksJson.data[0].hasPassword).toBe(true);
-      expect(linksJson.data[0].password).toBeUndefined();
-    });
-
     it("deletes any team and nulls its links", async () => {
       const admin = await newAdmin();
       const owner = await newUser("owner");
-      const team = await createTeam(owner.user.id);
-      const link = await createTestLink(env.DB, { userId: owner.user.id, slug: uniq("adm-team"), teamId: team.id });
+      const team = await createTestTeam(owner.user.id);
+      const link = await createTestLink({ userId: owner.user.id, slug: uniq("adm-team"), teamId: team.id });
 
       const res = await api("DELETE", `/api/admin/teams/${team.id}`, { headers: admin.headers, env: admin.env });
       expect(res.status).toBe(200);
 
-      const gone = await api("GET", `/api/admin/teams/${team.id}`, { headers: admin.headers, env: admin.env });
-      expect(gone.status).toBe(404);
+      expect(await env.DB.prepare("SELECT id FROM teams WHERE id = ?").bind(team.id).first()).toBeNull();
 
       const row = await env.DB.prepare("SELECT teamId FROM links WHERE id = ?").bind(link.id).first<{ teamId: string | null }>();
       expect(row?.teamId).toBeNull();
     });
 
-    it("returns 404 for unknown teams", async () => {
+    it("returns 404 when deleting an unknown team", async () => {
       const admin = await newAdmin();
-      for (const [method, path] of [
-        ["GET", "/api/admin/teams/nope"],
-        ["GET", "/api/admin/teams/nope/links"],
-        ["DELETE", "/api/admin/teams/nope"],
-      ] as [string, string][]) {
-        const res = await api(method, path, { headers: admin.headers, env: admin.env });
-        expect(res.status).toBe(404);
-      }
+      const res = await api("DELETE", "/api/admin/teams/nope", { headers: admin.headers, env: admin.env });
+      expect(res.status).toBe(404);
     });
   });
 

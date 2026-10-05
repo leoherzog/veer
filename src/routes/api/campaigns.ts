@@ -3,8 +3,10 @@ import { eq, sql, and, gte, inArray } from "drizzle-orm";
 import { getDb } from "../../db";
 import { campaigns, linkCampaigns, links, linkStats } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
-import { parseJsonBody } from "../../lib/request";
+import { parseDays, parseJsonBody } from "../../lib/request";
+import { statsCutoff } from "../../lib/date";
 import { accessibleLinks } from "../../lib/link-access";
+import { parseName } from "../../lib/validators";
 import type { AppEnv } from "../../types";
 
 type Campaign = typeof campaigns.$inferSelect;
@@ -23,7 +25,6 @@ function validateDescription(description: unknown): void {
 }
 
 const loadCampaign: MiddlewareHandler<CampaignEnv> = async (c, next) => {
-  if (c.var.campaign) return next();
   const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id")!;
@@ -33,10 +34,9 @@ const loadCampaign: MiddlewareHandler<CampaignEnv> = async (c, next) => {
   return next();
 }
 
+// In Hono `/:id/*` also matches `/:id`, so one registration covers both.
 campaignRoutes.use("/:id/*", loadCampaign);
-campaignRoutes.use("/:id", loadCampaign);
 
-// List user's campaigns (with link count)
 campaignRoutes.get("/", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
@@ -62,19 +62,13 @@ campaignRoutes.get("/", async (c) => {
   return c.json({ data: rows });
 });
 
-// Create campaign
 campaignRoutes.post("/", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
 
   const body = await parseJsonBody<{ name: string; description?: string }>(c);
 
-  if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
-    throw badRequest("name is required");
-  }
-  if (body.name.trim().length > 200) {
-    throw badRequest("name must be 200 characters or fewer");
-  }
+  const name = parseName(body.name);
   validateDescription(body.description);
 
   const id = crypto.randomUUID();
@@ -83,7 +77,7 @@ campaignRoutes.post("/", async (c) => {
   await db.insert(campaigns).values({
     id,
     userId: user.id,
-    name: body.name.trim(),
+    name,
     description: body.description?.trim() || null,
     createdAt: now,
     updatedAt: now,
@@ -93,7 +87,7 @@ campaignRoutes.post("/", async (c) => {
     data: {
       id,
       userId: user.id,
-      name: body.name.trim(),
+      name,
       description: body.description?.trim() || null,
       createdAt: now,
       updatedAt: now,
@@ -101,7 +95,6 @@ campaignRoutes.post("/", async (c) => {
   }, 201);
 });
 
-// Get campaign details + linked links
 campaignRoutes.get("/:id", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
@@ -130,7 +123,6 @@ campaignRoutes.get("/:id", async (c) => {
   return c.json({ data: { ...campaign, links: linkedRows } });
 });
 
-// Update campaign
 campaignRoutes.put("/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
@@ -141,13 +133,7 @@ campaignRoutes.put("/:id", async (c) => {
   const updates: Partial<typeof campaigns.$inferInsert> = { updatedAt: new Date() };
 
   if (body.name !== undefined) {
-    if (!body.name || typeof body.name !== "string" || !body.name.trim()) {
-      throw badRequest("name cannot be empty");
-    }
-    if (body.name.trim().length > 200) {
-      throw badRequest("name must be 200 characters or fewer");
-    }
-    updates.name = body.name.trim();
+    updates.name = parseName(body.name);
   }
 
   if (body.description !== undefined) {
@@ -161,7 +147,6 @@ campaignRoutes.put("/:id", async (c) => {
   return c.json({ data: merged });
 });
 
-// Delete campaign
 campaignRoutes.delete("/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
@@ -171,7 +156,6 @@ campaignRoutes.delete("/:id", async (c) => {
   return c.json({ success: true });
 });
 
-// Add links to campaign
 campaignRoutes.post("/:id/links", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
@@ -200,14 +184,12 @@ campaignRoutes.post("/:id/links", async (c) => {
     throw badRequest(`Links not found: ${invalidIds.join(", ")}`);
   }
 
-  // Insert associations in a single batch (ignore duplicates via onConflictDoNothing)
   await db.insert(linkCampaigns).values([...validIds].map(linkId => ({ linkId, campaignId: id })))
     .onConflictDoNothing();
 
   return c.json({ success: true });
 });
 
-// Remove link from campaign
 campaignRoutes.delete("/:id/links/:linkId", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
@@ -219,39 +201,29 @@ campaignRoutes.delete("/:id/links/:linkId", async (c) => {
   return c.json({ success: true });
 });
 
-// Aggregate stats across all campaign links
 campaignRoutes.get("/:id/stats", async (c) => {
   const user = c.var.user!;
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
-  const days = Math.min(90, Math.max(1, Number(c.req.query("days")) || 30));
-  const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const days = parseDays(c.req.query("days"));
 
   // Only links the caller can still access count toward the campaign's totals.
-  const campaignLinks = await db.select({ linkId: linkCampaigns.linkId })
+  const totals = await db
+    .select({
+      totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)`,
+      linkCount: sql<number>`count(distinct ${links.id})`,
+    })
     .from(linkCampaigns)
     .innerJoin(links, eq(linkCampaigns.linkId, links.id))
-    .where(and(eq(linkCampaigns.campaignId, id), accessibleLinks(user.id)));
-
-  if (campaignLinks.length === 0) {
-    return c.json({ data: { totalClicks: 0, linkCount: 0, period: { days } } });
-  }
-
-  const linkIds = campaignLinks.map(l => l.linkId);
-
-  const statsResult = await db
-    .select({ totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
-    .from(linkStats)
-    .where(and(
-      inArray(linkStats.linkId, linkIds),
-      gte(linkStats.date, cutoff),
-    ));
+    .leftJoin(linkStats, and(eq(linkStats.linkId, links.id), gte(linkStats.date, statsCutoff(days))))
+    .where(and(eq(linkCampaigns.campaignId, id), accessibleLinks(user.id)))
+    .get();
 
   return c.json({
     data: {
-      totalClicks: statsResult[0]?.totalClicks ?? 0,
-      linkCount: linkIds.length,
+      totalClicks: totals?.totalClicks ?? 0,
+      linkCount: totals?.linkCount ?? 0,
       period: { days },
     },
   });

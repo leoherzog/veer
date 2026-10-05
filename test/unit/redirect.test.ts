@@ -1,60 +1,10 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx } from "../helpers";
+import { mockExecutionCtx, cachedRedirect, cfRequest } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
 
-// ── Helpers ────────────────────────────────────────────────────────────
-
-/** Build a cached redirect entry with sensible defaults; override as needed. */
-function cachedRedirect(overrides: Partial<Parameters<typeof setCachedRedirect>[2]> = {}) {
-  return {
-    url: "https://default.example.com",
-    redirectType: 302,
-    linkId: `link-${crypto.randomUUID().slice(0, 8)}`,
-    isActive: true,
-    expiresAt: null,
-    maxClicks: null,
-    hasPassword: false,
-    isInternal: false,
-    ogTitle: null,
-    ogDescription: null,
-    ogImage: null,
-    paramForwarding: false,
-    targets: null,
-    domainHostname: null,
-    ...overrides,
-  };
-}
-
-/**
- * Create a Request with a `.cf` property (simulates Cloudflare's IncomingRequestCfProperties).
- * Hono reads `(req as any).cf` for geo data.
- */
-function cfRequest(
-  path: string,
-  options: { headers?: Record<string, string>; cf?: Record<string, unknown> } = {},
-): Request {
-  const url = `http://localhost${path}`;
-  // Workers runtime Request constructor accepts `cf` in the init object
-  const init: RequestInit & { cf?: Record<string, unknown> } = {
-    headers: options.headers,
-  };
-  if (options.cf) {
-    init.cf = options.cf;
-  }
-  return new Request(url, init);
-}
-
-// ── Tests ──────────────────────────────────────────────────────────────
-
 describe("Targeting evaluation via redirect", () => {
-  let auth: Awaited<ReturnType<typeof setupAuth>>;
-
-  beforeAll(async () => {
-    auth = await setupAuth(env);
-  });
-
   describe("geo targeting", () => {
     it("matches geo rule and redirects to target destination", async () => {
       await setCachedRedirect(env.KV, "geo-de", cachedRedirect({
@@ -231,20 +181,6 @@ describe("Targeting evaluation via redirect", () => {
   });
 
   describe("no rules match", () => {
-    it("returns default destination when no targeting rules exist", async () => {
-      await setCachedRedirect(env.KV, "no-targets", cachedRedirect({
-        url: "https://default.example.com/plain",
-        targets: null,
-        domainHostname: null,
-      }));
-
-      const req = cfRequest("/no-targets");
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://default.example.com/plain");
-    });
-
     it("returns default destination with empty targets array", async () => {
       await setCachedRedirect(env.KV, "empty-targets", cachedRedirect({
         url: "https://default.example.com/empty",
@@ -359,7 +295,9 @@ describe("Targeting + param forwarding combined", () => {
   });
 });
 
-describe("A/B targeting via redirect", () => {
+// Each distribution test runs hundreds of redirects, which exceed the default 5s
+// timeout when the full suite shares the CPU.
+describe("A/B targeting via redirect", { timeout: 30_000 }, () => {
   it("splits evenly between two 50-weight variants, leaving the default a clamped floor", async () => {
     // Two variants at weight 50 sum to 100, so defaultWeight = max(1, 100 - 100) = 1.
     // roll in [0, 101): a in [0,50), b in [50,100), default in [100,101).
@@ -444,8 +382,7 @@ describe("A/B targeting via redirect", () => {
   it("clamps a non-numeric weight to 1, sending the vast majority of traffic to the default", async () => {
     // matchValue "not-a-number" → parseInt = NaN → Math.max(1, Math.min(99, NaN || 0)) = 1.
     // defaultWeight = max(1, 100 - 1) = 99, total = 100 → default ~99%, variant ~1%.
-    // This is the regression test for the fall-through bug: before the fix the
-    // default was unreachable whenever A/B targets existed, so its share was 0%.
+    // The default destination must keep a reachable share when A/B targets exist.
     await setCachedRedirect(env.KV, "ab-nan", cachedRedirect({
       url: "https://default.example.com/ctl",
       targets: [

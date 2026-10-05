@@ -2,12 +2,21 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "veer",
   "main": "src/index.ts",
-  "compatibility_date": "2026-03-06",
-  "compatibility_flags": ["nodejs_compat_v2"],
+  // Capped by the workerd bundled with @cloudflare/vitest-pool-workers: a
+  // date newer than that binary supports makes `npm test` fail at startup.
+  "compatibility_date": "2026-08-22",
+  "compatibility_flags": ["nodejs_compat"],
+  // Setting a build command replaces Wrangler's default dev watch on src/, so
+  // src stays listed or Worker edits stop reloading.
+  "build": {
+    "command": "npm run build:frontend",
+    "watch_dir": ["src", "frontend/src"]
+  },
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": true
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
   },
   "d1_databases": [
     {
@@ -31,7 +40,9 @@
     "WORKER_NAME": "veer",
     "BETTER_AUTH_URL": "https://veer.production.example",
     "INSTANCE_NAME": "",
-    "DEMO_MODE": ""
+    "DEMO_MODE": "",
+    // Stats queries read this dataset; keep it equal to analytics_engine_datasets.
+    "AE_DATASET": "veer_clicks"
   },
   // Hourly cron. The scheduled handler (src/scheduled.ts) early-returns when
   // DEMO_MODE is unset, so non-demo deployments incur one cheap no-op per hour.
@@ -39,10 +50,7 @@
     "crons": ["0 * * * *"]
   },
   "placement": { "mode": "smart" },
-  "observability": {
-    "enabled": true,
-    "logs": { "head_sampling_rate": 1 }
-  },
+  "observability": { "enabled": true },
   "env": {
     "demo": {
       "name": "veer-demo",
@@ -50,10 +58,8 @@
         "WORKER_NAME": "veer-demo",
         "BETTER_AUTH_URL": "https://demo.veer.ing",
         "INSTANCE_NAME": "Veer Demo",
-        "DEMO_MODE": "true"
-      },
-      "triggers": {
-        "crons": ["0 * * * *"]
+        "DEMO_MODE": "true",
+        "AE_DATASET": "veer_clicks_demo"
       },
       "d1_databases": [
         {

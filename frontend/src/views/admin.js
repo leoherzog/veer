@@ -57,18 +57,12 @@ export async function renderAdmin(container) {
             <wa-input id="admin-user-search" label="Search users" class="wa-visually-hidden-label" placeholder="Search users..." with-clear>
               <wa-icon slot="start" name="magnifying-glass"></wa-icon>
             </wa-input>
-            <div id="admin-users-container">
-              <div class="wa-stack wa-align-items-center"><wa-spinner></wa-spinner></div>
-            </div>
+            <div id="admin-users-container"></div>
           </div>
         </wa-tab-panel>
 
         <wa-tab-panel name="teams">
-          <div class="wa-stack wa-gap-m">
-            <div id="admin-teams-container">
-              <div class="wa-stack wa-align-items-center"><wa-spinner></wa-spinner></div>
-            </div>
-          </div>
+          <div id="admin-teams-container"></div>
         </wa-tab-panel>
       </wa-tab-group>
 
@@ -110,7 +104,7 @@ export async function renderAdmin(container) {
             </div>
           </td>
           <td>${escapeHtml(u.email)}</td>
-          <td>${Number(u.linkCount) || 0}</td>
+          <td>${u.linkCount}</td>
           <td>${u.maxLinks != null ? Number(u.maxLinks) : "Unlimited"}</td>
           <td>
             <div class="wa-cluster wa-gap-2xs">
@@ -132,7 +126,6 @@ export async function renderAdmin(container) {
     });
     if (!usersContainer) return;
 
-    // Edit user
     usersContainer.querySelectorAll(".admin-edit-user-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         const dialog = container.querySelector("#edit-user-dialog");
@@ -144,7 +137,6 @@ export async function renderAdmin(container) {
       });
     });
 
-    // Impersonate
     usersContainer.querySelectorAll(".admin-impersonate-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
         await withLoadingBtn(btn, async () => {
@@ -157,7 +149,6 @@ export async function renderAdmin(container) {
     });
   }
 
-  // User search
   const searchInput = container.querySelector("#admin-user-search");
   bindSearchInput(searchInput, (q) => {
     usersSearch = q;
@@ -165,7 +156,6 @@ export async function renderAdmin(container) {
     loadUsers();
   });
 
-  // Edit user dialog
   const editDialog = container.querySelector("#edit-user-dialog");
   bindConfirmDialog({
     dialog: editDialog,
@@ -186,7 +176,6 @@ export async function renderAdmin(container) {
     },
   });
 
-  // Load users immediately
   loadUsers();
 
   // --- Teams tab (lazy) ---
@@ -199,13 +188,12 @@ export async function renderAdmin(container) {
     const teamsContainer = await loadTableSection(container.querySelector("#admin-teams-container"), {
       url: `/api/admin/teams?${params}`,
       label: "All teams",
-      headers: ["Name", "Slug", "Members", "Links", "Actions"],
+      headers: ["Name", "Members", "Links", "Actions"],
       renderRow: (t) => `
         <tr>
           <td>${escapeHtml(t.name)}</td>
-          <td>/${escapeHtml(t.slug)}</td>
-          <td>${Number(t.memberCount) || 0}</td>
-          <td>${Number(t.linkCount) || 0}</td>
+          <td>${t.memberCount}</td>
+          <td>${t.linkCount}</td>
           <td>
             <wa-button size="s" variant="danger" appearance="outlined" class="admin-delete-team-btn" data-team-id="${escapeAttr(t.id)}" data-name="${escapeAttr(t.name)}">
               <wa-icon slot="start" name="trash"></wa-icon>
@@ -220,7 +208,6 @@ export async function renderAdmin(container) {
     });
     if (!teamsContainer) return;
 
-    // Delete team
     teamsContainer.querySelectorAll(".admin-delete-team-btn").forEach((btn) => {
       btn.addEventListener("click", () => {
         container.querySelector("#delete-team-name").textContent = btn.dataset.name;

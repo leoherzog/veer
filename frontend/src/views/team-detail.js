@@ -1,5 +1,4 @@
 import { showToast } from "../components/toast.js";
-import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable } from "../lib/ui.js";
 
@@ -8,11 +7,11 @@ function renderMemberRow(member, isAdmin) {
     <tr>
       <td>
         <div class="wa-cluster wa-gap-xs">
-          <wa-avatar image="${escapeAttr(member.image || "")}" label="${escapeAttr(member.name || member.email || member.userId)}" style="--size:1.5rem;"></wa-avatar>
-          ${escapeHtml(member.name || member.email || member.userId)}
+          <wa-avatar image="${escapeAttr(member.image || "")}" label="${escapeAttr(member.name || member.email)}" style="--size:1.5rem;"></wa-avatar>
+          ${escapeHtml(member.name || member.email)}
         </div>
       </td>
-      <td>${escapeHtml(member.email || "")}</td>
+      <td>${escapeHtml(member.email)}</td>
       <td><wa-badge variant="${member.role === "admin" ? "brand" : "neutral"}" pill>${escapeHtml(member.role)}</wa-badge></td>
       <td>
         ${isAdmin ? `
@@ -21,7 +20,7 @@ function renderMemberRow(member, isAdmin) {
               <wa-icon slot="start" name="arrows-rotate"></wa-icon>
               ${member.role === "admin" ? "Demote" : "Promote"}
             </wa-button>
-            <wa-button size="s" variant="danger" appearance="outlined" class="remove-member-btn" data-user-id="${escapeAttr(member.userId)}" data-name="${escapeAttr(member.name || member.email || member.userId)}">
+            <wa-button size="s" variant="danger" appearance="outlined" class="remove-member-btn" data-user-id="${escapeAttr(member.userId)}" data-name="${escapeAttr(member.name || member.email)}">
               <wa-icon slot="start" name="user-minus"></wa-icon>
               Remove
             </wa-button>
@@ -44,7 +43,7 @@ function renderInviteRow(invite) {
       <td><wa-relative-time date="${escapeAttr(invite.expiresAt)}"></wa-relative-time></td>
       <td>
         <div class="wa-cluster wa-gap-2xs">
-          ${invite.token ? `<wa-copy-button value="${escapeAttr(inviteUrl(invite.token))}" copy-label="Copy invite link" success-label="Copied!"></wa-copy-button>` : ""}
+          <wa-copy-button value="${escapeAttr(inviteUrl(invite.token))}" copy-label="Copy invite link"></wa-copy-button>
           <wa-button size="s" variant="danger" appearance="outlined" class="cancel-invite-btn" data-invite-id="${escapeAttr(invite.id)}">
             <wa-icon slot="start" name="xmark"></wa-icon>
             Cancel
@@ -62,68 +61,48 @@ function invitesHtml(invites) {
     label: "Pending invites",
     columns: ["Email", "Role", "Expires", "Actions"],
     rows: invites.map(i => renderInviteRow(i)),
-    tbodyId: "invites-tbody",
   });
 }
 
-export async function renderTeamDetail(container, { id }, currentUser = null, { onBack, onTeamsChanged, activeTab = "members" } = {}) {
+export async function renderTeamDetail(container, { id }, currentUser, { onBack, onTeamsChanged, activeTab = "members" } = {}) {
   container.innerHTML = SPINNER;
-
-  let currentUserId = currentUser?.id;
-  if (!currentUserId) {
-    const meResult = await apiFetch("/api/me").catch(() => null);
-    if (meResult?.data) currentUserId = meResult.data.id;
-  }
 
   const teamResult = await apiFetch(`/api/teams/${encodeURIComponent(id)}`);
   if (!teamResult) return;
   const { data: team } = teamResult;
 
-  // Determine current user's role from members list
-  const members = team.members || [];
-  const currentMember = members.find(m => m.userId === currentUserId);
+  const { members } = team;
+  const currentMember = members.find(m => m.userId === currentUser.id);
   const isAdmin = currentMember?.role === "admin";
 
-  // Fetch invites if admin
   let invites = [];
   if (isAdmin) {
-    const invResult = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites`).catch(() => null);
+    const invResult = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invites`);
     if (invResult?.data) invites = invResult.data;
-  }
-
-  function goBack() {
-    if (onBack) {
-      onBack();
-    } else {
-      navigate("/teams");
-    }
   }
 
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
-        <div class="wa-stack wa-gap-2xs">
-          <div class="wa-cluster wa-gap-s">
-            <wa-button variant="neutral" appearance="plain" size="s" id="back-to-teams">
-              <wa-icon name="arrow-left"></wa-icon>
-            </wa-button>
-            <h1>${escapeHtml(team.name)}</h1>
-          </div>
-          <span class="wa-body-s wa-color-text-quiet">/${escapeHtml(team.slug)}</span>
+        <div class="wa-cluster wa-gap-s">
+          <wa-button variant="neutral" appearance="plain" size="s" id="back-to-teams">
+            <wa-icon name="arrow-left"></wa-icon>
+          </wa-button>
+          <h1>${escapeHtml(team.name)}</h1>
         </div>
         ${isAdmin ? `
           <div class="wa-cluster wa-gap-xs">
-            <wa-button variant="neutral" appearance="outlined" id="edit-team-btn" data-dialog="open edit-team-dialog">
+            <wa-button variant="neutral" appearance="outlined" data-dialog="open edit-team-dialog">
               <wa-icon slot="start" name="pen-to-square"></wa-icon>
               Edit
             </wa-button>
-            <wa-button variant="danger" appearance="outlined" id="delete-team-btn">
+            <wa-button variant="danger" appearance="outlined" data-dialog="open delete-team-dialog">
               <wa-icon slot="start" name="trash"></wa-icon>
               Delete
             </wa-button>
           </div>
         ` : `
-          <wa-button variant="danger" appearance="outlined" id="leave-team-btn">
+          <wa-button variant="danger" appearance="outlined" data-dialog="open leave-team-dialog">
             <wa-icon slot="start" name="right-from-bracket"></wa-icon>
             Leave Team
           </wa-button>
@@ -162,14 +141,11 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
             ` : ""}
             <wa-card>
               <h3 slot="header">Members</h3>
-              ${members.length === 0
-                ? `<p class="wa-color-text-quiet">No members.</p>`
-                : renderTable({
-                  label: "Team members",
-                  columns: ["Name", "Email", "Role", isAdmin ? "Actions" : ""],
-                  rows: members.map(m => renderMemberRow(m, isAdmin)),
-                })
-              }
+              ${renderTable({
+                label: "Team members",
+                columns: ["Name", "Email", "Role", isAdmin ? "Actions" : ""],
+                rows: members.map(m => renderMemberRow(m, isAdmin)),
+              })}
             </wa-card>
           </div>
         </wa-tab-panel>
@@ -212,8 +188,7 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     </div>
   `;
 
-  // Back button
-  container.querySelector("#back-to-teams").addEventListener("click", () => goBack());
+  container.querySelector("#back-to-teams").addEventListener("click", () => onBack());
 
   // Re-render preserving the active tab
   async function reloadPreservingTab() {
@@ -222,7 +197,6 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     onTeamsChanged?.();
   }
 
-  // Invite form
   const inviteForm = container.querySelector("#invite-form");
   if (inviteForm) {
     inviteForm.addEventListener("submit", async (e) => {
@@ -244,7 +218,6 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
         if (!result) return;
         const url = inviteUrl(result.data.token);
         showToast("Invite created! Share the link with the invitee.", "success");
-        // Show a small inline result with the invite URL and copy button
         const inviteResult = document.createElement("div");
         inviteResult.className = "wa-stack wa-gap-xs invite-result";
         inviteResult.style.marginTop = "var(--wa-space-s)";
@@ -252,12 +225,11 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
           <wa-callout variant="success">
             <div class="wa-cluster wa-gap-s wa-align-items-center">
               <code style="word-break:break-all;">${escapeHtml(url)}</code>
-              <wa-copy-button value="${escapeAttr(url)}" copy-label="Copy link" success-label="Copied!"></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(url)}" copy-label="Copy link"></wa-copy-button>
             </div>
             <p class="wa-body-s wa-color-text-quiet" style="margin-top:var(--wa-space-2xs);">Share this link with ${escapeHtml(email)}. It expires in 7 days.</p>
           </wa-callout>
         `;
-        // Insert the result right after the invite form
         const existingResult = inviteForm.parentElement.querySelector(".invite-result");
         if (existingResult) existingResult.remove();
         inviteForm.after(inviteResult);
@@ -266,7 +238,6 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     });
   }
 
-  // Change role buttons
   container.querySelectorAll(".change-role-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const userId = btn.dataset.userId;
@@ -284,7 +255,6 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     });
   });
 
-  // Remove member buttons
   const removeMemberDialog = container.querySelector("#remove-member-dialog");
   container.querySelectorAll(".remove-member-btn").forEach((btn) => {
     btn.addEventListener("click", () => {
@@ -334,7 +304,6 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
     bindCancelInviteButtons();
   }
 
-  // Edit team dialog
   if (isAdmin) {
     const editDialog = container.querySelector("#edit-team-dialog");
     container.querySelector("#confirm-edit-team").addEventListener("click", async () => {
@@ -356,33 +325,27 @@ export async function renderTeamDetail(container, { id }, currentUser = null, { 
       });
     });
 
-    // Delete team dialog
     bindConfirmDialog({
       dialog: container.querySelector("#delete-team-dialog"),
-      trigger: container.querySelector("#delete-team-btn"),
       confirmBtn: container.querySelector("#confirm-delete-team"),
       onConfirm: async () => {
         const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}`, { method: "DELETE" });
         if (!res) return false;
         showToast("Team deleted", "success");
-        goBack();
+        onBack();
       },
     });
   }
 
-  // Leave team button (non-admin members)
-  const leaveBtn = container.querySelector("#leave-team-btn");
-  if (leaveBtn) {
-    bindConfirmDialog({
-      dialog: container.querySelector("#leave-team-dialog"),
-      trigger: leaveBtn,
-      confirmBtn: container.querySelector("#confirm-leave-team"),
-      onConfirm: async () => {
-        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/leave`, { method: "POST" });
-        if (!res) return false;
-        showToast("You have left the team", "success");
-        goBack();
-      },
-    });
-  }
+  // Leave team (non-admin members)
+  bindConfirmDialog({
+    dialog: container.querySelector("#leave-team-dialog"),
+    confirmBtn: container.querySelector("#confirm-leave-team"),
+    onConfirm: async () => {
+      const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/leave`, { method: "POST" });
+      if (!res) return false;
+      showToast("You have left the team", "success");
+      onBack();
+    },
+  });
 }

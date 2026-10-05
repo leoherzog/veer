@@ -26,7 +26,6 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
       // The label is wrapped in its own button so the header cell keeps its
       // columnheader role (and with it a meaningful aria-sort).
       ...COLUMNS.map((col) => ({
-        label: "",
         sortKey: col.key,
         html: `<span class="th-sort" role="button" tabindex="0">${escapeHtml(col.label)}${sortIndicator(col.key, sort)}</span>`,
       })),
@@ -37,7 +36,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
         <td>
           <div class="wa-cluster wa-gap-2xs">
             <span>/${escapeHtml(link.slug)}</span>
-            <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy" success-label="Copied!" class="wa-font-size-s"></wa-copy-button>
+            <wa-copy-button value="${escapeAttr(shortUrl(link))}" class="wa-font-size-s"></wa-copy-button>
             ${link.teamId && link.teamName ? `<wa-icon id="team-icon-${escapeAttr(link.id)}" name="people-group" label="Team" class="wa-font-size-xs wa-color-text-quiet"></wa-icon><wa-tooltip for="team-icon-${escapeAttr(link.id)}">${escapeHtml(link.teamName)}</wa-tooltip>` : ""}
           </div>
         </td>

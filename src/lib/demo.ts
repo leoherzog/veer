@@ -1,8 +1,6 @@
-// Demo-mode constants. The synthetic user is injected by the auth middleware
-// (src/middleware/auth.ts) when DEMO_MODE=true, so visitors never go through
-// OAuth. The /api/* write-block middleware in src/index.ts intentionally blocks
-// POST/PUT/PATCH/DELETE under /api/auth/* as well — there is no real login flow
-// in demo mode, so sign-in/sign-out endpoints should never be reachable.
+// Demo-mode constants: the synthetic user the auth middleware injects and the
+// 403 message for blocked writes. scripts/seed.ts runs this module under Node's
+// type stripping, so a value import here needs an explicit `.ts` extension.
 import type { AuthUser } from "../types";
 
 export const DEMO_USER_ID = "demo-user";

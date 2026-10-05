@@ -8,37 +8,29 @@ import { isDemoMode } from "../lib/branding";
 import { DEMO_USER } from "../lib/demo";
 import type { AppEnv, AuthUser } from "../types";
 
-function isAdminUser(env: AppEnv["Bindings"], email: string): boolean {
-  const adminEmails = env.ADMIN_EMAILS?.split(",").map((e: string) => e.trim().toLowerCase()) ?? [];
-  return adminEmails.includes(email.toLowerCase());
-}
-
-async function checkSession(c: { env: AppEnv["Bindings"]; req: { raw: Request } }): Promise<AuthUser | null> {
-  const auth = getAuth(c.env);
-  const session = await auth.api.getSession({ headers: c.req.raw.headers });
-  if (!session?.user) return null;
+/** Build `c.var.user` from a user row, deriving `isAdmin` from ADMIN_EMAILS. */
+function toAuthUser(env: Env, u: { id: string; name: string; email: string; image?: string | null }): AuthUser {
+  const adminEmails = env.ADMIN_EMAILS?.split(",").map((e) => e.trim().toLowerCase()) ?? [];
   // Pick fields explicitly: the Better Auth user carries columns (emailVerified,
   // createdAt, …) that must not leak through `c.var.user` into API responses.
-  const u = session.user;
   return {
     id: u.id,
     name: u.name,
     email: u.email,
     image: u.image ?? null,
-    isAdmin: isAdminUser(c.env, u.email),
+    isAdmin: adminEmails.includes(u.email.toLowerCase()),
   };
 }
 
-/** Inject the synthetic demo user when DEMO_MODE=true. Returns true if demo bypass fired. */
-async function tryDemoBypass(c: { env: AppEnv["Bindings"]; set: (k: "user", v: AuthUser) => void }): Promise<boolean> {
-  if (!isDemoMode(c.env)) return false;
-  c.set("user", DEMO_USER);
-  return true;
+/** The session's user, the synthetic demo user in demo mode, or null. */
+async function sessionUser(env: Env, headers: Headers): Promise<AuthUser | null> {
+  if (isDemoMode(env)) return DEMO_USER;
+  const session = await getAuth(env).api.getSession({ headers });
+  return session?.user ? toAuthUser(env, session.user) : null;
 }
 
 export const requireAuth = createMiddleware<AppEnv>(async (c, next) => {
-  if (await tryDemoBypass(c)) return next();
-  const user = await checkSession(c);
+  const user = await sessionUser(c.env, c.req.raw.headers);
   if (!user) return c.json({ error: "Unauthorized" }, 401);
   c.set("user", user);
   await next();
@@ -50,55 +42,36 @@ export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
 });
 
 export const requireAuthOrApiKey = createMiddleware<AppEnv>(async (c, next) => {
-  if (await tryDemoBypass(c)) return next();
   const authHeader = c.req.header("Authorization");
+  if (isDemoMode(c.env) || !authHeader?.startsWith("Bearer ")) return requireAuth(c, next);
 
-  if (authHeader?.startsWith("Bearer ")) {
-    const key = authHeader.slice(7);
-    if (!key) return c.json({ error: "Unauthorized" }, 401);
-    const keyHash = await hashApiKey(key, c.env.BETTER_AUTH_SECRET);
-    const db = getDb(c.env.DB);
+  const key = authHeader.slice(7);
+  if (!key) return c.json({ error: "Unauthorized" }, 401);
+  const keyHash = await hashApiKey(key, c.env.BETTER_AUTH_SECRET);
+  const db = getDb(c.env.DB);
 
-    const [row] = await db.select({
-      keyId: apiKeys.id,
-      keyExpiresAt: apiKeys.expiresAt,
-      userId: userTable.id,
-      userName: userTable.name,
-      userEmail: userTable.email,
-      userImage: userTable.image,
-    }).from(apiKeys)
-      .innerJoin(userTable, eq(apiKeys.userId, userTable.id))
-      .where(eq(apiKeys.keyHash, keyHash))
-      .limit(1);
+  const [row] = await db.select({
+    keyId: apiKeys.id,
+    keyExpiresAt: apiKeys.expiresAt,
+    user: { id: userTable.id, name: userTable.name, email: userTable.email, image: userTable.image },
+  }).from(apiKeys)
+    .innerJoin(userTable, eq(apiKeys.userId, userTable.id))
+    .where(eq(apiKeys.keyHash, keyHash))
+    .limit(1);
 
-    if (!row) {
-      return c.json({ error: "Unauthorized" }, 401);
-    }
-
-    if (row.keyExpiresAt && row.keyExpiresAt < new Date()) {
-      return c.json({ error: "API key expired" }, 401);
-    }
-
-    const isAdmin = isAdminUser(c.env, row.userEmail);
-
-    c.set("user", {
-      id: row.userId,
-      name: row.userName,
-      email: row.userEmail,
-      image: row.userImage ?? null,
-      isAdmin,
-    });
-
-    c.executionCtx.waitUntil(
-      db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.keyId)),
-    );
-
-    return await next();
+  if (!row) {
+    return c.json({ error: "Unauthorized" }, 401);
   }
 
-  // Fall through to session auth
-  const user = await checkSession(c);
-  if (!user) return c.json({ error: "Unauthorized" }, 401);
-  c.set("user", user);
-  await next();
+  if (row.keyExpiresAt && row.keyExpiresAt < new Date()) {
+    return c.json({ error: "API key expired" }, 401);
+  }
+
+  c.set("user", toAuthUser(c.env, row.user));
+
+  c.executionCtx.waitUntil(
+    db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.keyId)),
+  );
+
+  return next();
 });

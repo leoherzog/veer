@@ -1,44 +1,40 @@
 {
   "name": "veer",
   "version": "1.0.0",
-  "description": "",
   "scripts": {
-    "predev": "npm run build && npm run db:migrate:local",
-    "dev": "concurrently \"node frontend/esbuild.mjs --watch\" \"wrangler dev\"",
-    "build:frontend": "node frontend/esbuild.mjs --minify",
-    "build": "wrangler types && npm run build:frontend",
-    "deploy": "npm run build && wrangler deploy",
+    "predev": "npm run db:migrate:local",
+    "dev": "wrangler dev --types",
+    "build:frontend": "esbuild frontend/src/app.js --bundle --format=esm --minify --outdir=public/dist",
+    "deploy": "wrangler deploy",
     "db:generate": "drizzle-kit generate",
     "db:migrate:local": "wrangler d1 migrations apply veer-db --local",
     "typecheck": "wrangler types && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:local": "tsx scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db --local --file=scripts/seed.generated.sql",
-    "seed:remote": "tsx scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db-demo --remote --env demo --file=scripts/seed.generated.sql"
+    "seed:local": "node scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db --local --file=scripts/seed.generated.sql",
+    "seed:remote": "node scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db-demo --remote --env demo --file=scripts/seed.generated.sql"
   },
-  "keywords": [],
-  "author": "",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
   "dependencies": {
-    "@awesome.me/webawesome": "^3.12.0",
+    "@awesome.me/webawesome": "^3.14.0",
     "@better-auth/passkey": "^1.6.25",
-    "@opentelemetry/api": "^1.9.1",
     "better-auth": "^1.6.25",
     "chart.js": "^4.5.1",
     "chartjs-chart-geo": "^4.3.6",
-    "drizzle-orm": "^0.45.2",
-    "hono": "^4.13.5",
+    "drizzle-orm": "^0.45.3",
+    "hono": "^4.13.13",
     "topojson-client": "^3.1.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.20.3",
-    "concurrently": "^10.0.5",
-    "drizzle-kit": "^0.31.9",
-    "esbuild": "^0.28.1",
-    "tsx": "^4.23.12",
+    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "drizzle-kit": "^0.31.11",
+    "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.120.0"
+    "wrangler": "^4.147.0"
   }
 }

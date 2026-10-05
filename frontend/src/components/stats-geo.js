@@ -1,5 +1,5 @@
 import { CHART_SKELETON, noData, fetchJSON, statsCard } from "../lib/stats-common.js";
-import { createChart, destroyCharts, registerChart, themeColors } from "../lib/chart-helper.js";
+import { createChart, registerChart, themeColors } from "../lib/chart-helper.js";
 import { Chart } from "chart.js";
 import { feature } from "topojson-client";
 
@@ -51,7 +51,6 @@ function buildClickMap(countries) {
 }
 
 export async function renderStatsGeo(container, linkId, days = 30) {
-  destroyCharts(container);
   container.innerHTML = statsCard("Geographic", CHART_SKELETON);
   // Only the newest render may touch the DOM. An overlapping one resuming after
   // an await would attach a second chart to a canvas the newer render owns.
@@ -61,8 +60,7 @@ export async function renderStatsGeo(container, linkId, days = 30) {
     const { data } = await fetchJSON(`/api/stats/${linkId}/geo?days=${days}`);
     if (container._geoRender !== token) return;
 
-    const countries = data.countries ?? [];
-    const cities = data.cities ?? [];
+    const { countries, cities } = data;
 
     if (!countries.length && !cities.length) {
       container.innerHTML = statsCard("Geographic", noData("No geographic data yet"));
@@ -78,10 +76,6 @@ export async function renderStatsGeo(container, linkId, days = 30) {
       </div>
     `);
 
-    // Tracked as it fills so a failure part-way still leaves the charts destroyable.
-    const charts = [];
-    container._charts = charts;
-
     // Choropleth map
     if (hasMap) {
       try {
@@ -91,81 +85,76 @@ export async function renderStatsGeo(container, linkId, days = 30) {
         const maxClicks = Math.max(...clickMap.values(), 1);
 
         const mapCanvas = container.querySelector("#geo-map");
-        if (mapCanvas) {
-          const chart = registerChart(new Chart(mapCanvas, {
-            type: "choropleth",
-            data: {
-              labels: features.map((f) => f.properties.name),
-              datasets: [{
-                label: "Clicks",
-                data: features.map((f) => ({
-                  feature: f,
-                  value: clickMap.get(f.id) || 0,
-                })),
-                // Scriptable so the map repaints in the new palette on a theme change.
-                backgroundColor: (ctx) => {
-                  const v = ctx.raw?.value || 0;
-                  const colors = themeColors();
-                  if (v === 0) return colors.fill;
-                  const intensity = Math.min(v / maxClicks, 1);
-                  const alpha = 0.15 + intensity * 0.85;
-                  return hexToRgba(colors.brand, alpha);
-                },
-                borderColor: () => themeColors().border,
-                borderWidth: 0.5,
-              }],
-            },
-            options: {
-              responsive: true,
-              maintainAspectRatio: false,
-              showOutline: true,
-              showGraticule: false,
-              plugins: {
-                legend: { display: false },
-                tooltip: {
-                  callbacks: {
-                    label: (ctx) => {
-                      const v = ctx.raw?.value || 0;
-                      return v > 0 ? `${ctx.label}: ${v} click${v !== 1 ? "s" : ""}` : `${ctx.label}: No clicks`;
-                    },
+        registerChart(new Chart(mapCanvas, {
+          type: "choropleth",
+          data: {
+            labels: features.map((f) => f.properties.name),
+            datasets: [{
+              label: "Clicks",
+              data: features.map((f) => ({
+                feature: f,
+                value: clickMap.get(f.id) || 0,
+              })),
+              // Scriptable so the map repaints in the new palette on a theme change.
+              backgroundColor: (ctx) => {
+                const v = ctx.raw?.value || 0;
+                const colors = themeColors();
+                if (v === 0) return colors.fill;
+                const intensity = Math.min(v / maxClicks, 1);
+                const alpha = 0.15 + intensity * 0.85;
+                return hexToRgba(colors.brand, alpha);
+              },
+              borderColor: () => themeColors().border,
+              borderWidth: 0.5,
+            }],
+          },
+          options: {
+            responsive: true,
+            maintainAspectRatio: false,
+            showOutline: true,
+            showGraticule: false,
+            plugins: {
+              legend: { display: false },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => {
+                    const v = ctx.raw?.value || 0;
+                    return v > 0 ? `${ctx.label}: ${v} click${v !== 1 ? "s" : ""}` : `${ctx.label}: No clicks`;
                   },
                 },
               },
-              scales: {
-                projection: {
-                  axis: "x",
-                  projection: "equalEarth",
-                },
-                color: {
-                  axis: "x",
-                  display: false,
-                },
+            },
+            scales: {
+              projection: {
+                axis: "x",
+                projection: "equalEarth",
+              },
+              color: {
+                axis: "x",
+                display: false,
               },
             },
-          }));
-          charts.push(chart);
-        }
+          },
+        }));
       } catch {
         if (container._geoRender !== token) return;
         // The atlas is a third-party fetch; say so instead of leaving an empty box.
-        const slot = container.querySelector("#geo-map-slot");
-        if (slot) slot.innerHTML = noData("Map unavailable");
+        container.querySelector("#geo-map-slot").innerHTML = noData("Map unavailable");
       }
     }
 
-    function makeBar(id, items, labelKey) {
-      const canvas = container.querySelector(`#${id}`);
-      if (!canvas || !items.length) return;
-      charts.push(createChart(canvas, "bar", {
+    function makeBar(id, items) {
+      if (!items.length) return;
+      createChart(container.querySelector(`#${id}`), "bar", {
         data: {
-          labels: items.map((i) => i[labelKey]),
+          labels: items.map((i) => i.name),
           datasets: [{ label: "Clicks", data: items.map((i) => i.clicks) }],
         },
-      }));
+      });
     }
 
-    makeBar("geo-countries", countries, "name");
-    makeBar("geo-cities", cities, "name");
+    makeBar("geo-countries", countries);
+    makeBar("geo-cities", cities);
   } catch {
     if (container._geoRender !== token) return;
     container.innerHTML = statsCard("Geographic", noData("Failed to load geographic data"));
