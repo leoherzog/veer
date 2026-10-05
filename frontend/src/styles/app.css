@@ -46,6 +46,11 @@ body.demo-mode #create-team-btn {
   display: none;
 }
 
+/* wa-button pads its label for text and squares itself only around a lone
+   wa-icon. The avatar trigger hugs the avatar so it sits on the header gutter. */
+.avatar-trigger::part(base) { padding: 0; width: auto; height: auto; }
+.avatar-trigger::part(label) { display: flex; }
+
 /* Inline help icon beside a heading. Sized in em to track the heading, since the
    wa-font-size-* utilities are absolute. Kept inline, not in a flex parent, so
    wa-icon's vertical-align nudge still applies. */

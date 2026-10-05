@@ -41,7 +41,7 @@ export function renderNavBar(container, user) {
         ${user
           ? `
             <wa-dropdown placement="bottom-end">
-              <wa-button slot="trigger" variant="neutral" appearance="plain" pill>
+              <wa-button slot="trigger" class="avatar-trigger" variant="neutral" appearance="plain" pill>
                 <wa-avatar ${avatarAttrs} style="--size: 2rem;"></wa-avatar>
               </wa-button>
               <wa-dropdown-item id="settings-link">
