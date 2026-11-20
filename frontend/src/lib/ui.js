@@ -118,6 +118,52 @@ export async function withLoadingBtn(btn, fn) {
 }
 
 /**
+ * Run `fn(match, event)` for each click on a `selector` element inside
+ * `container`, including elements rendered after binding. Bind once per element:
+ * a view that renders itself again into the same container binds to an element
+ * that render created, or listeners pile up.
+ */
+export function delegateClick(container, selector, fn) {
+  container.addEventListener("click", (e) => {
+    const match = e.target.closest(selector);
+    if (match && container.contains(match)) fn(match, e);
+  });
+}
+
+/** Close `dialog` and run `fn` once it has finished closing, so a re-render never removes it mid-animation. */
+export function afterClose(dialog, fn) {
+  if (!dialog.open) {
+    fn();
+    return;
+  }
+  dialog.addEventListener("wa-after-hide", function onHide(e) {
+    if (e.target !== dialog) return;
+    dialog.removeEventListener("wa-after-hide", onHide);
+    fn();
+  });
+  dialog.open = false;
+}
+
+/**
+ * Callout holding a secret or link beside a copy button. `before` and `after`
+ * are trusted markup stacked above and below the value.
+ */
+export function secretCallout({ variant, icon = "", value, copyLabel = "", before = "", after = "" }) {
+  const label = copyLabel ? ` copy-label="${escapeAttr(copyLabel)}"` : "";
+  return `<wa-callout variant="${escapeAttr(variant)}">
+    ${icon ? `<wa-icon slot="icon" name="${escapeAttr(icon)}"></wa-icon>` : ""}
+    <div class="wa-stack wa-gap-xs">
+      ${before}
+      <div class="wa-cluster wa-gap-xs">
+        <code class="secret-value">${escapeHtml(value)}</code>
+        <wa-copy-button value="${escapeAttr(value)}"${label}></wa-copy-button>
+      </div>
+      ${after}
+    </div>
+  </wa-callout>`;
+}
+
+/**
  * Wire a confirmation dialog. `confirmBtn` runs `onConfirm` inside
  * withLoadingBtn and closes the dialog once it resolves (return `false` to keep
  * it open, e.g. on failure). `onConfirm` owns its own success toast and any

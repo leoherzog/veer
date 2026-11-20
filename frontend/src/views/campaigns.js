@@ -1,6 +1,6 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, emptyState, errorCallout } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, emptyState, errorCallout, afterClose } from "../lib/ui.js";
 
 /** Name and description controls shared by the campaign create and edit forms. */
 export function campaignFields(campaign = null) {
@@ -17,20 +17,6 @@ export function campaignBody(form) {
     name: String(fields.get("name") ?? "").trim(),
     description: String(fields.get("description") ?? "").trim() || null,
   };
-}
-
-/** Close `dialog` and run `fn` once it has finished closing, so a re-render never removes it mid-animation. */
-export function afterClose(dialog, fn) {
-  if (!dialog.open) {
-    fn();
-    return;
-  }
-  dialog.addEventListener("wa-after-hide", function onHide(e) {
-    if (e.target !== dialog) return;
-    dialog.removeEventListener("wa-after-hide", onHide);
-    fn();
-  });
-  dialog.open = false;
 }
 
 export async function renderCampaignsPanel(container) {

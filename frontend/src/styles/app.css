@@ -40,6 +40,12 @@ wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
   .text-truncate { max-width: 100px; }
 }
 
+/* wa-avatar defaults to 3rem; a table row's avatar matches its line of text. */
+.row-avatar { --size: 1.5rem; }
+
+/* An API key or invite URL has no break opportunities and would overflow its callout. */
+.secret-value { word-break: break-all; }
+
 /* wa-skeleton fills its container; a stat tile's value placeholder is one line
    of the value's text, narrower than the tile. */
 .stat-skeleton { width: 4em; height: 1lh; }

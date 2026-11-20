@@ -1,6 +1,6 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { apiFetch, withLoadingBtn, bindSearchInput, bindConfirmDialog, loadTableSection } from "../lib/ui.js";
+import { apiFetch, withLoadingBtn, bindSearchInput, bindConfirmDialog, loadTableSection, delegateClick } from "../lib/ui.js";
 
 const IMPERSONATION_KEY = "veer_impersonating_from";
 
@@ -37,6 +37,11 @@ export function bindImpersonationBanner() {
   }
 }
 
+/** The max-links control, rebuilt on each open so no earlier entry or validity state carries over. */
+function maxLinksField(value) {
+  return `<wa-number-input id="edit-user-maxlinks" label="Max Links" min="1" without-steppers hint="Leave empty for unlimited" value="${escapeAttr(value)}"></wa-number-input>`;
+}
+
 export async function renderAdmin(container) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
@@ -69,7 +74,7 @@ export async function renderAdmin(container) {
       <wa-dialog id="edit-user-dialog" label="Edit User" light-dismiss>
         <div class="wa-stack wa-gap-m">
           <p>Editing <strong id="edit-user-name"></strong></p>
-          <wa-input id="edit-user-maxlinks" label="Max Links" type="number" min="1" hint="Leave empty for unlimited"></wa-input>
+          ${maxLinksField("")}
         </div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" id="confirm-edit-user">Save</wa-button>
@@ -99,7 +104,7 @@ export async function renderAdmin(container) {
         <tr>
           <td>
             <div class="wa-cluster wa-gap-xs">
-              <wa-avatar image="${escapeAttr(u.image || "")}" label="${escapeAttr(u.name || u.email)}" style="--size:1.5rem;"></wa-avatar>
+              <wa-avatar class="row-avatar" image="${escapeAttr(u.image)}" label="${escapeAttr(u.name || u.email)}"></wa-avatar>
               ${escapeHtml(u.name || "—")}
             </div>
           </td>
@@ -108,7 +113,7 @@ export async function renderAdmin(container) {
           <td>${u.maxLinks != null ? Number(u.maxLinks) : "Unlimited"}</td>
           <td>
             <div class="wa-cluster wa-gap-2xs">
-              <wa-button size="s" variant="neutral" appearance="outlined" class="admin-edit-user-btn" data-user-id="${escapeAttr(u.id)}" data-name="${escapeAttr(u.name || u.email)}" data-max-links="${escapeAttr(String(u.maxLinks ?? ""))}">
+              <wa-button size="s" variant="neutral" appearance="outlined" class="admin-edit-user-btn" data-dialog="open edit-user-dialog" data-user-id="${escapeAttr(u.id)}" data-name="${escapeAttr(u.name || u.email)}" data-max-links="${escapeAttr(String(u.maxLinks ?? ""))}">
                 <wa-icon slot="start" name="pen-to-square"></wa-icon>
                 Edit
               </wa-button>
@@ -125,17 +130,6 @@ export async function renderAdmin(container) {
       onPageChange: (p) => { usersPage = p; loadUsers(); },
     });
     if (!usersContainer) return;
-
-    usersContainer.querySelectorAll(".admin-edit-user-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const dialog = container.querySelector("#edit-user-dialog");
-        container.querySelector("#edit-user-name").textContent = btn.dataset.name;
-        const maxLinksInput = container.querySelector("#edit-user-maxlinks");
-        maxLinksInput.value = btn.dataset.maxLinks;
-        dialog.dataset.userId = btn.dataset.userId;
-        dialog.open = true;
-      });
-    });
 
     usersContainer.querySelectorAll(".admin-impersonate-btn").forEach((btn) => {
       btn.addEventListener("click", async () => {
@@ -157,14 +151,22 @@ export async function renderAdmin(container) {
   });
 
   const editDialog = container.querySelector("#edit-user-dialog");
+  delegateClick(container.querySelector("#admin-users-container"), ".admin-edit-user-btn", (btn) => {
+    container.querySelector("#edit-user-name").textContent = btn.dataset.name;
+    editDialog.querySelector("#edit-user-maxlinks").outerHTML = maxLinksField(btn.dataset.maxLinks);
+    editDialog.dataset.userId = btn.dataset.userId;
+  });
+
   bindConfirmDialog({
     dialog: editDialog,
     confirmBtn: container.querySelector("#confirm-edit-user"),
     onConfirm: async () => {
-      const maxLinksInput = container.querySelector("#edit-user-maxlinks");
-      const rawMaxLinks = maxLinksInput.value.trim();
-      // An empty field means unlimited; the API rejects 0.
-      const maxLinks = rawMaxLinks === "" ? null : parseInt(rawMaxLinks, 10);
+      const maxLinksInput = editDialog.querySelector("#edit-user-maxlinks");
+      // A garbled entry reads as empty, which would save unlimited; reportValidity
+      // also rejects fractions and values below 1.
+      if (!maxLinksInput.reportValidity()) return false;
+      const raw = maxLinksInput.value ?? "";
+      const maxLinks = raw === "" ? null : Number(raw);
       const res = await apiFetch(`/api/admin/users/${encodeURIComponent(editDialog.dataset.userId)}`, {
         method: "PATCH",
         json: { maxLinks },
@@ -181,10 +183,10 @@ export async function renderAdmin(container) {
   let teamsLoaded = false;
   let teamsPage = 1;
 
-  async function loadAdminTeams() {
+  function loadAdminTeams() {
     const params = new URLSearchParams({ page: teamsPage, limit: 20 });
 
-    const teamsContainer = await loadTableSection(container.querySelector("#admin-teams-container"), {
+    loadTableSection(container.querySelector("#admin-teams-container"), {
       url: `/api/admin/teams?${params}`,
       label: "All teams",
       headers: ["Name", "Members", "Links", "Actions"],
@@ -194,7 +196,7 @@ export async function renderAdmin(container) {
           <td>${t.memberCount}</td>
           <td>${t.linkCount}</td>
           <td>
-            <wa-button size="s" variant="danger" appearance="outlined" class="admin-delete-team-btn" data-team-id="${escapeAttr(t.id)}" data-name="${escapeAttr(t.name)}">
+            <wa-button size="s" variant="danger" appearance="outlined" class="admin-delete-team-btn" data-dialog="open delete-team-dialog" data-team-id="${escapeAttr(t.id)}" data-name="${escapeAttr(t.name)}">
               <wa-icon slot="start" name="trash"></wa-icon>
               Delete
             </wa-button>
@@ -205,19 +207,14 @@ export async function renderAdmin(container) {
       error: "Failed to load teams.",
       onPageChange: (p) => { teamsPage = p; loadAdminTeams(); },
     });
-    if (!teamsContainer) return;
-
-    teamsContainer.querySelectorAll(".admin-delete-team-btn").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        container.querySelector("#delete-team-name").textContent = btn.dataset.name;
-        deleteTeamDialog.dataset.teamId = btn.dataset.teamId;
-        deleteTeamDialog.open = true;
-      });
-    });
   }
 
-  // Delete team dialog — bound once; loadAdminTeams re-runs on every page change
   const deleteTeamDialog = container.querySelector("#delete-team-dialog");
+  delegateClick(container.querySelector("#admin-teams-container"), ".admin-delete-team-btn", (btn) => {
+    container.querySelector("#delete-team-name").textContent = btn.dataset.name;
+    deleteTeamDialog.dataset.teamId = btn.dataset.teamId;
+  });
+
   bindConfirmDialog({
     dialog: deleteTeamDialog,
     confirmBtn: container.querySelector("#confirm-delete-team"),

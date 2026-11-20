@@ -1,9 +1,9 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, bindSearchInput, shortUrl, emptyState, errorCallout, statCard, renderTable } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, bindSearchInput, shortUrl, emptyState, errorCallout, statCard, renderTable, afterClose } from "../lib/ui.js";
 import { fetchJSON } from "../lib/stats-common.js";
-import { campaignFields, campaignBody, afterClose } from "./campaigns.js";
+import { campaignFields, campaignBody } from "./campaigns.js";
 
 export async function renderCampaignDetail(container, { id }) {
   // A refresh keeps the current markup until the new data lands, so adding or

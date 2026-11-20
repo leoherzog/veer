@@ -1,7 +1,8 @@
-import { authClient } from "../auth-client.js";
+import { authClient, isPasskeyCancel } from "../auth-client.js";
 import { showToast } from "../components/toast.js";
 import { getInstanceName, getLoginOptions } from "../lib/config.js";
 import { escapeHtml } from "../lib/escape.js";
+import { withLoadingBtn } from "../lib/ui.js";
 
 /**
  * Where OAuth should return the browser. The login view renders in place on
@@ -9,105 +10,92 @@ import { escapeHtml } from "../lib/escape.js";
  * user asked for; /login itself would bounce them straight back here.
  */
 function callbackTarget() {
-  const path = location.pathname + location.search;
-  return path === "/login" || path.startsWith("/login?") ? "/links" : path;
+  return location.pathname === "/login" ? "/links" : location.pathname + location.search;
 }
 
 const allProviders = [
-  { id: "google", name: "Google", icon: "google" },
-  { id: "github", name: "GitHub", icon: "github" },
-  { id: "microsoft", name: "Microsoft", icon: "microsoft" },
-  { id: "discord", name: "Discord", icon: "discord" },
+  { id: "google", name: "Google" },
+  { id: "github", name: "GitHub" },
+  { id: "microsoft", name: "Microsoft" },
+  { id: "discord", name: "Discord" },
 ];
+
+/**
+ * Start OAuth with provider `p`. The client resolves `{ error }` on an HTTP
+ * failure and throws only on a network failure; both toast.
+ * @returns {Promise<boolean>} false when sign-in failed to start.
+ */
+async function socialSignIn(p) {
+  const { error } = await authClient.signIn.social({ provider: p.id, callbackURL: callbackTarget() })
+    .catch((e) => ({ error: e }));
+  if (error) showToast(`Sign in with ${p.name} failed`, "danger");
+  return !error;
+}
 
 function renderButtons(container, providers) {
   const wrapper = container.querySelector("#provider-buttons");
   wrapper.innerHTML = providers.map((p) => `
     <wa-button variant="neutral" appearance="outlined" size="l" data-provider="${p.id}">
-      <wa-icon slot="start" name="${p.icon}" family="brands"></wa-icon>
+      <wa-icon slot="start" name="${p.id}" family="brands"></wa-icon>
       Continue with ${p.name}
     </wa-button>
   `).join("");
 
-  wrapper.querySelectorAll("[data-provider]").forEach((btn) => {
-    btn.addEventListener("click", async () => {
-      const provider = btn.dataset.provider;
-      try {
-        await authClient.signIn.social({
-          provider,
-          callbackURL: callbackTarget(),
-        });
-      } catch {
-        showToast(`Sign in with ${provider} failed`, "danger");
-      }
-    });
-  });
+  for (const p of providers) {
+    wrapper.querySelector(`[data-provider="${p.id}"]`).addEventListener("click", () => socialSignIn(p));
+  }
 }
 
-function renderPasskeyButton(container, enabled) {
-  if (!enabled) return;
-  const section = container.querySelector("#passkey-section");
-  section.hidden = false;
-  const btn = section.querySelector("#passkey-signin");
-  btn.addEventListener("click", async () => {
-    btn.loading = true;
-    try {
-      const result = await authClient.signIn.passkey();
-      if (result?.error) {
-        showToast(result.error.message || "Passkey sign-in failed", "danger");
-      } else {
-        window.location.href = callbackTarget();
-      }
-    } catch {
-      showToast("Passkey sign-in failed", "danger");
-    } finally {
-      btn.loading = false;
+function bindPasskeyButton(btn) {
+  btn.addEventListener("click", () => withLoadingBtn(btn, async () => {
+    const { error } = await authClient.signIn.passkey().catch((e) => ({ error: e }));
+    if (!error) {
+      location.href = callbackTarget();
+    } else if (isPasskeyCancel(error)) {
+      showToast("Passkey sign-in cancelled", "warning");
+    } else {
+      showToast(error.message || "Passkey sign-in failed", "danger");
     }
-  });
+  }));
 }
 
 export function renderLogin(container) {
+  const options = getLoginOptions();
+  const passkey = options?.passkey === true;
+  const providers = allProviders.filter((p) => options?.providers.includes(p.id));
+
+  let help = "Choose a provider to continue";
+  if (!options) help = "Failed to load login providers. Please refresh to try again.";
+  else if (!providers.length) help = passkey ? "Sign in with your passkey to continue" : "Have your administrator configure at least one login provider";
+
   container.innerHTML = `
     <div class="wa-stack wa-gap-l wa-text-center">
       <h1>Sign in to ${escapeHtml(getInstanceName())}</h1>
-      <p id="login-help">Choose a provider to continue</p>
-      <div class="wa-stack wa-gap-s" id="provider-buttons"></div>
-      <div id="passkey-section" hidden>
-        <wa-divider></wa-divider>
-        <wa-button id="passkey-signin" variant="brand" size="l" style="width:100%;">
+      <p id="login-help">${help}</p>
+      ${providers.length ? `<div class="wa-stack wa-gap-s" id="provider-buttons"></div>` : ""}
+      ${passkey ? `
+        ${providers.length ? "<wa-divider></wa-divider>" : ""}
+        <wa-button id="passkey-signin" variant="brand" size="l">
           <wa-icon slot="start" name="key"></wa-icon>
           Sign in with passkey
         </wa-button>
-      </div>
+      ` : ""}
     </div>
   `;
 
-  const help = container.querySelector("#login-help");
-  const options = getLoginOptions();
-  if (!options) {
-    help.textContent = "Failed to load login providers. Please refresh to try again.";
-    return;
-  }
-  const { passkey } = options;
-  const providers = allProviders.filter((p) => options.providers.includes(p.id));
-
-  // Single provider, no passkey — skip login page and redirect immediately
+  // Single provider, no passkey: go straight to the provider, and fall back to
+  // the button if the redirect fails to start.
   if (providers.length === 1 && !passkey) {
-    help.textContent = `Redirecting to ${providers[0].name}…`;
-    authClient.signIn.social({
-      provider: providers[0].id,
-      callbackURL: callbackTarget(),
-    }).catch(() => {
-      showToast(`Sign in with ${providers[0].name} failed`, "danger");
+    const helpEl = container.querySelector("#login-help");
+    helpEl.textContent = `Redirecting to ${providers[0].name}…`;
+    socialSignIn(providers[0]).then((ok) => {
+      if (ok) return;
       renderButtons(container, providers);
-      help.textContent = "Choose a provider to continue";
+      helpEl.textContent = help;
     });
     return;
   }
 
-  renderButtons(container, providers);
-  renderPasskeyButton(container, passkey);
-  if (!providers.length && !passkey) {
-    help.textContent = "Have your administrator configure at least one login provider";
-  }
+  if (providers.length) renderButtons(container, providers);
+  if (passkey) bindPasskeyButton(container.querySelector("#passkey-signin"));
 }

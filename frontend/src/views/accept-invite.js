@@ -1,59 +1,52 @@
 import { navigate } from "../router.js";
+import { showToast } from "../components/toast.js";
 import { escapeHtml } from "../lib/escape.js";
 
 export async function renderAcceptInvite(container, { token }) {
-  /** Render a terminal state and wire its action button. `body` is trusted HTML. */
-  const showState = ({ icon, tone, title, body, action, onAction }) => {
+  /** Render a failure with plain-text `body` and its trusted `action` markup. */
+  const showFailure = ({ title, body, action }) => {
     container.innerHTML = `
-      <div class="wa-${tone} wa-stack wa-align-items-center wa-gap-m wa-text-center">
-        <wa-icon name="${icon}" class="wa-font-size-3xl" style="color: var(--wa-color-on-quiet);"></wa-icon>
+      <div class="wa-danger wa-stack wa-align-items-center wa-gap-m wa-text-center">
+        <wa-icon name="circle-xmark" class="wa-font-size-3xl" style="color: var(--wa-color-on-quiet);"></wa-icon>
         <h2>${escapeHtml(title)}</h2>
-        <p>${body}</p>
-        <wa-button variant="brand" id="state-action">${escapeHtml(action)}</wa-button>
+        <p>${escapeHtml(body)}</p>
+        ${action}
       </div>
     `;
-    container.querySelector("#state-action")?.addEventListener("click", onAction);
   };
 
   container.innerHTML = `<div class="wa-stack wa-align-items-center"><wa-spinner></wa-spinner><p>Accepting invite...</p></div>`;
 
+  let res, result;
   try {
-    const res = await fetch("/api/teams/accept-invite", {
+    res = await fetch("/api/teams/accept-invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token }),
     });
-    const result = await res.json();
-
-    if (!res.ok) {
-      showState({
-        icon: "circle-xmark",
-        tone: "danger",
-        title: "Invite Failed",
-        body: escapeHtml(result.error || "Unable to accept this invite."),
-        action: "Go to Teams",
-        onAction: () => navigate("/teams"),
-      });
-      return;
-    }
-
-    const teamName = result.data?.team?.name || "the team";
-    showState({
-      icon: "circle-check",
-      tone: "success",
-      title: "Welcome!",
-      body: `You've joined <strong>${escapeHtml(teamName)}</strong>.`,
-      action: "View Team",
-      onAction: () => navigate(`/teams/${result.data.teamId}`),
-    });
+    result = await res.json().catch(() => ({}));
   } catch {
-    showState({
-      icon: "circle-xmark",
-      tone: "danger",
+    showFailure({
       title: "Network Error",
       body: "Please check your connection and try again.",
-      action: "Retry",
-      onAction: () => renderAcceptInvite(container, { token }),
+      action: `<wa-button variant="brand" id="retry-invite">Retry</wa-button>`,
     });
+    container.querySelector("#retry-invite").addEventListener("click", () => renderAcceptInvite(container, { token }));
+    return;
   }
+
+  if (!res.ok) {
+    showFailure({
+      title: "Invite Failed",
+      body: result.error || "Unable to accept this invite.",
+      action: `<wa-button variant="brand" href="/teams" data-link>Go to Teams</wa-button>`,
+    });
+    return;
+  }
+
+  const { teamId, team } = result.data;
+  showToast(`You've joined ${team?.name || "the team"}`, "success");
+  // Replace the invite URL so Back cannot re-post the spent token. A view the
+  // user already left must not pull them back.
+  if (container.isConnected) navigate(`/teams/${encodeURIComponent(teamId)}`, true);
 }
