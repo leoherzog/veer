@@ -48,13 +48,9 @@ function parseOS(ua: string): string {
  */
 export function parseDevice(ua: string): DeviceType {
   // Tablets first: iPad UAs also contain "Mobile/".
-  if (/iPad/i.test(ua)) return "tablet";
-  if (/Tablet/i.test(ua)) return "tablet";
-  // Android without "Mobile" is typically a tablet
+  if (/iPad|Tablet/i.test(ua)) return "tablet";
+  // Android phones carry "Mobile" and fall to the mobile check below.
   if (/Android/i.test(ua) && !/Mobile/i.test(ua)) return "tablet";
-
   if (/Mobile|iPhone|iPod|webOS|BlackBerry|BB10|Opera Mini|Windows Phone/i.test(ua)) return "mobile";
-  if (/Android/i.test(ua)) return "mobile";
-
   return "desktop";
 }

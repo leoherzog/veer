@@ -1,20 +1,16 @@
 // PBKDF2-SHA256 hashing for link passwords, stored as `saltHex:hashHex`.
 // scripts/seed.ts also runs this module under Node's type stripping, so any
 // relative import here needs an explicit `.ts` extension.
+
+// Cloudflare's production runtime rejects PBKDF2 above 100,000 iterations. Local
+// workerd has no cap, so no test catches a higher count.
 const PBKDF2_ITERATIONS = 100_000;
 const PBKDF2_KEY_LENGTH = 32;
 const PBKDF2_SALT_LENGTH = 16;
 
+// Hand-written because the Node that runs the seed lacks Uint8Array.prototype.toHex.
 function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, "0")).join("");
-}
-
-function fromHex(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
-  }
-  return bytes;
 }
 
 async function deriveKey(plain: string, salt: Uint8Array): Promise<ArrayBuffer> {
@@ -39,10 +35,11 @@ export async function hashPassword(plain: string): Promise<string> {
   return `${toHex(salt.buffer)}:${toHex(hash)}`;
 }
 
+/** Whether `plain` matches a stored `saltHex:hashHex`. Runs only in workerd, never in the seed. */
 export async function verifyPassword(plain: string, stored: string): Promise<boolean> {
   const [saltHex, hashHex] = stored.split(":");
-  const salt = fromHex(saltHex);
-  const expected = fromHex(hashHex);
+  const salt = Uint8Array.fromHex(saltHex);
+  const expected = Uint8Array.fromHex(hashHex);
   const derived = await deriveKey(plain, salt);
   if (derived.byteLength !== expected.byteLength) return false;
   return crypto.subtle.timingSafeEqual(new Uint8Array(derived), expected);

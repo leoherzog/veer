@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
 import { createScheduledController } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { scheduled } from "../../src/scheduled";
 import { DEMO_USER_ID } from "../../src/lib/demo";
 import { mockExecutionCtx, isoDaysAgo, createTestLink, insertClickStat } from "../helpers";
@@ -54,6 +54,33 @@ describe("scheduled handler", () => {
     const second = await getStatsRow(link.id, today);
 
     expect(second!.clicks).toBeGreaterThan(first!.clicks);
+  });
+
+  it("skips expired and capped links", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const expired = await createTestLink({ userId: DEMO_USER_ID, expiresAt: now - 60 });
+    const capped = await createTestLink({ userId: DEMO_USER_ID, maxClicks: 1000 });
+    const expiresLater = await createTestLink({ userId: DEMO_USER_ID, expiresAt: now + 3600 });
+    const today = isoDaysAgo(0);
+
+    await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
+
+    expect(await getStatsRow(expired.id, today)).toBeNull();
+    expect(await getStatsRow(capped.id, today)).toBeNull();
+    expect(await getStatsRow(expiresLater.id, today)).not.toBeNull();
+  });
+
+  it("writes one AE event per click it adds to link_stats", async () => {
+    const link = await createTestLink({ userId: DEMO_USER_ID });
+    const writeDataPoint = vi.fn<(point?: AnalyticsEngineDataPoint) => void>();
+
+    await scheduled(createScheduledController(), { ...demoEnv, ANALYTICS: { writeDataPoint } }, mockExecutionCtx());
+
+    const events = writeDataPoint.mock.calls.filter(([point]) => point?.indexes?.[0] === link.id);
+    const row = await getStatsRow(link.id, isoDaysAgo(0));
+    expect(events.length).toBeGreaterThanOrEqual(1);
+    expect(events.length).toBe(row!.clicks);
+    expect(events[0][0]?.blobs?.[0]).toBe(link.slug);
   });
 
   it("cascades link_stats away when the link is deleted", async () => {

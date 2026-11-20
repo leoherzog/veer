@@ -20,7 +20,7 @@ export interface CachedRedirect {
 }
 
 /** The links columns a CachedRedirect is built from. */
-export type CachedRedirectSource = Pick<
+type CachedRedirectSource = Pick<
   typeof links.$inferSelect,
   "id" | "destinationUrl" | "redirectType" | "expiresAt" | "maxClicks" | "password"
   | "isInternal" | "ogTitle" | "ogDescription" | "ogImage" | "paramForwarding"

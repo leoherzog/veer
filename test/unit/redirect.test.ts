@@ -1,8 +1,18 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { app } from "../../src/index";
 import { mockExecutionCtx, cachedRedirect, cfRequest } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
+
+/** An Analytics Engine binding that records each data point. */
+function recordingAnalytics() {
+  const writeDataPoint = vi.fn<(point?: AnalyticsEngineDataPoint) => void>();
+  return { writeDataPoint, env: { ...env, ANALYTICS: { writeDataPoint } } };
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+});
 
 describe("Targeting evaluation via redirect", () => {
   describe("geo targeting", () => {
@@ -137,10 +147,7 @@ describe("Targeting evaluation via redirect", () => {
     });
 
     it("first match wins among same priority rules", async () => {
-      // When priorities are equal, the sort is stable and iteration order
-      // determines which one matches first. Both geo:US rules have priority 10,
-      // but since sort is descending by priority, ties preserve insertion order.
-      // The first US rule in the array should win after sort.
+      // Among matching rules of equal priority, the one stored first wins.
       await setCachedRedirect(env.KV, "prio-same", cachedRedirect({
         url: "https://default.example.com/same-prio",
         targets: [
@@ -177,6 +184,39 @@ describe("Targeting evaluation via redirect", () => {
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://fr.example.com");
+    });
+  });
+
+  describe("explicit rule match", () => {
+    it("a geo rule pointing at the default URL never rolls A/B", async () => {
+      await setCachedRedirect(env.KV, "geo-to-default", cachedRedirect({
+        url: "https://default.example.com/geo-default",
+        targets: [
+          { type: "ab", matchValue: "99", destinationUrl: "https://variant.example.com", priority: 0 },
+          { type: "geo", matchValue: "US", destinationUrl: "https://default.example.com/geo-default", priority: 5 },
+        ],
+      }));
+      const random = vi.spyOn(Math, "random");
+
+      const res = await app.fetch(cfRequest("/geo-to-default", { cf: { country: "US" } }), env, mockExecutionCtx());
+
+      expect(res.headers.get("Location")).toBe("https://default.example.com/geo-default");
+      expect(random).not.toHaveBeenCalled();
+    });
+
+    it("rolls A/B when no geo or device rule matches", async () => {
+      await setCachedRedirect(env.KV, "geo-miss-ab", cachedRedirect({
+        url: "https://default.example.com/geo-miss-ab",
+        targets: [
+          { type: "geo", matchValue: "US", destinationUrl: "https://us.example.com", priority: 5 },
+          { type: "ab", matchValue: "50", destinationUrl: "https://variant.example.com", priority: 0 },
+        ],
+      }));
+      vi.spyOn(Math, "random").mockReturnValue(0);
+
+      const res = await app.fetch(cfRequest("/geo-miss-ab", { cf: { country: "FR" } }), env, mockExecutionCtx());
+
+      expect(res.headers.get("Location")).toBe("https://variant.example.com");
     });
   });
 
@@ -259,6 +299,28 @@ describe("Param forwarding via redirect", () => {
     expect(res.headers.get("Location")).toBe("https://dest.example.com/page");
   });
 
+  it("keeps the destination's own query string as written", async () => {
+    await setCachedRedirect(env.KV, "pf-raw", cachedRedirect({
+      url: "https://dest.example.com/page?q=a%20b&list=1,2&flag#top",
+      paramForwarding: true,
+    }));
+
+    const res = await app.fetch(cfRequest("/pf-raw?flag=1&utm_source=x"), env, mockExecutionCtx());
+
+    expect(res.headers.get("Location")).toBe("https://dest.example.com/page?q=a%20b&list=1,2&flag&utm_source=x#top");
+  });
+
+  it("leaves the destination untouched when every incoming key is already on it", async () => {
+    await setCachedRedirect(env.KV, "pf-dupe", cachedRedirect({
+      url: "https://dest.example.com/page?q=a%20b&list=1,2",
+      paramForwarding: true,
+    }));
+
+    const res = await app.fetch(cfRequest("/pf-dupe?q=other"), env, mockExecutionCtx());
+
+    expect(res.headers.get("Location")).toBe("https://dest.example.com/page?q=a%20b&list=1,2");
+  });
+
   it("does not forward params when paramForwarding is false", async () => {
     await setCachedRedirect(env.KV, "pf-off", cachedRedirect({
       url: "https://dest.example.com/page",
@@ -292,6 +354,26 @@ describe("Targeting + param forwarding combined", () => {
     const loc = new URL(res.headers.get("Location")!);
     expect(loc.origin + loc.pathname).toBe("https://de.example.com/landing");
     expect(loc.searchParams.get("campaign")).toBe("spring");
+  });
+});
+
+describe("Click logging", () => {
+  it("records the chosen A/B variant, not the URL with forwarded params", async () => {
+    await setCachedRedirect(env.KV, "ab-log", cachedRedirect({
+      url: "https://default.example.com/ab-log",
+      paramForwarding: true,
+      targets: [
+        { type: "ab", matchValue: "50", destinationUrl: "https://a.example.com/landing", priority: 0 },
+      ],
+    }));
+    vi.spyOn(Math, "random").mockReturnValue(0);
+    const analytics = recordingAnalytics();
+
+    const res = await app.fetch(cfRequest("/ab-log?utm_source=newsletter"), analytics.env, mockExecutionCtx());
+
+    expect(res.headers.get("Location")).toBe("https://a.example.com/landing?utm_source=newsletter");
+    expect(analytics.writeDataPoint).toHaveBeenCalledOnce();
+    expect(analytics.writeDataPoint.mock.calls[0][0]?.blobs?.[5]).toBe("https://a.example.com/landing");
   });
 });
 

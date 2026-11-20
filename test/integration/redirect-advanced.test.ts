@@ -1,10 +1,10 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat, cachedRedirect, cfRequest } from "../helpers";
+import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat, cachedRedirect, cfRequest, isoDaysAgo } from "../helpers";
 import { hashPassword } from "../../src/services/password";
-import { setCachedRedirect } from "../../src/services/kv-cache";
+import { getCachedRedirect, setCachedRedirect } from "../../src/services/kv-cache";
 
 const now = Math.floor(Date.now() / 1000);
 
@@ -99,10 +99,45 @@ describe("Redirect engine – advanced", () => {
       expect(await res.json()).toEqual({ error: "Request body too large" });
     });
 
-    it("POST for non-password link returns 405", async () => {
+    it("POST for non-password link returns 405 with an Allow header", async () => {
       const res = await postPassword("no-pw-post", "whatever");
 
       expect(res.status).toBe(405);
+      expect(res.headers.get("Allow")).toBe("GET, HEAD");
+    });
+
+    it("POST checks constraints before the password, so a wrong password on an expired link still gets 410", async () => {
+      await createTestLink({
+        slug: "pw-expired-wrong",
+        destinationUrl: "https://example.com/expired",
+        password: passwordHash,
+        expiresAt: now - 3600,
+        userId: owner.user.id,
+      });
+
+      const res = await postPassword("pw-expired-wrong", "wrong");
+
+      expect(res.status).toBe(410);
+    });
+
+    it("POST with the correct password applies the link's targeting rules", async () => {
+      const { id: linkId } = await createTestLink({
+        slug: "pw-geo-post",
+        destinationUrl: "https://example.com/pw-default",
+        password: passwordHash,
+        userId: owner.user.id,
+      });
+      await insertTarget(env.DB, { linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/pw-de", priority: 1 });
+
+      const res = await app.fetch(new Request("http://localhost/pw-geo-post", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password: PASSWORD }).toString(),
+        cf: { country: "DE" },
+      }), env, mockExecutionCtx());
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://example.com/pw-de");
     });
 
     it("POST re-checks constraints (expired link)", async () => {
@@ -245,6 +280,26 @@ describe("Redirect engine – advanced", () => {
       expect(html).toContain('<meta http-equiv="refresh" content="0;url=https://example.com/og-dest">');
     });
 
+    it("bot UA on a link without OG data redirects and counts as a click", async () => {
+      const { id: linkId } = await createTestLink({
+        slug: "bot-no-og",
+        destinationUrl: "https://example.com/bot-no-og",
+        userId: owner.user.id,
+      });
+
+      const ctx = createExecutionContext();
+      const res = await app.request("/bot-no-og", {
+        headers: { "User-Agent": "facebookexternalhit/1.1" },
+      }, env, ctx);
+      await waitOnExecutionContext(ctx);
+
+      expect(res.status).toBe(302);
+      const row = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
+        .bind(linkId, isoDaysAgo(0))
+        .first<{ clicks: number }>();
+      expect(row?.clicks).toBe(1);
+    });
+
     it("normal UA with OG data redirects normally", async () => {
       const res = await app.request("/og-link", {
         headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
@@ -361,6 +416,15 @@ describe("Redirect engine – advanced", () => {
 
       expect(res.status).toBe(200);
       expect(res.headers.get("content-type")).toContain("text/html");
+    });
+
+    it("GET with a slug validateSlug rejects takes notFoundRedirect on a custom domain", async () => {
+      const res = await app.request("/a%7Cb", {
+        headers: { Host: "custom-nf.example.com" },
+      }, env, mockExecutionCtx());
+
+      expect(res.status).toBe(302);
+      expect(res.headers.get("Location")).toBe("https://example.com/not-found-page");
     });
 
     it("GET /nonexistent with no notFoundRedirect falls through", async () => {
@@ -570,5 +634,95 @@ describe("Redirect engine – password POST rate limit", () => {
     const sixth = await attempt("wrong");
     expect(sixth.status).toBe(429);
     expect(await sixth.text()).toContain("Too many attempts");
+  });
+});
+
+describe("Redirect engine – hot-path invariants", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a password-gated request never rolls A/B, for a visitor or a crawler", async () => {
+    await setCachedRedirect(env.KV, "pw-ab-kv", cachedRedirect({
+      url: "https://example.com/pw-ab-default",
+      hasPassword: true,
+      ogTitle: "Gated",
+      targets: [{ type: "ab", matchValue: "50", destinationUrl: "https://example.com/pw-ab-variant", priority: 0 }],
+    }));
+    const random = vi.spyOn(Math, "random");
+
+    const visitor = await app.request("/pw-ab-kv", {}, env, mockExecutionCtx());
+    const crawler = await app.request("/pw-ab-kv", { headers: { "User-Agent": "Twitterbot/1.0" } }, env, mockExecutionCtx());
+
+    expect(visitor.status).toBe(200);
+    expect(await visitor.text()).toContain("This link is password protected");
+    expect(crawler.status).toBe(200);
+    expect(random).not.toHaveBeenCalled();
+  });
+
+  it("a password POST reads link_targets only once the password verifies", async () => {
+    const { id: linkId } = await createTestLink({
+      slug: "pw-targets-late",
+      destinationUrl: "https://example.com/pw-targets-default",
+      password: await hashPassword("late-targets"),
+      userId: owner.user.id,
+    });
+    await insertTarget(env.DB, { linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/pw-targets-de", priority: 1 });
+    const prepare = vi.spyOn(env.DB, "prepare");
+    const targetReads = () => prepare.mock.calls.filter(([sql]) => sql.includes("link_targets")).length;
+
+    for (const password of ["", "wrong"]) {
+      expect((await postPassword("pw-targets-late", password)).status).toBe(200);
+    }
+    expect(targetReads()).toBe(0);
+
+    expect((await postPassword("pw-targets-late", "late-targets")).status).toBe(302);
+    expect(targetReads()).toBe(1);
+  });
+
+  it("a cached entry with maxClicks counts link_stats in D1 and answers 410 once the cap is reached", async () => {
+    // The D1 row has no cap, so the 410 comes from the cached maxClicks plus the D1 count.
+    const { id: linkId } = await createTestLink({
+      slug: "kv-capped",
+      destinationUrl: "https://example.com/kv-capped",
+      userId: owner.user.id,
+    });
+    await setCachedRedirect(env.KV, "kv-capped", cachedRedirect({ url: "https://example.com/kv-capped", linkId, maxClicks: 3 }));
+    await insertClickStat(linkId, 2, isoDaysAgo(1));
+
+    const ctx = createExecutionContext();
+    const first = await app.request("/kv-capped", {}, env, ctx);
+    await waitOnExecutionContext(ctx);
+    expect(first.status).toBe(302);
+
+    const second = await app.request("/kv-capped", {}, env, mockExecutionCtx());
+    expect(second.status).toBe(410);
+  });
+
+  it("a miss on a custom domain fills the domain-scoped KV key and not the bare one", async () => {
+    await createTestDomain("fill.example.com");
+    await createTestLink({
+      slug: "fill-scope",
+      destinationUrl: "https://example.com/fill-scope",
+      domainHostname: "fill.example.com",
+      userId: owner.user.id,
+    });
+
+    const ctx = createExecutionContext();
+    const res = await app.request("/fill-scope", { headers: { Host: "fill.example.com" } }, env, ctx);
+    await waitOnExecutionContext(ctx);
+
+    expect(res.status).toBe(302);
+    expect((await getCachedRedirect(env.KV, "fill-scope", "fill.example.com"))?.url).toBe("https://example.com/fill-scope");
+    expect(await getCachedRedirect(env.KV, "fill-scope")).toBeNull();
+  });
+
+  it("a slug validateSlug rejects falls through on the primary host without a KV or D1 lookup", async () => {
+    // Only a planted entry can hold such a slug.
+    await setCachedRedirect(env.KV, "a|b", cachedRedirect({ url: "https://example.com/invalid-slug" }));
+
+    const res = await app.request("/a%7Cb", {}, env, mockExecutionCtx());
+
+    expect(res.headers.get("Location")).toBeNull();
   });
 });

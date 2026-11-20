@@ -15,19 +15,26 @@ export const MAX_SLUG_LENGTH = 128;
 const MAX_SLUG_BYTES = 256;
 
 /**
- * RFC 3986 `pchar` minus `%`, which is ambiguous once escapes are decoded, plus
- * any Unicode letter, mark, number or pictograph; browsers percent-encode those
- * on the wire. ZWJ and VS16 hold emoji sequences such as 👩‍💻 or ❤️ together.
+ * Whole RGI emoji sequences, such as flags, skin tones and tag sequences, whose
+ * parts are neither letters nor pictographs. The `#` keycap is left out because
+ * its `#` would end the segment.
+ */
+const EMOJI = /[\p{RGI_Emoji}--\q{#\uFE0F\u20E3}]/gv;
+
+/**
+ * Code points allowed outside an emoji sequence: RFC 3986 `pchar` minus `%`,
+ * which is ambiguous once escapes are decoded, plus any Unicode letter, mark,
+ * number or pictograph; browsers percent-encode those on the wire. ZWJ joins
+ * pictographs outside the RGI set, and `\p{M}` covers variation selectors.
  * `/ ? #` stay out because they end the segment.
  */
-const SLUG_PATTERN =
-  /^[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\u200D\uFE0F\-._~!$&'()*+,;=:@]+$/u;
+const SLUG_CHARS = /^[\p{L}\p{M}\p{N}\p{Extended_Pictographic}\u200D\-._~!$&'()*+,;=:@]*$/u;
 
 /**
  * A slug made only of punctuation/joiners is unusable — require real content.
  * This also rules out the `.` and `..` path segments.
  */
-const SLUG_SUBSTANCE = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
+const SLUG_SUBSTANCE = /[\p{L}\p{N}\p{Extended_Pictographic}]|[\p{RGI_Emoji}--\q{#\uFE0F\u20E3}]/v;
 
 export const RESERVED_SLUGS = new Set([
   "api", "auth", "login", "logout", "dashboard", "settings", "admin",
@@ -35,7 +42,7 @@ export const RESERVED_SLUGS = new Set([
   "favicon.ico", "favicon.svg", "index.html", "robots.txt", "sitemap.xml",
 ]);
 
-export type SlugCheck =
+type SlugCheck =
   | { valid: true; slug: string }
   | { valid: false; error: string };
 
@@ -56,7 +63,7 @@ export function normalizeSlug(input: string): string {
     try {
       slug = decodeURIComponent(slug);
     } catch {
-      /* keep the raw value — the `%` will fail SLUG_PATTERN */
+      /* keep the raw value; the `%` fails SLUG_CHARS */
     }
   }
   return slug.normalize("NFC").toLowerCase().normalize("NFC");
@@ -74,7 +81,9 @@ export function validateSlug(input: string): SlugCheck {
   if (encoder.encode(slug).length > MAX_SLUG_BYTES) {
     return { valid: false, error: `Slug is too long (max ${MAX_SLUG_BYTES} bytes once encoded)` };
   }
-  if (!SLUG_PATTERN.test(slug)) {
+  // Emoji are stripped before the class check because a single pattern that
+  // alternates the class with an emoji sequence backtracks exponentially on a miss.
+  if (!SLUG_CHARS.test(slug) && !SLUG_CHARS.test(slug.replace(EMOJI, ""))) {
     return {
       valid: false,
       error: "Slug may only contain letters, numbers, emoji, and - . _ ~ ! $ & ' ( ) * + , ; = : @",

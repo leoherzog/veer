@@ -1,27 +1,36 @@
 import type { Context, Next } from "hono";
+import { html } from "hono/html";
+import type { HtmlEscapedString } from "hono/utils/html";
 import type { AppEnv } from "../types";
 import { getDb, type Database } from "../db";
 import { links, domainConfig } from "../db/schema";
 import { eq, and, isNull } from "drizzle-orm";
-import { getCachedRedirect, setCachedRedirect, loadCachedRedirect, type CachedRedirect } from "../services/kv-cache";
-import { writeClickEvent, upsertDailyStats, requestVisitor, sumClicks } from "../services/analytics";
+import {
+  getCachedRedirect, setCachedRedirect, loadCachedRedirect, toCachedRedirect,
+  type CachedRedirect, type CachedTarget,
+} from "../services/kv-cache";
+import { writeClickEvent, upsertDailyStats, requestVisitor, sumClicks, type Visitor } from "../services/analytics";
 import { verifyPassword } from "../services/password";
 import { getAuth } from "../auth";
 import { getInstanceName } from "../lib/branding";
-import { normalizeSlug, RESERVED_SLUGS } from "../services/slug";
+import { validateSlug } from "../services/slug";
 import { parseDevice } from "../services/useragent";
 import { checkPasswordRateLimit } from "../middleware/rate-limit";
 import { PASSWORD_GATE_CSP } from "../lib/csp";
 import { getPrimaryHostname, isHttpUrl } from "../lib/validators";
 
-/** Render a minimal self-contained HTML page. */
-function htmlPage(title: string, bodyHtml: string, instanceName: string): string {
-  return `<!DOCTYPE html>
+type SlugContext = Context<AppEnv, "/:slug">;
+type Markup = HtmlEscapedString | Promise<HtmlEscapedString>;
+
+/** A self-contained page with `body` under the instance brand block. */
+function brandedPage(c: SlugContext, title: string, body: Markup): Markup {
+  const instanceName = getInstanceName(c.env);
+  return html`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>${escapeHtml(title)} - ${escapeHtml(instanceName)}</title>
+<title>${title} - ${instanceName}</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f5f5f5;color:#1a1a1a}
@@ -40,42 +49,28 @@ button:hover{background:#2563eb}
 </head>
 <body>
 <div class="container">
-${bodyHtml}
+<div class="brand">${instanceName}</div>
+${body}
 </div>
 </body>
 </html>`;
 }
 
-function passwordGatePage(slug: string, instanceName: string, error?: string, status: 200 | 429 = 200): Response {
-  const errorHtml = error ? `<p class="error">${escapeHtml(error)}</p>` : "";
-  const body = `
-<div class="brand">${escapeHtml(instanceName)}</div>
-<p class="message">This link is password protected</p>
-<form method="POST" action="/${escapeHtml(encodeURIComponent(slug))}">
+function passwordGatePage(c: SlugContext, slug: string, error?: string, status: 200 | 429 = 200) {
+  const body = html`<p class="message">This link is password protected</p>
+<form method="POST" action="/${encodeURIComponent(slug)}">
 <input type="password" name="password" placeholder="Enter password" required autofocus>
 <button type="submit">Continue</button>
-${errorHtml}
+${error ? html`<p class="error">${error}</p>` : null}
 </form>`;
-  return new Response(htmlPage("Password Required", body, instanceName), {
-    status,
-    headers: {
-      "Content-Type": "text/html;charset=utf-8",
-      // Overrides the global policy, whose form-action would block the 302 a
-      // correct password returns.
-      "Content-Security-Policy": PASSWORD_GATE_CSP,
-    },
-  });
+  // Overrides the global policy, whose form-action would block the 302 a
+  // correct password returns.
+  return c.html(brandedPage(c, "Password Required", body), status, { "Content-Security-Policy": PASSWORD_GATE_CSP });
 }
 
 /** A branded page carrying one message: the 410 for an unavailable link, the 403 for an internal one. */
-function messagePage(title: string, message: string, status: 403 | 410, instanceName: string): Response {
-  const body = `
-<div class="brand">${escapeHtml(instanceName)}</div>
-<p class="message">${escapeHtml(message)}</p>`;
-  return new Response(htmlPage(title, body, instanceName), {
-    status,
-    headers: { "Content-Type": "text/html;charset=utf-8" },
-  });
+function messagePage(c: SlugContext, title: string, message: string, status: 403 | 410) {
+  return c.html(brandedPage(c, title, html`<p class="message">${message}</p>`), status);
 }
 
 const BOT_UA_PATTERN = /facebookexternalhit|Twitterbot|LinkedInBot|Discordbot|Slackbot|WhatsApp|Telegram|Googlebot|bingbot|Applebot/i;
@@ -85,38 +80,49 @@ const BOT_UA_PATTERN = /facebookexternalhit|Twitterbot|LinkedInBot|Discordbot|Sl
  * refresh is the only place the destination would appear, and it must not leave
  * the server until the password is verified.
  */
-function ogMetaPage(dest: string | null, og: { ogTitle: string | null; ogDescription: string | null; ogImage: string | null }, shortUrl: string): Response {
-  const tags: string[] = [];
-  if (og.ogTitle) tags.push(`<meta property="og:title" content="${escapeHtml(og.ogTitle)}">`);
-  if (og.ogDescription) tags.push(`<meta property="og:description" content="${escapeHtml(og.ogDescription)}">`);
-  if (og.ogImage) tags.push(`<meta property="og:image" content="${escapeHtml(og.ogImage)}">`);
-  tags.push(`<meta property="og:url" content="${escapeHtml(shortUrl)}">`);
-  if (dest) tags.push(`<meta http-equiv="refresh" content="0;url=${escapeHtml(dest)}">`);
-
-  const html = `<!DOCTYPE html>
+function ogMetaPage(c: SlugContext, dest: string | null, og: Pick<CachedRedirect, "ogTitle" | "ogDescription" | "ogImage">, shortUrl: string) {
+  return c.html(html`<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-${tags.join("\n")}
-<title>${escapeHtml(og.ogTitle ?? "Redirecting")}</title>
+${og.ogTitle ? html`<meta property="og:title" content="${og.ogTitle}">` : null}
+${og.ogDescription ? html`<meta property="og:description" content="${og.ogDescription}">` : null}
+${og.ogImage ? html`<meta property="og:image" content="${og.ogImage}">` : null}
+<meta property="og:url" content="${shortUrl}">
+${dest ? html`<meta http-equiv="refresh" content="0;url=${dest}">` : null}
+<title>${og.ogTitle ?? "Redirecting"}</title>
 </head>
 <body><p>${dest ? "Redirecting..." : "This link is password protected."}</p></body>
-</html>`;
-  return new Response(html, {
-    status: 200,
-    headers: { "Content-Type": "text/html;charset=utf-8" },
-  });
+</html>`);
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/'/g, "&#39;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+/** The link host of a request: its hostname on a custom domain, null on the primary host or a local one, whose links store a NULL domainHostname. */
+function requestHost<P extends string>(c: Context<AppEnv, P>): string | null {
+  const host = c.req.header("host")?.split(":")[0]?.toLowerCase();
+  if (!host || host === getPrimaryHostname(c.env.BETTER_AUTH_URL) || host === "localhost" || host === "127.0.0.1") return null;
+  return host;
 }
 
-/** The request's host, and whether it is a custom domain rather than the primary host or a local one. */
-function requestHost<P extends string>(c: Context<AppEnv, P>) {
-  const host = c.req.header("host")?.split(":")[0]?.toLowerCase() || "";
-  const isCustomDomain = host !== getPrimaryHostname(c.env.BETTER_AUTH_URL) && host !== "localhost" && host !== "127.0.0.1";
-  return { host, isCustomDomain };
+/**
+ * The canonical slug of a /:slug request and its link host. `slug` is null when
+ * validateSlug rejects it (empty, malformed or reserved), since no link can hold
+ * such a slug and looking it up would only cost a KV get and a D1 select.
+ */
+function slugRequest(c: SlugContext): { slug: string | null; host: string | null } {
+  const check = validateSlug(c.req.param("slug"));
+  return { slug: check.valid ? check.slug : null, host: requestHost(c) };
+}
+
+/** 302 to a custom domain's configured root or not-found URL, or null when it has no http(s) one. */
+async function domainRedirect<P extends string>(
+  c: Context<AppEnv, P>,
+  host: string,
+  field: "rootRedirect" | "notFoundRedirect",
+): Promise<Response | null> {
+  const row = await getDb(c.env.DB).select({ url: domainConfig[field] }).from(domainConfig)
+    .where(eq(domainConfig.hostname, host))
+    .get();
+  return row?.url && isHttpUrl(row.url) ? redirectResponse(c, row.url, 302) : null;
 }
 
 /** Look up a slug on one host: custom-domain links carry the hostname, primary-host links NULL. */
@@ -127,7 +133,7 @@ function findLink(db: Database, slug: string, hostname: string | null) {
 }
 
 /** Resolve a slug to cached redirect data, populating KV on miss. */
-async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname: string | null) {
+async function resolveSlug(c: SlugContext, slug: string, hostname: string | null) {
   const cached = await getCachedRedirect(c.env.KV, slug, hostname);
   if (cached) return cached;
 
@@ -141,11 +147,9 @@ async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname:
 }
 
 /** Check expiration, max clicks, and internal-only constraints. Returns a Response if blocked, null if OK. */
-async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: CachedRedirect) {
-  const instanceName = getInstanceName(c.env);
-
+async function checkConstraints(c: SlugContext, resolved: CachedRedirect) {
   if (resolved.expiresAt && Date.now() > resolved.expiresAt * 1000) {
-    return messagePage("Link Unavailable", "This link has expired.", 410, instanceName);
+    return messagePage(c, "Link Unavailable", "This link has expired.", 410);
   }
 
   if (resolved.isInternal) {
@@ -153,80 +157,83 @@ async function checkConstraints(c: Context<AppEnv, "/:slug">, resolved: CachedRe
     try {
       signedIn = !!(await getAuth(c.env).api.getSession({ headers: c.req.raw.headers }));
     } catch { /* an auth error counts as signed out */ }
-    if (!signedIn) return messagePage("Access Denied", "This link requires authentication.", 403, instanceName);
+    if (!signedIn) return messagePage(c, "Access Denied", "This link requires authentication.", 403);
   }
 
   // Soft cap: this read and the deferred click upsert are not atomic, so
   // concurrent requests can each pass.
   if (resolved.maxClicks != null && await sumClicks(getDb(c.env.DB), resolved.linkId) >= resolved.maxClicks) {
-    return messagePage("Link Unavailable", "This link is no longer available.", 410, instanceName);
+    return messagePage(c, "Link Unavailable", "This link is no longer available.", 410);
   }
 
   return null;
 }
 
-/** Evaluate targeting rules and param forwarding, returning the final destination URL. */
-function resolveDestination(c: Context<AppEnv, "/:slug">, resolved: CachedRedirect): string {
-  let destinationUrl = resolved.url;
+/** Roll an A/B variant by weight. The link's own URL keeps the rest of 100, floored at 1. */
+function rollVariant(variants: CachedTarget[], defaultUrl: string): string {
+  const weights = variants.map((t) => Math.max(1, Math.min(99, parseInt(t.matchValue) || 0)));
+  const totalWeight = weights.reduce((s, w) => s + w, 0);
+  // Variants fill [0, totalWeight); the default takes the remainder,
+  // floored at 1 so it stays selectable even if stored weights reach 100.
+  const roll = Math.random() * (Math.max(1, 100 - totalWeight) + totalWeight);
+  let cumulative = 0;
+  for (let i = 0; i < variants.length; i++) {
+    cumulative += weights[i];
+    if (roll < cumulative) return variants[i].destinationUrl;
+  }
+  return defaultUrl;
+}
 
-  if (resolved.targets?.length) {
-    const country = (c.req.raw.cf?.country as string) || "";
-    const ua = c.req.header("user-agent") || "";
-    const device = parseDevice(ua);
+/**
+ * The visitor's target: the highest-priority geo or device rule that matches,
+ * else an A/B roll, else the link's own URL. Equal priorities keep stored order.
+ * A matched rule never rolls, even when it points at the link's own URL.
+ */
+function chooseTarget(resolved: CachedRedirect, visitor: Visitor): string {
+  const rules: CachedTarget[] = [];
+  const variants: CachedTarget[] = [];
+  for (const target of resolved.targets ?? []) (target.type === "ab" ? variants : rules).push(target);
 
-    const sorted = [...resolved.targets].sort((a, b) => b.priority - a.priority);
-    for (const target of sorted) {
-      if (target.type === "geo" && target.matchValue.toUpperCase() === country.toUpperCase()) {
-        destinationUrl = target.destinationUrl;
-        break;
-      }
-      if (target.type === "device" && target.matchValue.toLowerCase() === device) {
-        destinationUrl = target.destinationUrl;
-        break;
-      }
+  if (rules.length) {
+    const country = visitor.country.toUpperCase();
+    const device = parseDevice(visitor.userAgent);
+    let match: CachedTarget | undefined;
+    for (const rule of rules) {
+      const hit = rule.type === "geo" ? rule.matchValue.toUpperCase() === country : rule.matchValue.toLowerCase() === device;
+      if (hit && (!match || rule.priority > match.priority)) match = rule;
     }
-
-    if (destinationUrl === resolved.url) {
-      const abTargets = resolved.targets.filter(t => t.type === "ab");
-      if (abTargets.length > 0) {
-        const weights = abTargets.map(t => Math.max(1, Math.min(99, parseInt(t.matchValue) || 0)));
-        const totalWeight = weights.reduce((s, w) => s + w, 0);
-        // Variants fill [0, totalWeight); the default takes the remainder,
-        // floored at 1 so it stays selectable even if stored weights reach 100.
-        const defaultWeight = Math.max(1, 100 - totalWeight);
-        const roll = Math.random() * (defaultWeight + totalWeight);
-        let cumulative = 0;
-        for (let i = 0; i < abTargets.length; i++) {
-          cumulative += weights[i];
-          if (roll < cumulative) {
-            destinationUrl = abTargets[i].destinationUrl;
-            break;
-          }
-        }
-      }
-    }
+    if (match) return match.destinationUrl;
   }
 
-  if (resolved.paramForwarding) {
-    const incomingUrl = new URL(c.req.url);
-    if (incomingUrl.search) {
-      const dest = new URL(destinationUrl);
-      const destKeys = new Set(dest.searchParams.keys());
-      for (const [key, value] of incomingUrl.searchParams) {
-        if (!destKeys.has(key)) {
-          dest.searchParams.append(key, value);
-        }
-      }
-      destinationUrl = dest.toString();
-    }
-  }
+  return variants.length ? rollVariant(variants, resolved.url) : resolved.url;
+}
 
-  return destinationUrl;
+/**
+ * `destination` with the request's query params appended, skipping keys it
+ * already has. Its own query string is kept as written, never re-serialized.
+ */
+function forwardParams(destination: string, requestUrl: string): string {
+  const incoming = new URL(requestUrl).searchParams;
+  if (!incoming.size) return destination;
+  const dest = new URL(destination);
+  const forwarded = new URLSearchParams([...incoming].filter(([key]) => !dest.searchParams.has(key)));
+  if (!forwarded.size) return destination;
+  dest.search = dest.search ? `${dest.search}&${forwarded}` : `${forwarded}`;
+  return dest.href;
+}
+
+/**
+ * Where a request goes. `target` is the chosen destination, which the click
+ * records so A/B stats group by variant; `url` adds any forwarded params.
+ */
+function resolveDestination(c: SlugContext, resolved: CachedRedirect, visitor: Visitor): { target: string; url: string } {
+  const target = chooseTarget(resolved, visitor);
+  return { target, url: resolved.paramForwarding ? forwardParams(target, c.req.url) : target };
 }
 
 /** Fire analytics (sync) and upsert the permanent daily aggregate (background). */
-function trackClick(c: Context<AppEnv, "/:slug">, slug: string, linkId: string, destinationUrl: string) {
-  writeClickEvent(c.env.ANALYTICS, { linkId, slug, destinationUrl, ...requestVisitor(c.req.raw) });
+function trackClick(c: SlugContext, slug: string, linkId: string, target: string, visitor: Visitor) {
+  writeClickEvent(c.env.ANALYTICS, { linkId, slug, destinationUrl: target, ...visitor });
   c.executionCtx.waitUntil(upsertDailyStats(getDb(c.env.DB), linkId, 1));
 }
 
@@ -241,116 +248,89 @@ function redirectResponse<P extends string>(c: Context<AppEnv, P>, url: string, 
   return c.redirect(url, 302);
 }
 
-export async function handleRedirect(c: Context<AppEnv, "/:slug">, next: Next) {
-  // Slugs are stored normalized, so the incoming one is normalized too:
-  // /Blah and /blah resolve to the same link.
-  const slug = normalizeSlug(c.req.param("slug"));
-  if (!slug) return next();
-  const { host, isCustomDomain } = requestHost(c);
-  // Reserved slugs can never be links (validateSlug rejects them), so skip the
-  // lookup. On the primary host they fall through to the SPA or a static file;
-  // on a custom domain they take the same notFoundRedirect as any unknown slug.
-  const reserved = RESERVED_SLUGS.has(slug);
-  if (reserved && !isCustomDomain) return next();
+export async function handleRedirect(c: SlugContext, next: Next) {
+  const { slug, host } = slugRequest(c);
+  const resolved = slug === null ? null : await resolveSlug(c, slug, host);
 
-  const resolved = reserved ? null : await resolveSlug(c, slug, isCustomDomain ? host : null);
-
-  if (!resolved) {
-    if (isCustomDomain) {
-      const domain = await getDb(c.env.DB).select().from(domainConfig)
-        .where(eq(domainConfig.hostname, host))
-        .get();
-      if (domain?.notFoundRedirect && isHttpUrl(domain.notFoundRedirect)) {
-        return redirectResponse(c, domain.notFoundRedirect, 302);
-      }
-    }
-    return next();
+  // On the primary host an unknown slug falls through to the SPA or a static
+  // file; on a custom domain it takes the domain's notFoundRedirect.
+  if (slug === null || !resolved) {
+    const notFound = host ? await domainRedirect(c, host, "notFoundRedirect") : null;
+    return notFound ?? next();
   }
 
   const blocked = await checkConstraints(c, resolved);
   if (blocked) return blocked;
 
-  // Bot/OG check runs before the password gate so crawlers get previews of protected links.
+  const visitor = requestVisitor(c.req.raw);
+
+  // Bot/OG check runs before the password gate so crawlers get previews of
+  // protected links. A crawler on a link without OG fields redirects and counts
+  // as a click like any visitor.
   const hasOg = resolved.ogTitle || resolved.ogDescription || resolved.ogImage;
-  if (hasOg && BOT_UA_PATTERN.test(c.req.header("user-agent") ?? "")) {
+  if (hasOg && BOT_UA_PATTERN.test(visitor.userAgent)) {
     const shortUrl = new URL(`/${slug}`, c.req.url).href;
-    return ogMetaPage(resolved.hasPassword ? null : resolveDestination(c, resolved), resolved, shortUrl);
+    return ogMetaPage(c, resolved.hasPassword ? null : resolveDestination(c, resolved, visitor).url, resolved, shortUrl);
   }
 
-  if (resolved.hasPassword) {
-    return passwordGatePage(slug, getInstanceName(c.env));
-  }
+  if (resolved.hasPassword) return passwordGatePage(c, slug);
 
   // Targeting and param forwarding run only once the request is going to
   // redirect, so a gated link never spends an A/B roll.
-  const destinationUrl = resolveDestination(c, resolved);
+  const destination = resolveDestination(c, resolved, visitor);
   // Hono routes HEAD to the GET handler; only a real GET is a click.
   if (c.req.method === "GET") {
-    trackClick(c, slug, resolved.linkId, destinationUrl);
+    trackClick(c, slug, resolved.linkId, destination.target, visitor);
   }
-  return redirectResponse(c, destinationUrl, resolved.redirectType);
+  return redirectResponse(c, destination.url, resolved.redirectType);
 }
 
-export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Next) {
-  const slug = normalizeSlug(c.req.param("slug"));
-  if (!slug) return next();
-  if (RESERVED_SLUGS.has(slug)) return next();
-  const { host, isCustomDomain } = requestHost(c);
+export async function handleRedirectPost(c: SlugContext, next: Next) {
+  const { slug, host } = slugRequest(c);
+  if (slug === null) return next();
 
   // D1, not KV: the cache holds no password hash.
   const db = getDb(c.env.DB);
-  const link = await findLink(db, slug, isCustomDomain ? host : null);
-
+  const link = await findLink(db, slug, host);
   if (!link) return next();
 
   if (!link.password) {
-    return c.text("Method Not Allowed", 405);
+    return c.text("Method Not Allowed", 405, { Allow: "GET, HEAD" });
   }
 
-  const resolved = await loadCachedRedirect(db, link);
-
-  const blocked = await checkConstraints(c, resolved);
+  const blocked = await checkConstraints(c, toCachedRedirect(link, null));
   if (blocked) return blocked;
 
   const formData = await c.req.parseBody();
   const submittedPassword = typeof formData.password === "string" ? formData.password : "";
 
-  const instanceName = getInstanceName(c.env);
-
   if (!submittedPassword) {
-    return passwordGatePage(slug, instanceName, "Please enter a password.");
+    return passwordGatePage(c, slug, "Please enter a password.");
   }
 
   const ip = c.req.header("cf-connecting-ip") || "unknown";
   const rl = await checkPasswordRateLimit(c.env.KV, link.id, ip);
   if (rl.exceeded) {
-    return passwordGatePage(slug, instanceName, "Too many attempts, try again later.", 429);
+    return passwordGatePage(c, slug, "Too many attempts, try again later.", 429);
   }
   c.executionCtx.waitUntil(rl.hit());
 
   const valid = await verifyPassword(submittedPassword, link.password);
   if (!valid) {
-    return passwordGatePage(slug, instanceName, "Incorrect password. Please try again.");
+    return passwordGatePage(c, slug, "Incorrect password. Please try again.");
   }
 
-  const destinationUrl = resolveDestination(c, resolved);
-  trackClick(c, slug, resolved.linkId, destinationUrl);
-  return redirectResponse(c, destinationUrl, resolved.redirectType);
+  // Targets load only once the password verifies.
+  const resolved = await loadCachedRedirect(db, link);
+  const visitor = requestVisitor(c.req.raw);
+  const destination = resolveDestination(c, resolved, visitor);
+  trackClick(c, slug, link.id, destination.target, visitor);
+  return redirectResponse(c, destination.url, resolved.redirectType);
 }
 
 /** Handle root path on custom domains (rootRedirect). */
 export async function handleCustomDomainRoot(c: Context<AppEnv, "/">, next: Next) {
-  const { host, isCustomDomain } = requestHost(c);
-  if (!isCustomDomain) return next();
-
-  const db = getDb(c.env.DB);
-  const domain = await db.select().from(domainConfig)
-    .where(eq(domainConfig.hostname, host))
-    .get();
-
-  if (domain?.rootRedirect && isHttpUrl(domain.rootRedirect)) {
-    return redirectResponse(c, domain.rootRedirect, 302);
-  }
-
-  return next();
+  const host = requestHost(c);
+  const root = host ? await domainRedirect(c, host, "rootRedirect") : null;
+  return root ?? next();
 }

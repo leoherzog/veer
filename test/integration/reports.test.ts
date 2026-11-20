@@ -273,11 +273,14 @@ describe("Reports API", () => {
       expect(json.data.title).toBe("Public Test Link");
       // All-time total includes the out-of-window row.
       expect(json.data.totalClicks).toBe(5 + 10 + 99);
-      // Timeseries is limited to the 30-day window and sorted ascending by
-      // date, so the out-of-window row is excluded and order is flipped
-      // relative to insertion order.
-      expect(json.data.timeseries.labels).toEqual([dayLabel(twoDaysAgo), dayLabel(oneDayAgo)]);
-      expect(json.data.timeseries.clicks).toEqual([10, 5]);
+      // The timeseries has one bucket per day from 30 days ago through today,
+      // ascending and zero-filled, so the out-of-window row is excluded.
+      const { labels, clicks } = json.data.timeseries;
+      expect(labels).toHaveLength(31);
+      expect(labels[0]).toBe(dayLabel(isoDaysAgo(30)));
+      expect(labels.slice(-3)).toEqual([dayLabel(twoDaysAgo), dayLabel(oneDayAgo), dayLabel(isoDaysAgo(0))]);
+      expect(clicks.slice(-3)).toEqual([10, 5, 0]);
+      expect(clicks.reduce((s, n) => s + n, 0)).toBe(15);
     });
 
     it("returns 404 for an invalid token", async () => {

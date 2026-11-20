@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { requestVisitor, writeClickEvent } from "../../src/services/analytics";
+import { clickSeries, requestVisitor, writeClickEvent } from "../../src/services/analytics";
 
 // Stub dataset that just records what writeDataPoint was called with, instead
 // of the real fire-and-forget AE binding (which never throws and so can't
@@ -10,9 +10,8 @@ function makeStubDataset() {
 
 describe("writeClickEvent", () => {
   // Positional contract: see writeClickEvent in src/services/analytics.ts.
-  it("writes every blob to its documented position", () => {
+  it("writes every blob to its documented position and no doubles", () => {
     const dataset = makeStubDataset();
-    const before = Date.now();
 
     writeClickEvent(dataset, {
       linkId: "link-1",
@@ -28,19 +27,18 @@ describe("writeClickEvent", () => {
     expect(dataset.writeDataPoint).toHaveBeenCalledTimes(1);
     const point = (dataset.writeDataPoint as ReturnType<typeof vi.fn>).mock.calls[0][0];
 
-    expect(point.indexes).toEqual(["link-1"]);
-    expect(point.blobs).toEqual([
-      "test-slug", // blob1: slug
-      "US", // blob2: country
-      "TestAgent/1.0", // blob3: user-agent
-      "https://referrer.example.com", // blob4: referer
-      "Austin", // blob5: city
-      "https://example.com/destination", // blob6: destinationUrl
-      "Texas", // blob7: region
-    ]);
-    expect(point.doubles).toHaveLength(1);
-    expect(point.doubles[0]).toBeGreaterThanOrEqual(before);
-    expect(point.doubles[0]).toBeLessThanOrEqual(Date.now());
+    expect(point).toEqual({
+      indexes: ["link-1"],
+      blobs: [
+        "test-slug", // blob1: slug
+        "US", // blob2: country
+        "TestAgent/1.0", // blob3: user-agent
+        "https://referrer.example.com", // blob4: referer
+        "Austin", // blob5: city
+        "https://example.com/destination", // blob6: destinationUrl
+        "Texas", // blob7: region
+      ],
+    });
   });
 });
 
@@ -56,6 +54,12 @@ describe("requestVisitor", () => {
     });
   });
 
+  it("reads country, city and region from request.cf", () => {
+    const request = new Request("https://veer.ing/x", { cf: { country: "DE", city: "Berlin", region: "Berlin" } });
+
+    expect(requestVisitor(request)).toMatchObject({ country: "DE", city: "Berlin", region: "Berlin" });
+  });
+
   it("falls back to empty strings, not null/undefined, for every missing header or cf field", () => {
     expect(requestVisitor(new Request("https://veer.ing/bare"))).toEqual({
       country: "",
@@ -64,5 +68,40 @@ describe("requestVisitor", () => {
       userAgent: "",
       referer: "",
     });
+  });
+});
+
+describe("clickSeries", () => {
+  const day = 86_400_000;
+  const start = Date.parse("2026-03-01");
+  const label = (iso: string) => iso.slice(0, 10);
+
+  it("emits one zero-filled bucket per step from start through end", () => {
+    const series = clickSeries([{ at: start + 2 * day, clicks: 4 }], { start, end: start + 3 * day + 1, step: day }, label);
+
+    expect(series).toEqual({
+      labels: ["2026-03-01", "2026-03-02", "2026-03-03", "2026-03-04"],
+      clicks: [0, 0, 4, 0],
+    });
+  });
+
+  it("adds every row inside a bucket to it", () => {
+    const series = clickSeries(
+      [{ at: start, clicks: 1 }, { at: start + day - 1, clicks: 2 }, { at: start + day, clicks: 5 }],
+      { start, end: start + day, step: day },
+      label,
+    );
+
+    expect(series.clicks).toEqual([3, 5]);
+  });
+
+  it("puts a row just outside the range in the nearest bucket", () => {
+    const series = clickSeries(
+      [{ at: start - 1, clicks: 1 }, { at: start + 5 * day, clicks: 2 }],
+      { start, end: start + day, step: day },
+      label,
+    );
+
+    expect(series.clicks).toEqual([1, 2]);
   });
 });

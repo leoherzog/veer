@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { validateSlug, normalizeSlug, RESERVED_SLUGS } from "../../src/services/slug";
 
+/** A keycap emoji: `base`, VS16, combining enclosing keycap. */
+const keycap = (base: string) => base + String.fromCodePoint(0xfe0f, 0x20e3);
+
 /** Assert a slug is valid and return its canonical form. */
 function canonical(input: string): string {
   const result = validateSlug(input);
@@ -88,6 +91,18 @@ describe("validateSlug", () => {
       expect(validateSlug("\u2764\uFE0F").valid).toBe(true); // variation selector
     });
 
+    it("accepts flags, skin tones and tag sequences", () => {
+      expect(canonical("\u{1F1FA}\u{1F1F8}")).toBe("\u{1F1FA}\u{1F1F8}"); // flag: US
+      expect(canonical("\u{1F44D}\u{1F3FD}")).toBe("\u{1F44D}\u{1F3FD}"); // thumbs up, medium skin tone
+      expect(canonical("go-\u{1F1EF}\u{1F1F5}")).toBe("go-\u{1F1EF}\u{1F1F5}"); // flag: JP
+      expect(validateSlug("\u{1F3F4}\u{E0067}\u{E0062}\u{E0073}\u{E0063}\u{E0074}\u{E007F}").valid).toBe(true); // flag: Scotland
+    });
+
+    it("accepts the * and digit keycaps", () => {
+      expect(canonical(keycap("*"))).toBe(keycap("*"));
+      expect(canonical(`go${keycap("1")}`)).toBe(`go${keycap("1")}`);
+    });
+
     it("accepts a percent-encoded slug and stores it decoded", () => {
       expect(canonical("Caf%C3%89")).toBe("café");
     });
@@ -107,6 +122,30 @@ describe("validateSlug", () => {
     it("rejects path and query delimiters", () => {
       for (const slug of ["a/b", "a?b", "a#b", "a%b", "a\\b"]) {
         expect(validateSlug(slug).valid).toBe(false);
+      }
+    });
+
+    it("rejects the # keycap, whose # would end the path segment", () => {
+      for (const slug of [keycap("#"), `a${keycap("#")}`, `a${keycap("#")}b`]) {
+        expect(validateSlug(slug).valid).toBe(false);
+      }
+    });
+
+    it("rejects a run of emoji ending in an invalid character without backtracking", () => {
+      // The short run comes first: backtracking takes over half a second on it,
+      // so a regression fails here instead of hanging on the longer runs, which
+      // stay under the 256-byte cap so the character check still runs.
+      const runs = [
+        String.fromCodePoint(0x1f600).repeat(20), // grinning face: a pictograph and an emoji
+        String.fromCodePoint(0x1f600).repeat(63),
+        String.fromCodePoint(0x1f468).repeat(63), // man: starts many ZWJ sequences
+        String.fromCodePoint(0x1f469, 0x200d, 0x1f4bb).repeat(23), // woman technologist
+        String.fromCodePoint(0x1f44d, 0x1f3fd).repeat(31), // thumbs up, medium skin tone
+      ];
+      for (const run of runs) {
+        const start = performance.now();
+        expect(validateSlug(`${run}|`).valid).toBe(false);
+        expect(performance.now() - start).toBeLessThan(200);
       }
     });
 
