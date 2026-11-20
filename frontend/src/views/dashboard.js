@@ -276,13 +276,16 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
     }
   }
 
+  function loadCampaignsPanel() {
+    if (campaignsLoaded) return;
+    campaignsLoaded = true;
+    renderCampaignsPanel(container.querySelector("#campaigns-panel"));
+  }
+
   const tabGroup = container.querySelector("#dashboard-tabs");
   tabGroup.addEventListener("wa-tab-show", (e) => {
     if (e.target !== tabGroup) return;
-    if (e.detail.name === "campaigns" && !campaignsLoaded) {
-      renderCampaignsPanel(container.querySelector("#campaigns-panel"))
-        .then(() => { campaignsLoaded = true; });
-    }
+    if (e.detail.name === "campaigns") loadCampaignsPanel();
     if (e.detail.name === "teams" && !teamsLoaded) {
       teamsLoaded = true;
       loadTeamsPanel();
@@ -295,6 +298,8 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
     }
   });
 
+  // wa-tab-group fires no wa-tab-show for its initial tab, so a deep-linked tab loads its panel here.
+  if (activeTab === "campaigns") loadCampaignsPanel();
   if (activeTab === "teams") {
     teamsLoaded = true;
     loadTeamsPanel(teamId || null);
