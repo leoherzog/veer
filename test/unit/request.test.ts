@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { parseDays, parseJsonBody, parseOptionalJsonBody, parsePagination, stripPassword } from "../../src/lib/request";
+import { parseDays, parseJsonBody, parsePagination, stripPassword } from "../../src/lib/request";
 import type { AppEnv } from "../../src/types";
 
 describe("parsePagination", () => {
@@ -87,7 +87,7 @@ describe("parseDays", () => {
   });
 });
 
-/** Routes /j through parseJsonBody and /o through parseOptionalJsonBody. */
+/** Routes /j through parseJsonBody. */
 const parseApp = new Hono<AppEnv>();
 // Match the production app's onError so HTTPException rendering is identical
 parseApp.onError((err, c) => {
@@ -95,7 +95,6 @@ parseApp.onError((err, c) => {
   return c.json({ error: String(err) }, 500);
 });
 parseApp.post("/j", async (c) => c.json(await parseJsonBody<{ ok: boolean }>(c)));
-parseApp.post("/o", async (c) => c.json({ body: await parseOptionalJsonBody<{ ok?: boolean }>(c) }));
 
 describe("parseJsonBody", () => {
   it("parses a valid JSON body", async () => {
@@ -118,25 +117,6 @@ describe("parseJsonBody", () => {
     expect(res.status).toBe(400);
     const json = await res.json<{ error: string }>();
     expect(json.error).toBe("Invalid JSON body");
-  });
-});
-
-describe("parseOptionalJsonBody", () => {
-  it("returns the parsed body when one is sent", async () => {
-    const res = await parseApp.request("/o", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ok: true }),
-    });
-    const json = await res.json<{ body: { ok: boolean } | null }>();
-    expect(json.body).toEqual({ ok: true });
-  });
-
-  it("returns null when no body is sent", async () => {
-    const res = await parseApp.request("/o", { method: "POST" });
-    expect(res.status).toBe(200);
-    const json = await res.json<{ body: unknown }>();
-    expect(json.body).toBeNull();
   });
 });
 

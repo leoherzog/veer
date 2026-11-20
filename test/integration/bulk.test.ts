@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
 import { setupAuth, createTestLink, mockExecutionCtx, createTestDomain, api, type JsonBody } from "../helpers";
+import { BULK_MAX } from "../../src/lib/limits";
 
 const postBulk = (body: JsonBody, headers: Record<string, string>) => api("POST", "/api/bulk", { headers, body });
 
@@ -64,13 +65,14 @@ describe("Bulk Links API", () => {
       expect(res.status).toBe(400);
     });
 
-    it("returns 400 when links array exceeds 50 items", async () => {
-      const links = Array.from({ length: 51 }, (_, i) => ({
+    it("returns 400 when links array exceeds BULK_MAX items", async () => {
+      const links = Array.from({ length: BULK_MAX + 1 }, (_, i) => ({
         slug: `over-limit-${i}`,
         destinationUrl: "https://example.com",
       }));
       const res = await postBulk({ links }, headers);
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: `Maximum ${BULK_MAX} links per request` });
     });
 
     it("returns per-item errors for invalid slug, invalid URL, and missing destinationUrl", async () => {

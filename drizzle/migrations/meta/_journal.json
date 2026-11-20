@@ -15,6 +15,13 @@
       "when": 1791230143560,
       "tag": "0001_schema_cleanup",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1795184723992,
+      "tag": "0002_drop_link_is_active",
+      "breakpoints": true
     }
   ]
 }

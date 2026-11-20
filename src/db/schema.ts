@@ -128,7 +128,6 @@ export const links = sqliteTable("links", {
   title: text("title"),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
-  isActive: integer("isActive", { mode: "boolean" }).notNull().default(true),
   expiresAt: integer("expiresAt", { mode: "timestamp" }),
   maxClicks: integer("maxClicks"),
   password: text("password"),

@@ -1,8 +1,9 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx, api, postLink, insertClickStat, type JsonBody } from "../helpers";
+import { setupAuth, createTestLink, api, postLink, insertClickStat, type JsonBody } from "../helpers";
 import { hashPassword } from "../../src/services/password";
+import { DEVICE_TYPES } from "../../src/services/useragent";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -244,71 +245,13 @@ describe("Links API", () => {
   });
 
   // -----------------------------------------------------------------------
-  // TOGGLE ACTIVE  PATCH /api/links/:id/active
-  // -----------------------------------------------------------------------
-  describe("PATCH /api/links/:id/active", () => {
-    it("deactivates a link and invalidates its cached redirect", async () => {
-      const link = await createTestLink({ slug: "deactivate-me", userId, isActive: true });
-
-      // Seed the KV cache the way the redirect path would. Key format matches
-      // kvKey() in src/services/kv-cache.ts: bare slug when there is no custom domain.
-      await env.KV.put(
-        "deactivate-me",
-        JSON.stringify({ url: link.destinationUrl, redirectType: 302, linkId: link.id, isActive: true }),
-      );
-      // Sanity: the entry exists before we deactivate, so a null afterwards can only
-      // mean deactivation deleted it (not that it was never there).
-      expect(await env.KV.get("deactivate-me")).not.toBeNull();
-
-      const res = await api("PATCH", `/api/links/${link.id}/active`, {
-        headers,
-        body: { isActive: false },
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { success: boolean; isActive: boolean };
-      expect(json.success).toBe(true);
-      expect(json.isActive).toBe(false);
-
-      const kv = await env.KV.get("deactivate-me");
-      expect(kv).toBeNull();
-    });
-
-    it("reactivates a link and repopulates its cached redirect", async () => {
-      const slug = `kv-reactivate-${crypto.randomUUID().slice(0, 8)}`;
-      const link = await createTestLink({ slug, userId, isActive: false });
-      expect(await env.KV.get(slug)).toBeNull();
-
-      const res = await api("PATCH", `/api/links/${link.id}/active`, {
-        headers,
-        body: { isActive: true },
-      });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { success: boolean; isActive: boolean };
-      expect(json.isActive).toBe(true);
-
-      const cached = await env.KV.get(slug, { type: "json" }) as { url: string; isActive: boolean } | null;
-      expect(cached).not.toBeNull();
-      expect(cached!.isActive).toBe(true);
-      expect(cached!.url).toBe(link.destinationUrl);
-    });
-
-    it("returns 404 for non-existent link", async () => {
-      const res = await api("PATCH", "/api/links/nonexistent-id/active", {
-        headers,
-        body: { isActive: false },
-      });
-      expect(res.status).toBe(404);
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // DELETE  DELETE /api/links/:id
   // -----------------------------------------------------------------------
   describe("DELETE /api/links/:id", () => {
     it("returns success, clears the cache entry and 404s on re-fetch", async () => {
       const slug = `kv-delete-${crypto.randomUUID().slice(0, 8)}`;
       const link = await createTestLink({ slug, userId });
-      await env.KV.put(slug, JSON.stringify({ url: link.destinationUrl, linkId: link.id, isActive: true }));
+      await env.KV.put(slug, JSON.stringify({ url: link.destinationUrl, linkId: link.id }));
 
       const res = await api("DELETE", `/api/links/${link.id}`, { headers });
       expect(res.status).toBe(200);
@@ -353,17 +296,6 @@ describe("Links API", () => {
         headers: { Cookie: headers.Cookie },
       }, env);
       expect(res.status).toBe(400);
-    });
-
-    it("PATCH /api/links/:id/active with no body toggles (does not crash)", async () => {
-      const link = await createTestLink({ slug: `no-body-toggle-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
-      const res = await app.request(`/api/links/${link.id}/active`, {
-        method: "PATCH",
-        headers: { Cookie: headers.Cookie },
-      }, env);
-      expect(res.status).toBe(200);
-      const json = await res.json() as { isActive: boolean };
-      expect(json.isActive).toBe(false);
     });
   });
 
@@ -580,6 +512,31 @@ describe("Links API", () => {
       expect(res.status).toBe(400);
     });
 
+    it("accepts every DEVICE_TYPES value and stores it trimmed and lowercased", async () => {
+      const targets = DEVICE_TYPES.map(device => ({
+        type: "device", matchValue: ` ${device.toUpperCase()} `, destinationUrl: `https://example.com/${device}`,
+      }));
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, { headers, body: { targets } });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { matchValue: string }[] };
+      expect(json.data.map(t => t.matchValue)).toEqual([...DEVICE_TYPES]);
+
+      const { results } = await env.DB
+        .prepare("SELECT matchValue FROM link_targets WHERE linkId = ? AND type = 'device'")
+        .bind(targetLinkId)
+        .all<{ matchValue: string }>();
+      expect(results.map(r => r.matchValue).sort()).toEqual([...DEVICE_TYPES].sort());
+    });
+
+    it("names every DEVICE_TYPES value when it rejects a device", async () => {
+      const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
+        headers,
+        body: { targets: [{ type: "device", matchValue: "phone", destinationUrl: "https://example.com" }] },
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Device matchValue must be one of: desktop, mobile, tablet" });
+    });
+
     it("persists an A/B target — type 'ab' must satisfy the DB CHECK", async () => {
       const res = await api("PUT", `/api/links/${targetLinkId}/targets`, {
         headers,
@@ -748,14 +705,6 @@ describe("Links API", () => {
       expect(res.status).toBe(404);
     });
 
-    it("PATCH another user's link active state", async () => {
-      const res = await api("PATCH", `/api/links/${otherLinkId}/active`, {
-        headers,
-        body: { isActive: false },
-      });
-      expect(res.status).toBe(404);
-    });
-
     it("DELETE another user's link", async () => {
       const res = await api("DELETE", `/api/links/${otherLinkId}`, { headers });
       expect(res.status).toBe(404);
@@ -780,7 +729,7 @@ describe("Links API", () => {
   // KV write-through on mutation
   // -----------------------------------------------------------------------
   describe("KV cache stays in step with D1", () => {
-    type Cached = { url: string; hasPassword: boolean; expiresAt: number | null; isActive: boolean; targets: { matchValue: string; priority: number }[] | null };
+    type Cached = { url: string; hasPassword: boolean; expiresAt: number | null; targets: { matchValue: string; priority: number }[] | null };
 
     async function readKv(slug: string) {
       return await env.KV.get(slug, { type: "json" }) as Cached | null;
@@ -879,7 +828,7 @@ describe("Links API", () => {
     it("a bogus campaignId leaves D1 and KV untouched", async () => {
       const slug = `put-bad-campaign-${crypto.randomUUID().slice(0, 8)}`;
       const link = await createTestLink({ slug, userId, destinationUrl: "https://original.example.com" });
-      await env.KV.put(slug, JSON.stringify({ url: "https://original.example.com", linkId: link.id, isActive: true }));
+      await env.KV.put(slug, JSON.stringify({ url: "https://original.example.com", linkId: link.id }));
 
       const res = await api("PUT", `/api/links/${link.id}`, {
         headers,
@@ -944,34 +893,6 @@ describe("Links API", () => {
 
       const row = await env.DB.prepare("SELECT id FROM links WHERE slug = ?").bind(slug).first();
       expect(row).toBeNull();
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // PATCH /:id/active body handling
-  // -----------------------------------------------------------------------
-  describe("PATCH /api/links/:id/active – body handling", () => {
-    it("an empty object toggles instead of deactivating", async () => {
-      const link = await createTestLink({ slug: `toggle-empty-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: false });
-      const res = await api("PATCH", `/api/links/${link.id}/active`, { headers, body: {} });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { isActive: boolean };
-      expect(json.isActive).toBe(true);
-    });
-
-    it("an oversized body returns 413, not a toggle", async () => {
-      const link = await createTestLink({ slug: `toggle-big-${crypto.randomUUID().slice(0, 8)}`, userId, isActive: true });
-      const body = JSON.stringify({ isActive: false, pad: "x".repeat(11_000) });
-      const res = await app.request(`/api/links/${link.id}/active`, {
-        method: "PATCH",
-        headers: { ...headers, "Content-Length": String(new TextEncoder().encode(body).byteLength) },
-        body,
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(413);
-
-      const row = await env.DB.prepare("SELECT isActive FROM links WHERE id = ?")
-        .bind(link.id).first<{ isActive: number }>();
-      expect(row!.isActive).toBe(1);
     });
   });
 });

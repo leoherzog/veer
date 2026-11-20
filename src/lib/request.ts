@@ -11,15 +11,6 @@ export async function parseJsonBody<T>(c: Context): Promise<T> {
   }
 }
 
-/** Parse a JSON body for endpoints where an absent or empty body is meaningful. */
-export async function parseOptionalJsonBody<T>(c: Context): Promise<T | null> {
-  try {
-    return await c.req.json<T>();
-  } catch {
-    return null;
-  }
-}
-
 export function parsePagination(c: Context): { page: number; limit: number; offset: number } {
   // Floor before clamping: a fractional page reaches SQLite as a fractional OFFSET.
   const rawPage = Math.floor(Number(c.req.query("page")) || 1);

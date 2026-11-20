@@ -85,7 +85,6 @@ export async function createTestLink(
     destinationUrl: string;
     redirectType: number;
     title: string | null;
-    isActive: boolean;
     domainHostname: string | null;
     expiresAt: number | null;
     maxClicks: number | null;
@@ -104,12 +103,12 @@ export async function createTestLink(
 
   await env.DB
     .prepare(
-      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, isActive, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, teamId)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, teamId)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       id, fields.userId, slug, destinationUrl, fields.redirectType ?? 302, fields.title ?? null, now, now,
-      fields.isActive === false ? 0 : 1, fields.domainHostname ?? null, fields.expiresAt ?? null,
+      fields.domainHostname ?? null, fields.expiresAt ?? null,
       fields.maxClicks ?? null, fields.password ?? null, fields.isInternal ? 1 : 0,
       fields.ogTitle ?? null, fields.ogDescription ?? null, fields.ogImage ?? null, fields.teamId ?? null
     )
@@ -183,13 +182,12 @@ export function dayLabel(iso: string): string {
   return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()}`;
 }
 
-/** A KV cache entry for an active, unprotected 302 link; override as needed. */
+/** A KV cache entry for an unprotected 302 link; override as needed. */
 export function cachedRedirect(overrides: Partial<CachedRedirect> = {}): CachedRedirect {
   return {
     url: "https://default.example.com",
     redirectType: 302,
     linkId: `link-${crypto.randomUUID().slice(0, 8)}`,
-    isActive: true,
     expiresAt: null,
     maxClicks: null,
     hasPassword: false,

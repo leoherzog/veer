@@ -70,6 +70,18 @@ describe("App-level concerns", () => {
       expect(await res.json()).toEqual({ error: "Request body too large" });
     });
 
+    it("rejects a body over 10 KB by its Content-Length", async () => {
+      const body = "x".repeat(11_000);
+      const res = await app.request("/api/links", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "Content-Length": String(body.length) },
+        body,
+      }, env);
+
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual({ error: "Request body too large" });
+    });
+
     it("caps bulk at 100 KB instead of 10 KB", async () => {
       const post = (size: number) => app.request("/api/bulk", {
         method: "POST",

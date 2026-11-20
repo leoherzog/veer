@@ -8,7 +8,6 @@ export interface CachedRedirect {
   url: string;
   redirectType: number;
   linkId: string;
-  isActive: boolean;
   expiresAt: number | null;
   maxClicks: number | null;
   hasPassword: boolean;
@@ -23,7 +22,7 @@ export interface CachedRedirect {
 /** The links columns a CachedRedirect is built from. */
 export type CachedRedirectSource = Pick<
   typeof links.$inferSelect,
-  "id" | "destinationUrl" | "redirectType" | "isActive" | "expiresAt" | "maxClicks" | "password"
+  "id" | "destinationUrl" | "redirectType" | "expiresAt" | "maxClicks" | "password"
   | "isInternal" | "ogTitle" | "ogDescription" | "ogImage" | "paramForwarding"
 >;
 
@@ -33,7 +32,6 @@ export function toCachedRedirect(link: CachedRedirectSource, targets: CachedTarg
     url: link.destinationUrl,
     redirectType: link.redirectType,
     linkId: link.id,
-    isActive: link.isActive,
     expiresAt: link.expiresAt ? Math.floor(link.expiresAt.getTime() / 1000) : null,
     maxClicks: link.maxClicks,
     hasPassword: !!link.password,

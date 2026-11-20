@@ -15,7 +15,7 @@ describe("Redirect engine – GET /:slug", () => {
   // ── D1 fallback (no KV cache) ────────────────────────────────────────
 
   describe("D1 fallback (no KV cache)", () => {
-    it("redirects active link with 302 by default", async () => {
+    it("redirects a link with 302 by default", async () => {
       await createTestLink({
         slug: "d1-302",
         destinationUrl: "https://example.com/target-302",
@@ -29,7 +29,7 @@ describe("Redirect engine – GET /:slug", () => {
       expect(res.headers.get("Cache-Control")).toBe("private, no-store");
     });
 
-    it("redirects active link with 301 when redirectType is 301", async () => {
+    it("redirects a link with 301 when redirectType is 301", async () => {
       await createTestLink({
         slug: "d1-301",
         destinationUrl: "https://example.com/target-301",
@@ -49,43 +49,18 @@ describe("Redirect engine – GET /:slug", () => {
 
       expect(res.headers.get("Location")).toBeNull();
     });
-
-    it("inactive link falls through (not a redirect)", async () => {
-      await createTestLink({
-        slug: "d1-inactive",
-        destinationUrl: "https://example.com/inactive",
-        isActive: false,
-        userId: owner.user.id,
-      });
-
-      const res = await app.request("/d1-inactive", {}, env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBeNull();
-    });
   });
 
   // ── KV cache hit ─────────────────────────────────────────────────────
 
   describe("KV cache hit", () => {
-    it("redirects when KV has a cached active entry", async () => {
+    it("redirects when KV has a cached entry", async () => {
       await setCachedRedirect(env.KV, "kv-hit", cachedRedirect({ url: "https://example.com/from-kv", linkId: "kv-link-1" }));
 
       const res = await app.request("/kv-hit", {}, env, mockExecutionCtx());
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/from-kv");
-    });
-
-    it("inactive KV entry falls through (not a redirect)", async () => {
-      await setCachedRedirect(env.KV, "kv-inactive", cachedRedirect({
-        url: "https://example.com/inactive-kv",
-        linkId: "kv-link-2",
-        isActive: false,
-      }));
-
-      const res = await app.request("/kv-inactive", {}, env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBeNull();
     });
   });
 

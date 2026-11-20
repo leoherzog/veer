@@ -96,20 +96,14 @@ export async function publicReportRoute(c: Context<AppEnv>) {
     linkId: links.id,
     slug: links.slug,
     title: links.title,
-    isActive: links.isActive,
     isInternal: links.isInternal,
   }).from(publicReports)
     .innerJoin(links, eq(publicReports.linkId, links.id))
     .where(eq(publicReports.token, token))
     .get();
 
-  if (!row || !row.reportEnabled) {
-    return c.json({ error: "Not found" }, 404);
-  }
-
-  // Deactivated links expose nothing. Internal links require a session to
-  // redirect, so their stats stay behind auth too.
-  if (!row.isActive || row.isInternal) {
+  // Internal links require a session to redirect, so their stats stay behind auth too.
+  if (!row || !row.reportEnabled || row.isInternal) {
     return c.json({ error: "Not found" }, 404);
   }
 

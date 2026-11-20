@@ -10,6 +10,7 @@ import {
   validateHttpUrl, validateDomainAccess, getPrimaryHostname, resolveDomainHostname, assertInternalAllowed, assertLinkQuota,
 } from "../../lib/validators";
 import { parseJsonBody } from "../../lib/request";
+import { BULK_MAX } from "../../lib/limits";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "../../types";
 
@@ -57,8 +58,8 @@ bulkRoutes.post("/", async (c) => {
     throw badRequest("links array must not be empty");
   }
 
-  if (body.links.length > 50) {
-    throw badRequest("Maximum 50 links per request");
+  if (body.links.length > BULK_MAX) {
+    throw badRequest(`Maximum ${BULK_MAX} links per request`);
   }
 
   await assertLinkQuota(db, user.id, body.links.length);
@@ -119,7 +120,6 @@ bulkRoutes.post("/", async (c) => {
           title: item.title || null,
           createdAt: now,
           updatedAt: now,
-          isActive: true,
           expiresAt: null,
           maxClicks: null,
           password: null,

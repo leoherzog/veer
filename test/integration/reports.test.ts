@@ -276,28 +276,6 @@ describe("Reports API", () => {
       expect(res.status).toBe(404);
     });
 
-    it("returns 404 when link is deactivated", async () => {
-      const link = await createTestLink({
-        slug: `rpt-deact-${crypto.randomUUID().slice(0, 8)}`,
-        userId,
-        title: "Deactivated Link",
-      });
-
-      const token = await createReport(link.id);
-
-      // Public report works while link is active
-      const okRes = await api("GET", `/api/public-report/${token}`);
-      expect(okRes.status).toBe(200);
-
-      // Deactivate the link directly in DB
-      await env.DB.prepare("UPDATE links SET isActive = 0 WHERE id = ?")
-        .bind(link.id).run();
-
-      // Public report should now return 404
-      const failRes = await api("GET", `/api/public-report/${token}`);
-      expect(failRes.status).toBe(404);
-    });
-
     it("returns 404 when report is disabled", async () => {
       const link = await createTestLink({
         slug: `rpt-disabled-${crypto.randomUUID().slice(0,8)}`,

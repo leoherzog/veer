@@ -190,7 +190,6 @@ for (const link of LINKS) {
     title: link.title,
     createdAt: NOW - 90 * SECONDS_PER_DAY,
     updatedAt: NOW,
-    isActive: true,
     expiresAt: link.expiresAt ?? null,
     maxClicks: link.maxClicks ?? null,
     password: link.password ?? null,

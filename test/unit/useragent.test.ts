@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseUserAgent, parseDevice } from "../../src/services/useragent";
+import { parseUserAgent, parseDevice, DEVICE_TYPES } from "../../src/services/useragent";
 
 // Real-world UA strings
 const UAs = {
@@ -286,5 +286,12 @@ describe("parseDevice — redirect targeting parity", () => {
     for (const ua of Object.values(UAs)) {
       expect(parseDevice(ua)).toBe(parseUserAgent(ua).device);
     }
+  });
+
+  // Targets validation accepts exactly DEVICE_TYPES, so every class parseDevice
+  // returns must be listed there or its targets could never be saved.
+  it("returns only DEVICE_TYPES values, and covers all of them", () => {
+    const seen = new Set(Object.values(UAs).map(parseDevice));
+    expect([...seen].sort()).toEqual([...DEVICE_TYPES].sort());
   });
 });

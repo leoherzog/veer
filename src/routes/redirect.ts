@@ -128,23 +128,16 @@ function findLink(db: Database, slug: string, hostname: string | null) {
 
 /** Resolve a slug to cached redirect data, populating KV on miss. */
 async function resolveSlug(c: Context<AppEnv, "/:slug">, slug: string, hostname: string | null) {
-  let cached = await getCachedRedirect(c.env.KV, slug, hostname);
+  const cached = await getCachedRedirect(c.env.KV, slug, hostname);
+  if (cached) return cached;
 
-  if (cached && !cached.isActive) return null;
+  const db = getDb(c.env.DB);
+  const link = await findLink(db, slug, hostname);
+  if (!link) return null;
 
-  if (!cached) {
-    const db = getDb(c.env.DB);
-    const link = await findLink(db, slug, hostname);
-    if (!link || !link.isActive) return null;
-
-    cached = await loadCachedRedirect(db, link);
-
-    c.executionCtx.waitUntil(
-      setCachedRedirect(c.env.KV, slug, cached, hostname)
-    );
-  }
-
-  return cached;
+  const resolved = await loadCachedRedirect(db, link);
+  c.executionCtx.waitUntil(setCachedRedirect(c.env.KV, slug, resolved, hostname));
+  return resolved;
 }
 
 /** Check expiration, max clicks, and internal-only constraints. Returns a Response if blocked, null if OK. */
@@ -308,7 +301,7 @@ export async function handleRedirectPost(c: Context<AppEnv, "/:slug">, next: Nex
   const db = getDb(c.env.DB);
   const link = await findLink(db, slug, isCustomDomain ? host : null);
 
-  if (!link || !link.isActive) return next();
+  if (!link) return next();
 
   if (!link.password) {
     return c.text("Method Not Allowed", 405);

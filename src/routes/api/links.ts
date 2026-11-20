@@ -11,8 +11,9 @@ import {
   validateHttpUrl, parseOptionalHttpUrl, parseExpiresAt, validateDomainAccess, getPrimaryHostname,
   resolveDomainHostname, assertInternalAllowed, assertLinkQuota,
 } from "../../lib/validators";
-import { parseJsonBody, parseOptionalJsonBody, parsePagination, searchFilter, stripPassword } from "../../lib/request";
+import { parseJsonBody, parsePagination, searchFilter, stripPassword } from "../../lib/request";
 import { hashPassword } from "../../services/password";
+import { DEVICE_TYPES } from "../../services/useragent";
 import { sumClicks } from "../../services/analytics";
 import type { AppEnv } from "../../types";
 import type { Database } from "../../db";
@@ -362,40 +363,6 @@ linkRoutes.put("/:id", async (c) => {
   return c.json({ data: response });
 });
 
-linkRoutes.patch("/:id/active", async (c) => {
-  const db = getDb(c.env.DB);
-  const { id } = c.req.param();
-  const link = c.var.link;
-
-  // An absent body (or an absent isActive) flips the current value; an explicit value wins.
-  const body = await parseOptionalJsonBody<{ isActive?: unknown }>(c);
-  const requested = body?.isActive;
-  let isActive: boolean;
-  if (requested === undefined || requested === null) {
-    isActive = !link.isActive;
-  } else if (typeof requested === "boolean") {
-    isActive = requested;
-  } else if (requested === "true" || requested === 1) {
-    isActive = true;
-  } else if (requested === "false" || requested === 0) {
-    isActive = false;
-  } else {
-    throw badRequest("isActive must be a boolean");
-  }
-
-  await db.update(links).set({ isActive, updatedAt: new Date() }).where(eq(links.id, id));
-
-  // Invalidate KV cache when deactivating, re-populate when activating
-  if (!isActive) {
-    await deleteCachedRedirect(c.env.KV, link.slug, link.domainHostname);
-  } else {
-    const kvData = await loadCachedRedirect(db, { ...link, isActive: true });
-    await setCachedRedirect(c.env.KV, link.slug, kvData, link.domainHostname);
-  }
-
-  return c.json({ success: true, isActive });
-});
-
 linkRoutes.delete("/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
@@ -420,7 +387,7 @@ linkRoutes.put("/:id/targets", async (c) => {
     throw badRequest("targets must be an array");
   }
 
-  const VALID_DEVICE_TYPES = new Set(["mobile", "tablet", "desktop"]);
+  const deviceTypes: readonly string[] = DEVICE_TYPES;
   for (const t of body.targets) {
     if (t.type !== "geo" && t.type !== "device" && t.type !== "ab") {
       throw badRequest('Invalid target type. Must be "geo", "device", or "ab"');
@@ -437,8 +404,8 @@ linkRoutes.put("/:id/targets", async (c) => {
     }
     if (t.type === "device") {
       const device = t.matchValue.trim().toLowerCase();
-      if (!VALID_DEVICE_TYPES.has(device)) {
-        throw badRequest('Device matchValue must be "mobile", "tablet", or "desktop"');
+      if (!deviceTypes.includes(device)) {
+        throw badRequest(`Device matchValue must be one of: ${DEVICE_TYPES.join(", ")}`);
       }
       t.matchValue = device;
     }

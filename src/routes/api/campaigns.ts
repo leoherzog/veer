@@ -110,7 +110,6 @@ campaignRoutes.get("/:id", async (c) => {
       destinationUrl: links.destinationUrl,
       title: links.title,
       createdAt: links.createdAt,
-      isActive: links.isActive,
       domainHostname: links.domainHostname,
       totalClicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)`,
     })

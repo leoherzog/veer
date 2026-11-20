@@ -1,7 +1,14 @@
+// User-agent parsing for redirect device targeting and click stats. The SPA bundles this module, so it must stay import-free.
+
+/** Every device class parseDevice returns. */
+export const DEVICE_TYPES = ["desktop", "mobile", "tablet"] as const;
+
+export type DeviceType = (typeof DEVICE_TYPES)[number];
+
 interface UAInfo {
   browser: string;
   os: string;
-  device: "desktop" | "mobile" | "tablet";
+  device: DeviceType;
 }
 
 export function parseUserAgent(ua: string): UAInfo {
@@ -39,7 +46,7 @@ function parseOS(ua: string): string {
  * classifier: redirect device targeting and click stats both call it, so a
  * request always lands in the same bucket in both places.
  */
-export function parseDevice(ua: string): "desktop" | "mobile" | "tablet" {
+export function parseDevice(ua: string): DeviceType {
   // Tablets first: iPad UAs also contain "Mobile/".
   if (/iPad/i.test(ua)) return "tablet";
   if (/Tablet/i.test(ua)) return "tablet";
