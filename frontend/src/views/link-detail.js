@@ -4,7 +4,23 @@ import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
-import { SPINNER, apiFetch, shortUrl, bindConfirmDialog, renderTable, relativeTime } from "../lib/ui.js";
+import { fetchJSON } from "../lib/stats-common.js";
+import { SPINNER, apiFetch, shortUrl, bindConfirmDialog, renderTable, relativeTime, errorCallout } from "../lib/ui.js";
+
+/** True for an absolute http(s) URL, the only kind this page renders as a link or image source. */
+function isHttpUrl(value) {
+  try {
+    const { protocol } = new URL(value);
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+/** Public URL of a report row. */
+function reportUrl(report) {
+  return `${location.origin}/r/${encodeURIComponent(report.token)}`;
+}
 
 function buildBadges(link) {
   const badges = [];
@@ -43,7 +59,7 @@ function buildBadges(link) {
 
 function buildOgPreview(link) {
   if (!link.ogTitle && !link.ogDescription && !link.ogImage) return "";
-  const safeOgImage = link.ogImage && /^https?:\/\//.test(link.ogImage) ? link.ogImage : null;
+  const safeOgImage = isHttpUrl(link.ogImage) ? link.ogImage : null;
   return `
     <wa-card>
       <h3 slot="header">Social Preview</h3>
@@ -69,9 +85,9 @@ function buildTargetingRules(targets) {
         columns: ["Type", "Match", "Destination", "Priority"],
         rows: filtered.map(t => `
           <tr>
-            <td><wa-badge variant="${t.type === "geo" ? "neutral" : "brand"}" pill>${escapeHtml(t.type === "geo" ? "Country" : "Device")}</wa-badge></td>
+            <td>${t.type === "geo" ? `<wa-badge variant="neutral" pill>Country</wa-badge>` : `<wa-badge variant="brand" pill>Device</wa-badge>`}</td>
             <td>${escapeHtml(t.matchValue)}</td>
-            <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
+            <td class="text-truncate wa-text-truncate" title="${escapeAttr(t.destinationUrl)}">${escapeHtml(t.destinationUrl)}</td>
             <td>${t.priority}</td>
           </tr>
         `),
@@ -95,13 +111,13 @@ function buildAbTestCard(link) {
           rows: [
             `<tr>
               <td><wa-badge variant="neutral" pill>Control</wa-badge></td>
-              <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
+              <td class="text-truncate wa-text-truncate" title="${escapeAttr(link.destinationUrl)}">${escapeHtml(link.destinationUrl)}</td>
               <td>${defaultWeight}%</td>
             </tr>`,
             ...abTargets.map((t, i) => `
               <tr>
                 <td><wa-badge variant="brand" pill>Variant ${String.fromCharCode(66 + i)}</wa-badge></td>
-                <td class="text-truncate wa-text-truncate">${escapeHtml(t.destinationUrl)}</td>
+                <td class="text-truncate wa-text-truncate" title="${escapeAttr(t.destinationUrl)}">${escapeHtml(t.destinationUrl)}</td>
                 <td>${escapeHtml(t.matchValue)}%</td>
               </tr>
             `),
@@ -113,21 +129,25 @@ function buildAbTestCard(link) {
   `;
 }
 
-/** Public-report card. A link with no report row renders the switch off and the URL hidden. */
-function buildPublicReportCard(report) {
+/**
+ * Public-report card. A link with no report row renders the switch off and the
+ * URL hidden. A failed read disables the switch and says so, since its state is unknown.
+ */
+function buildPublicReportCard(report, failed) {
   const enabled = !!report?.isEnabled;
-  const reportUrl = report ? `${location.origin}/r/${report.token}` : "";
+  const url = report ? reportUrl(report) : "";
   return `
     <wa-card>
       <h3 slot="header">Public Report</h3>
-      <wa-switch slot="header-actions" id="report-toggle" ${enabled ? "checked" : ""}><span class="wa-visually-hidden">Enable public report</span></wa-switch>
+      <wa-switch slot="header-actions" id="report-toggle" ${enabled ? "checked" : ""} ${failed ? "disabled" : ""}><span class="wa-visually-hidden">Enable public report</span></wa-switch>
       <div class="wa-stack wa-gap-s">
         <p class="wa-body-s wa-color-text-quiet">Share your analytics dashboard with others via a public link.</p>
+        ${failed ? errorCallout("Failed to load the public report.") : ""}
         <div id="report-link-container" ${enabled ? "" : "hidden"}>
           <div class="wa-cluster wa-gap-2xs">
-            <wa-input id="report-url" readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(reportUrl)}" style="flex:1;"></wa-input>
-            <wa-copy-button id="report-copy" value="${escapeAttr(reportUrl)}"></wa-copy-button>
-            <wa-button id="report-open" variant="neutral" appearance="outlined" href="${escapeAttr(reportUrl)}" target="_blank" rel="noopener">
+            <wa-input id="report-url" readonly label="Public report URL" class="wa-visually-hidden-label" value="${escapeAttr(url)}" style="flex:1;"></wa-input>
+            <wa-copy-button from="report-url.value" copy-label="Copy report URL"></wa-copy-button>
+            <wa-button id="report-open" variant="neutral" appearance="outlined" href="${escapeAttr(url)}" target="_blank" rel="noopener">
               <wa-icon name="arrow-up-right-from-square" label="Open public report"></wa-icon>
             </wa-button>
           </div>
@@ -138,22 +158,33 @@ function buildPublicReportCard(report) {
 }
 
 export async function renderLinkDetail(container, { id }) {
-  container.innerHTML = SPINNER;
+  // A refresh after an edit keeps the current markup until the new data lands.
+  // That markup is inert meanwhile: its edit form still holds the pre-edit link,
+  // and saving it would write those values back over the edit.
+  if (container.childElementCount) container.inert = true;
+  else container.innerHTML = SPINNER;
 
-  const linkResult = await apiFetch(`/api/links/${id}`);
-  if (!linkResult) return;
+  const [linkResult, reportRead] = await Promise.all([
+    apiFetch(`/api/links/${id}`),
+    // Read-only: creating the report here would publish stats nobody asked to
+    // share. Quiet, so a failed read adds no toast beside the link's; it
+    // resolves to null, which the card shows as an error.
+    fetchJSON(`/api/reports/${id}`).then((r) => ({ report: r.data }), () => null),
+  ]);
+  container.inert = false;
+  if (!linkResult) {
+    container.innerHTML = errorCallout("Failed to load this link.");
+    return;
+  }
   const { data: link } = linkResult;
-
-  // Read-only: creating the report here would publish stats nobody asked to share.
-  // An internal link gets no card at all — its public report URL always 404s.
-  const reportResult = link.isInternal ? null : await apiFetch(`/api/reports/${id}`);
-  let report = reportResult?.data ?? null;
+  // An internal link gets no report card at all: its public report URL always 404s.
+  let report = link.isInternal ? null : reportRead?.report ?? null;
 
   const linkShortUrl = shortUrl(link);
-  const safeDestUrl = /^https?:\/\//.test(link.destinationUrl) ? link.destinationUrl : null;
+  const safeDestUrl = isHttpUrl(link.destinationUrl) ? link.destinationUrl : null;
   const badges = buildBadges(link);
   const maxClicksInfo = link.maxClicks != null
-    ? `<div><strong>Click Limit:</strong> ${link.totalClicks} / ${link.maxClicks}</div>`
+    ? `<div><strong>Click Limit:</strong> <wa-format-number value="${link.totalClicks}"></wa-format-number> / <wa-format-number value="${link.maxClicks}"></wa-format-number></div>`
     : "";
 
   container.innerHTML = `
@@ -178,7 +209,7 @@ export async function renderLinkDetail(container, { id }) {
             <div class="wa-cluster wa-gap-2xs">
               <strong>Short URL:</strong>
               <a href="${escapeAttr(linkShortUrl)}" target="_blank" rel="noopener">${escapeHtml(linkShortUrl)}</a>
-              <wa-copy-button value="${escapeAttr(linkShortUrl)}"></wa-copy-button>
+              <wa-copy-button value="${escapeAttr(linkShortUrl)}" copy-label="Copy short URL"></wa-copy-button>
             </div>
             <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
             <div><strong>Lifetime Clicks:</strong> <wa-format-number value="${link.totalClicks}"></wa-format-number></div>
@@ -190,7 +221,7 @@ export async function renderLinkDetail(container, { id }) {
         </div>
       </wa-card>
 
-      ${link.isInternal ? "" : buildPublicReportCard(report)}
+      ${link.isInternal ? "" : buildPublicReportCard(report, !reportRead)}
       ${buildTargetingRules(link.targets)}
       ${buildAbTestCard(link)}
       ${buildOgPreview(link)}
@@ -212,21 +243,23 @@ export async function renderLinkDetail(container, { id }) {
   const reportToggle = container.querySelector("#report-toggle");
   if (reportToggle) {
     const linkRow = container.querySelector("#report-link-container");
-    reportToggle.addEventListener("change", async (e) => {
-      const isEnabled = e.target.checked;
+    reportToggle.addEventListener("change", async () => {
+      const isEnabled = reportToggle.checked;
+      // Disabled while in flight, so a second toggle cannot race the first.
+      reportToggle.disabled = true;
       const result = report
         ? await apiFetch(`/api/reports/${id}`, { method: "PUT", json: { isEnabled } })
         : await apiFetch(`/api/reports/${id}`, { method: "POST" });
+      reportToggle.disabled = false;
       if (!result?.data) {
-        e.target.checked = !isEnabled;
+        reportToggle.checked = !isEnabled;
         return;
       }
       report = result.data;
-      const reportUrl = `${location.origin}/r/${report.token}`;
-      container.querySelector("#report-url").value = reportUrl;
-      container.querySelector("#report-copy").value = reportUrl;
-      container.querySelector("#report-open").href = reportUrl;
-      e.target.checked = report.isEnabled;
+      const url = reportUrl(report);
+      container.querySelector("#report-url").value = url;
+      container.querySelector("#report-open").href = url;
+      reportToggle.checked = report.isEnabled;
       linkRow.hidden = !report.isEnabled;
     });
   }

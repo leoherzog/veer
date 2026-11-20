@@ -13,11 +13,15 @@ wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
 .link-table th,
 .link-table td { vertical-align: middle; }
 
-/* Sort affordance — no utility exists for cursor or user-select. The inner
-   button carries the keyboard affordance; making it fill the cell keeps its
-   focus ring aligned with the header it acts on. */
-.link-table th[data-sort] { cursor: pointer; user-select: none; }
-.link-table th[data-sort] .th-sort { display: block; }
+/* Sort headers hold a native button, which native.css styles like a wa-button.
+   Unset, it reads as the header text. It takes over native.css's 0.75em cell
+   padding, so the whole cell sorts and its focus ring follows the cell edge. */
+.link-table th:has(> .th-sort) { padding: 0; }
+.link-table .th-sort { all: unset; display: block; padding: 0.75em; cursor: pointer; user-select: none; }
+.link-table .th-sort:focus-visible {
+  outline: var(--wa-focus-ring);
+  outline-offset: var(--wa-focus-ring-offset);
+}
 
 /* Long destination URLs would otherwise blow out the table's intrinsic width.
    `wa-text-truncate` supplies the ellipsis; this cap is what makes it engage. */

@@ -1,12 +1,47 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, emptyState } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, emptyState, errorCallout } from "../lib/ui.js";
+
+/** Name and description controls shared by the campaign create and edit forms. */
+export function campaignFields(campaign = null) {
+  return `
+    <wa-input name="name" label="Campaign Name" required placeholder="Summer Sale 2026" value="${escapeAttr(campaign?.name)}"></wa-input>
+    <wa-textarea name="description" label="Description (optional)" rows="2" placeholder="Group links for the summer promotion" value="${escapeAttr(campaign?.description)}"></wa-textarea>
+  `;
+}
+
+/** The POST/PUT body for a form built from `campaignFields`. */
+export function campaignBody(form) {
+  const fields = new FormData(form);
+  return {
+    name: String(fields.get("name") ?? "").trim(),
+    description: String(fields.get("description") ?? "").trim() || null,
+  };
+}
+
+/** Close `dialog` and run `fn` once it has finished closing, so a re-render never removes it mid-animation. */
+export function afterClose(dialog, fn) {
+  if (!dialog.open) {
+    fn();
+    return;
+  }
+  dialog.addEventListener("wa-after-hide", function onHide(e) {
+    if (e.target !== dialog) return;
+    dialog.removeEventListener("wa-after-hide", onHide);
+    fn();
+  });
+  dialog.open = false;
+}
 
 export async function renderCampaignsPanel(container) {
-  container.innerHTML = SPINNER;
+  // A refresh keeps the current markup until the new data lands.
+  if (!container.childElementCount) container.innerHTML = SPINNER;
 
   const result = await apiFetch("/api/campaigns");
-  if (!result) return;
+  if (!result) {
+    container.innerHTML = errorCallout("Failed to load campaigns.");
+    return;
+  }
   const { data: campaigns } = result;
 
   container.innerHTML = `
@@ -23,8 +58,7 @@ export async function renderCampaignsPanel(container) {
 
       <wa-dialog id="new-campaign-dialog" label="New Campaign" light-dismiss>
         <form id="campaign-form" class="wa-stack wa-gap-m">
-          <wa-input name="name" label="Campaign Name" required placeholder="Summer Sale 2026"></wa-input>
-          <wa-textarea name="description" label="Description (optional)" rows="2" placeholder="Group links for the summer promotion"></wa-textarea>
+          ${campaignFields()}
         </form>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" type="submit" form="campaign-form" id="create-campaign-btn">Create Campaign</wa-button>
@@ -34,20 +68,15 @@ export async function renderCampaignsPanel(container) {
 
   renderCampaignList(container.querySelector("#campaigns-list"), campaigns);
 
+  const dialog = container.querySelector("#new-campaign-dialog");
   const createBtn = container.querySelector("#create-campaign-btn");
   container.querySelector("#campaign-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     await withLoadingBtn(createBtn, async () => {
-      const res = await apiFetch("/api/campaigns", {
-        method: "POST",
-        json: {
-          name: e.target.querySelector('[name="name"]').value.trim(),
-          description: e.target.querySelector('[name="description"]').value.trim() || null,
-        },
-      });
+      const res = await apiFetch("/api/campaigns", { method: "POST", json: campaignBody(e.target) });
       if (!res) return;
       showToast("Campaign created", "success");
-      renderCampaignsPanel(container);
+      afterClose(dialog, () => renderCampaignsPanel(container));
     });
   });
 }
@@ -61,7 +90,7 @@ function renderCampaignList(container, campaigns) {
     <div class="wa-stack wa-gap-m">
       ${campaigns.map(c => `
         <a href="/campaigns/${escapeAttr(c.id)}" data-link class="wa-link-plain">
-          <wa-card >
+          <wa-card>
             <div class="wa-split">
               <div class="wa-stack wa-gap-2xs">
                 <strong>${escapeHtml(c.name)}</strong>

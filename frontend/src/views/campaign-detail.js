@@ -1,29 +1,33 @@
 import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, shortUrl, emptyState, statCard, renderTable } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, bindSearchInput, shortUrl, emptyState, errorCallout, statCard, renderTable } from "../lib/ui.js";
 import { fetchJSON } from "../lib/stats-common.js";
+import { campaignFields, campaignBody, afterClose } from "./campaigns.js";
 
 export async function renderCampaignDetail(container, { id }) {
   // A refresh keeps the current markup until the new data lands, so adding or
   // removing a link neither flashes the spinner nor resets the scroll position.
   if (!container.childElementCount) container.innerHTML = SPINNER;
 
-  const campResult = await apiFetch(`/api/campaigns/${id}`);
-  if (!campResult) return;
-  const { data: campaign } = campResult;
-  const campaignLinks = campaign.links || [];
-
   // Aggregate stats cover a 30-day window, unlike the lifetime per-link totals
-  // below. Best-effort — no toast on failure.
-  const recentClicks = await fetchJSON(`/api/campaigns/${id}/stats`).then((r) => r.data?.totalClicks ?? 0, () => 0);
+  // below. Best-effort: no toast on failure.
+  const [campResult, recentClicks] = await Promise.all([
+    apiFetch(`/api/campaigns/${id}`),
+    fetchJSON(`/api/campaigns/${id}/stats`).then((r) => r.data?.totalClicks ?? 0, () => 0),
+  ]);
+  if (!campResult) {
+    container.innerHTML = errorCallout("Failed to load campaign.");
+    return;
+  }
+  const { data: campaign } = campResult;
 
   container.innerHTML = `
     <div class="wa-stack wa-gap-l">
       <div class="wa-split">
         <div class="wa-cluster wa-gap-s wa-align-items-center">
-          <wa-button variant="neutral" appearance="plain" pill href="/campaigns" data-link aria-label="Back to campaigns">
-            <wa-icon name="arrow-left"></wa-icon>
+          <wa-button variant="neutral" appearance="plain" pill href="/campaigns" data-link>
+            <wa-icon name="arrow-left" label="Back to campaigns"></wa-icon>
           </wa-button>
           <h1>${escapeHtml(campaign.name)}</h1>
         </div>
@@ -42,28 +46,32 @@ export async function renderCampaignDetail(container, { id }) {
       ${campaign.description ? `<p class="wa-color-text-quiet">${escapeHtml(campaign.description)}</p>` : ""}
 
       <div class="wa-grid wa-gap-m">
-        ${statCard("Links", `<wa-format-number value="${campaignLinks.length}"></wa-format-number>`)}
+        ${statCard("Links", `<wa-format-number value="${campaign.links.length}"></wa-format-number>`)}
         ${statCard("Clicks (30 days)", `<wa-format-number value="${recentClicks}"></wa-format-number>`)}
       </div>
 
       <div class="wa-split">
         <h2>Links</h2>
-        <wa-button variant="brand" size="s" id="add-links-btn">
+        <wa-button variant="brand" size="s" data-dialog="open add-links-dialog">
           <wa-icon slot="start" name="plus"></wa-icon>
           Add Links
         </wa-button>
       </div>
       <div id="campaign-links-list"></div>
 
-      <wa-dialog id="add-links-dialog" label="Add Links to Campaign" light-dismiss style="--width:600px;">
-        <div id="available-links-list" class="wa-stack wa-gap-s"></div>
+      <wa-dialog id="add-links-dialog" label="Add Links to Campaign" light-dismiss style="--width:640px;">
+        <div class="wa-stack wa-gap-m">
+          <wa-input id="available-links-search" label="Search links" class="wa-visually-hidden-label" placeholder="Search links..." with-clear>
+            <wa-icon slot="start" name="magnifying-glass"></wa-icon>
+          </wa-input>
+          <div id="available-links-list" class="wa-stack wa-gap-s"></div>
+        </div>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Close</wa-button>
       </wa-dialog>
 
       <wa-dialog id="edit-campaign-dialog" label="Edit Campaign" light-dismiss>
         <form id="edit-campaign-form" class="wa-stack wa-gap-m">
-          <wa-input name="name" label="Campaign Name" required value="${escapeAttr(campaign.name)}"></wa-input>
-          <wa-textarea name="description" label="Description (optional)" rows="2" value="${escapeAttr(campaign.description || "")}"></wa-textarea>
+          ${campaignFields(campaign)}
         </form>
         <wa-button slot="footer" variant="neutral" data-dialog="close">Cancel</wa-button>
         <wa-button slot="footer" variant="brand" type="submit" form="edit-campaign-form" id="save-campaign-btn">Save Changes</wa-button>
@@ -77,22 +85,17 @@ export async function renderCampaignDetail(container, { id }) {
     </div>
   `;
 
-  renderCampaignLinks(container.querySelector("#campaign-links-list"), campaignLinks, id, container);
+  renderCampaignLinks(container.querySelector("#campaign-links-list"), campaign.links, id, container);
 
+  const editDialog = container.querySelector("#edit-campaign-dialog");
   const saveBtn = container.querySelector("#save-campaign-btn");
   container.querySelector("#edit-campaign-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     await withLoadingBtn(saveBtn, async () => {
-      const res = await apiFetch(`/api/campaigns/${id}`, {
-        method: "PUT",
-        json: {
-          name: e.target.querySelector('[name="name"]').value.trim(),
-          description: e.target.querySelector('[name="description"]').value.trim() || null,
-        },
-      });
+      const res = await apiFetch(`/api/campaigns/${id}`, { method: "PUT", json: campaignBody(e.target) });
       if (!res) return;
       showToast("Campaign updated", "success");
-      renderCampaignDetail(container, { id });
+      afterClose(editDialog, () => renderCampaignDetail(container, { id }));
     });
   });
 
@@ -107,11 +110,7 @@ export async function renderCampaignDetail(container, { id }) {
     },
   });
 
-  const dialog = container.querySelector("#add-links-dialog");
-  container.querySelector("#add-links-btn").addEventListener("click", async () => {
-    dialog.open = true;
-    await loadAvailableLinks(container.querySelector("#available-links-list"), id, campaignLinks, container);
-  });
+  bindAddLinksDialog(container, id, campaign.links);
 }
 
 function renderCampaignLinks(container, links, campaignId, rootContainer) {
@@ -128,14 +127,14 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
         <td>
           <div class="wa-cluster wa-gap-2xs">
             <a href="/links/${escapeAttr(link.id)}" data-link>${escapeHtml(link.slug)}</a>
-            <wa-copy-button value="${escapeAttr(shortUrl(link))}" class="wa-font-size-s"></wa-copy-button>
+            <wa-copy-button value="${escapeAttr(shortUrl(link))}" copy-label="Copy short URL" class="wa-font-size-s"></wa-copy-button>
           </div>
         </td>
-        <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
-        <td>${link.totalClicks}</td>
+        <td class="text-truncate wa-text-truncate" title="${escapeAttr(link.destinationUrl)}">${escapeHtml(link.destinationUrl)}</td>
+        <td><wa-format-number value="${link.totalClicks}"></wa-format-number></td>
         <td>
-          <wa-button size="s" variant="danger" appearance="plain" pill class="remove-link-btn" data-link-id="${escapeAttr(link.id)}" aria-label="Remove from campaign">
-            <wa-icon name="xmark"></wa-icon>
+          <wa-button size="s" variant="danger" appearance="plain" pill class="remove-link-btn" data-link-id="${escapeAttr(link.id)}">
+            <wa-icon name="xmark" label="Remove from campaign"></wa-icon>
           </wa-button>
         </td>
       </tr>
@@ -157,43 +156,102 @@ function renderCampaignLinks(container, links, campaignId, rootContainer) {
   });
 }
 
-async function loadAvailableLinks(container, campaignId, existingLinks, rootContainer) {
-  container.innerHTML = SPINNER;
+/**
+ * Wire the add-links dialog: it lists every link the user can reach that is not
+ * yet in the campaign, searchable, and stays open across adds. The page behind
+ * it refreshes once it closes, if anything was added.
+ */
+function bindAddLinksDialog(rootContainer, campaignId, campaignLinks) {
+  const dialog = rootContainer.querySelector("#add-links-dialog");
+  const searchInput = rootContainer.querySelector("#available-links-search");
+  const list = rootContainer.querySelector("#available-links-list");
+  const memberIds = new Set(campaignLinks.map((l) => l.id));
+  const refresh = () => renderCampaignDetail(rootContainer, { id: campaignId });
+  // `shown` holds from wa-show until wa-after-hide, so an add that lands while
+  // the dialog animates closed still refreshes on after-hide, and one that lands
+  // later refreshes at once.
+  let shown = false;
+  let added = false;
+  let load = null;
 
-  const result = await apiFetch("/api/links?limit=100");
-  if (!result) {
-    container.innerHTML = `<p class="wa-color-text-quiet">Failed to load links.</p>`;
-    return;
-  }
-  const { data: allLinks } = result;
-  const existingIds = new Set(existingLinks.map(l => l.id));
-  const available = allLinks.filter(l => !existingIds.has(l.id));
+  const emptyMessage = () => searchInput.value.trim()
+    ? "No links match."
+    : "All your links are already in this campaign.";
 
-  if (!available.length) {
-    container.innerHTML = `<p class="wa-stack wa-align-items-center wa-color-text-quiet">All your links are already in this campaign.</p>`;
-    return;
-  }
+  /** List the candidate links matching `q`. A newer load aborts the last. */
+  async function loadAvailableLinks(q = "") {
+    load?.abort();
+    const controller = new AbortController();
+    load = controller;
+    list.innerHTML = SPINNER;
 
-  container.innerHTML = available.map(link => `
-    <div class="wa-split">
-      <div class="wa-stack wa-gap-2xs">
-        <strong>${escapeHtml(link.slug)}</strong>
-        <span class="text-truncate wa-text-truncate wa-body-s wa-color-text-quiet">${escapeHtml(link.destinationUrl)}</span>
+    const params = new URLSearchParams({ limit: 100, scope: "all" });
+    if (q.trim()) params.set("q", q.trim());
+    const result = await apiFetch(`/api/links?${params}`, { signal: controller.signal });
+    if (controller.signal.aborted) return;
+    if (!result) {
+      list.innerHTML = errorCallout("Failed to load links.");
+      return;
+    }
+
+    const available = result.data.filter((l) => !memberIds.has(l.id));
+    if (!available.length) {
+      list.innerHTML = emptyState("link-slash", emptyMessage());
+      return;
+    }
+    list.innerHTML = available.map(link => `
+      <div class="wa-split available-link">
+        <div class="wa-stack wa-gap-2xs">
+          <strong>${escapeHtml(link.slug)}</strong>
+          <span class="text-truncate wa-text-truncate wa-body-s wa-color-text-quiet" title="${escapeAttr(link.destinationUrl)}">${escapeHtml(link.destinationUrl)}</span>
+        </div>
+        <wa-button size="s" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
       </div>
-      <wa-button size="s" variant="brand" appearance="outlined" class="add-link-to-campaign-btn" data-link-id="${escapeAttr(link.id)}">Add</wa-button>
-    </div>
-  `).join("");
+    `).join("");
+  }
 
-  container.querySelectorAll(".add-link-to-campaign-btn").forEach(btn => {
-    btn.addEventListener("click", async () => {
-      const linkId = btn.dataset.linkId;
-      await withLoadingBtn(btn, async () => {
-        const res = await apiFetch(`/api/campaigns/${campaignId}/links`, { method: "POST", json: { linkIds: [linkId] } });
-        if (!res) return;
-        showToast("Link added to campaign", "success");
-        rootContainer.querySelector("#add-links-dialog").open = false;
-        renderCampaignDetail(rootContainer, { id: campaignId });
-      });
+  dialog.addEventListener("wa-show", (e) => {
+    if (e.target !== dialog) return;
+    shown = true;
+    searchInput.value = "";
+    loadAvailableLinks();
+  });
+
+  dialog.addEventListener("wa-after-hide", (e) => {
+    if (e.target !== dialog) return;
+    shown = false;
+    if (!added) return;
+    added = false;
+    refresh();
+  });
+
+  bindSearchInput(searchInput, (q) => loadAvailableLinks(q));
+
+  list.addEventListener("click", async (e) => {
+    const btn = e.target.closest(".add-link-to-campaign-btn");
+    if (!btn) return;
+    const linkId = btn.dataset.linkId;
+    await withLoadingBtn(btn, async () => {
+      const res = await apiFetch(`/api/campaigns/${campaignId}/links`, { method: "POST", json: { linkIds: [linkId] } });
+      if (!res) return;
+      memberIds.add(linkId);
+      showToast("Link added to campaign", "success");
+      if (!shown) {
+        refresh();
+        return;
+      }
+      added = true;
+      // Focus moves to a neighbouring row's button, or the search field, so it
+      // is not lost with the removed row.
+      const row = btn.closest(".available-link");
+      const next = row.nextElementSibling ?? row.previousElementSibling;
+      row.remove();
+      if (next) {
+        next.querySelector(".add-link-to-campaign-btn").focus();
+      } else {
+        list.innerHTML = emptyState("link-slash", emptyMessage());
+        searchInput.focus();
+      }
     });
   });
 }

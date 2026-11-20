@@ -2,6 +2,8 @@ import { escapeAttr } from "../lib/escape.js";
 
 const DISPLAY_SIZE = 150;
 const DOWNLOAD_SIZE = 500;
+/** Blank margin around the code in the PNG, so scanners find its edge on any backdrop. */
+const QUIET_ZONE = DOWNLOAD_SIZE / 10;
 
 /**
  * Draw the QR at download resolution. The on-screen code is 150px, so exporting
@@ -21,14 +23,15 @@ async function renderForDownload(source) {
   document.body.append(el);
   try {
     await el.updateComplete;
+    const outSize = DOWNLOAD_SIZE + 2 * QUIET_ZONE;
     const out = document.createElement("canvas");
-    out.width = DOWNLOAD_SIZE;
-    out.height = DOWNLOAD_SIZE;
+    out.width = outSize;
+    out.height = outSize;
     const ctx = out.getContext("2d");
     // The QR canvas is transparent; the background is host CSS, so paint it in.
     ctx.fillStyle = cs.backgroundColor;
-    ctx.fillRect(0, 0, DOWNLOAD_SIZE, DOWNLOAD_SIZE);
-    ctx.drawImage(el.canvas, 0, 0, DOWNLOAD_SIZE, DOWNLOAD_SIZE);
+    ctx.fillRect(0, 0, outSize, outSize);
+    ctx.drawImage(el.canvas, QUIET_ZONE, QUIET_ZONE, DOWNLOAD_SIZE, DOWNLOAD_SIZE);
     return out.toDataURL("image/png");
   } finally {
     el.remove();
@@ -36,18 +39,18 @@ async function renderForDownload(source) {
 }
 
 export function renderQrCode(container, shortUrl) {
+  // The code takes its colours from host CSS, so they are set here to match the
+  // pickers' initial values rather than inheriting the theme's text colour.
   container.innerHTML = `
     <div class="wa-stack wa-gap-xs wa-align-items-center">
-      <wa-qr-code value="${escapeAttr(shortUrl)}" size="${DISPLAY_SIZE}" label="QR code for short URL"></wa-qr-code>
-      <div class="wa-cluster wa-gap-s wa-align-items-center">
-        <span class="wa-caption-xs">QR</span>
-        <wa-color-picker id="qr-fill-color" value="#000000" without-format-toggle size="s"></wa-color-picker>
-        <span class="wa-caption-xs">BG</span>
-        <wa-color-picker id="qr-bg-color" value="#ffffff" without-format-toggle size="s"></wa-color-picker>
+      <wa-qr-code value="${escapeAttr(shortUrl)}" size="${DISPLAY_SIZE}" label="QR code for short URL" style="color:#000000;background-color:#ffffff"></wa-qr-code>
+      <div class="wa-cluster wa-gap-s wa-align-items-end">
+        <wa-color-picker id="qr-fill-color" label="Code" value="#000000" without-format-toggle size="s"></wa-color-picker>
+        <wa-color-picker id="qr-bg-color" label="Background" value="#ffffff" without-format-toggle size="s"></wa-color-picker>
       </div>
-      <wa-button size="s" appearance="outlined" id="qr-download-png" aria-label="Download QR code as PNG">
+      <wa-button size="s" appearance="outlined" id="qr-download-png">
         <wa-icon slot="start" name="download"></wa-icon>
-        PNG
+        Download PNG
       </wa-button>
     </div>
   `;

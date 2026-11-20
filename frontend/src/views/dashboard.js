@@ -5,10 +5,8 @@ import { renderCampaignsPanel } from "./campaigns.js";
 import { renderTeamsPanel } from "./teams.js";
 import { renderTeamDetail } from "./team-detail.js";
 import { escapeHtml } from "../lib/escape.js";
-import { apiFetch, withLoadingBtn, bindSearchInput, renderTable, setTeamOptions } from "../lib/ui.js";
-
-/** Matches the server-side cap on POST /api/bulk. */
-const BULK_MAX = 50;
+import { SPINNER, apiFetch, withLoadingBtn, bindSearchInput, renderTable, setTeamOptions, errorCallout } from "../lib/ui.js";
+import { BULK_MAX } from "../../../src/lib/limits.ts";
 
 export function renderDashboard(container, { activeTab = "links", teamId = null, user } = {}) {
   let userTeams = [];
@@ -64,11 +62,11 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
                 <wa-icon slot="start" name="magnifying-glass"></wa-icon>
               </wa-input>
             </div>
-            <div id="links-table"></div>
+            <div id="links-table">${SPINNER}</div>
 
             <wa-dialog id="new-link-dialog" label="New Link" style="--width:640px;"></wa-dialog>
 
-            <wa-dialog id="bulk-create-dialog" label="Bulk Create Links" light-dismiss style="--width:640px;">
+            <wa-dialog id="bulk-create-dialog" label="Bulk Create Links" style="--width:640px;">
               <div class="wa-stack wa-gap-m">
                 <wa-select id="bulk-owner" label="Owner" size="s">
                   <wa-option value="" selected>Me</wa-option>
@@ -97,6 +95,8 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
       </wa-tab-group>
   `;
 
+  const tabGroup = container.querySelector("#dashboard-tabs");
+
   // --- Links tab ---
   let currentPage = 1;
   let searchQuery = "";
@@ -104,6 +104,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
   let sortDir = "desc";
   let scopeFilter = "all"; // "all", "personal", or "team:<id>"
 
+  const linksTable = container.querySelector("#links-table");
   const searchInput = container.querySelector("#search-input");
   const scopeSelect = container.querySelector("#scope-filter");
 
@@ -114,6 +115,11 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
   }
   teamsReady.then(refreshScopeOptions);
 
+  async function refreshTeams() {
+    await fetchTeams();
+    refreshScopeOptions();
+  }
+
   scopeSelect.addEventListener("change", () => {
     scopeFilter = scopeSelect.value;
     currentPage = 1;
@@ -123,7 +129,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
   const bulkDialog = container.querySelector("#bulk-create-dialog");
   const createDropdown = container.querySelector("wa-button-group wa-dropdown");
 
-  bindLinkFormDialog(container.querySelector("#new-link-dialog"), () => ({ teams: userTeams }), loadLinks);
+  bindLinkFormDialog(container.querySelector("#new-link-dialog"), () => ({ teams: userTeams }), () => loadLinks());
 
   bulkDialog.addEventListener("wa-show", (e) => {
     if (e.target !== bulkDialog) return;
@@ -187,12 +193,11 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
             ${succeeded} created${failures.length > 0 ? `, ${failures.length} failed` : ""}
           </wa-callout>
           ${failures.length > 0 ? renderTable({
-            label: "Bulk create results",
-            columns: ["Slug", "Status", "Error"],
+            label: "Failed links",
+            columns: ["Slug", "Error"],
             rows: failures.map(r => `
               <tr>
                 <td>${escapeHtml(r.slug)}</td>
-                <td><wa-badge variant="danger" pill>Failed</wa-badge></td>
                 <td>${escapeHtml(r.error)}</td>
               </tr>
             `),
@@ -213,25 +218,37 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
     loadLinks();
   });
 
-  async function loadLinks() {
+  // Sort, page, scope and search each start a load; a newer one aborts the last,
+  // so a slow response can never overwrite a later one.
+  let linksLoad = null;
+
+  /** Fetch the current page of links and render it. `focusSort` is passed through to renderLinkTable. */
+  async function loadLinks({ focusSort = false } = {}) {
+    linksLoad?.abort();
+    const controller = new AbortController();
+    linksLoad = controller;
+
     const params = new URLSearchParams({ page: currentPage, limit: 20, sort: sortBy, dir: sortDir });
     if (searchQuery) params.set("q", searchQuery);
-    if (scopeFilter === "all") {
-      params.set("scope", "all");
-    } else if (scopeFilter === "personal") {
-      // default backend behavior, no extra param needed
-    } else if (scopeFilter.startsWith("team:")) {
-      params.set("teamId", scopeFilter.slice(5));
+    // "personal" is the API's default scope, so it adds no parameter.
+    if (scopeFilter === "all") params.set("scope", "all");
+    else if (scopeFilter.startsWith("team:")) params.set("teamId", scopeFilter.slice(5));
+
+    const result = await apiFetch(`/api/links?${params}`, { signal: controller.signal });
+    if (controller.signal.aborted) return;
+    if (!result) {
+      linksTable.innerHTML = errorCallout("Failed to load links.");
+      return;
     }
 
-    const result = await apiFetch(`/api/links?${params}`);
-    if (!result) return;
-    const { data, pagination } = result;
-
-    renderLinkTable(container.querySelector("#links-table"), {
-      links: data,
-      pagination,
+    renderLinkTable(linksTable, {
+      links: result.data,
+      pagination: result.pagination,
       sort: { by: sortBy, dir: sortDir },
+      empty: searchQuery || scopeFilter !== "all"
+        ? "No links match."
+        : "No links yet. Create your first short link above.",
+      focusSort,
       onPageChange: (page) => {
         currentPage = page;
         loadLinks();
@@ -240,68 +257,66 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
         sortBy = col;
         sortDir = dir;
         currentPage = 1;
-        loadLinks();
+        loadLinks({ focusSort: true });
       },
     });
   }
 
   loadLinks();
 
-  // --- Campaigns tab (lazy load) ---
-  let campaignsLoaded = false;
+  // --- Teams tab ---
+  // The URL the teams tab owns: the list, or the team whose detail is open.
+  let teamsPath = teamId ? `/teams/${teamId}` : "/teams";
 
-  // --- Teams tab (lazy load) ---
-  let teamsLoaded = false;
-
-  async function loadTeamsPanel(selectTeamId = null) {
-    await fetchTeams();
+  /**
+   * Render the team list, or one team's detail, into the teams panel. Awaits
+   * `teamsFetch`, a fresh fetch by default, so the list and scope filter
+   * reflect any team just created, renamed or left.
+   */
+  async function loadTeamsPanel(selectTeamId = null, teamsFetch = fetchTeams()) {
+    await teamsFetch;
     refreshScopeOptions();
     const panel = container.querySelector("#teams-panel");
+    teamsPath = selectTeamId ? `/teams/${selectTeamId}` : "/teams";
 
     if (selectTeamId) {
       renderTeamDetail(panel, { id: selectTeamId }, user, {
         onBack: () => loadTeamsPanel(),
-        onTeamsChanged: async () => { await fetchTeams(); refreshScopeOptions(); },
+        onTeamsChanged: refreshTeams,
       });
-      history.replaceState(null, "", "/teams/" + selectTeamId);
     } else {
       renderTeamsPanel(panel, {
         teams: userTeams,
-        onTeamSelect: (id) => {
-          loadTeamsPanel(id);
-        },
+        onTeamSelect: (id) => loadTeamsPanel(id),
       });
-      history.replaceState(null, "", "/teams");
     }
+    // The fetch can outlast a switch to another tab or route, whose URL then stays.
+    if (tabGroup.isConnected && tabGroup.active === "teams") history.replaceState(null, "", teamsPath);
   }
 
-  function loadCampaignsPanel() {
-    if (campaignsLoaded) return;
-    campaignsLoaded = true;
-    renderCampaignsPanel(container.querySelector("#campaigns-panel"));
+  // --- Lazy tab panels ---
+  // The links panel loads with the view. The others load on first show; the
+  // first teams load reuses the fetch the view already started.
+  const loaders = {
+    campaigns: () => renderCampaignsPanel(container.querySelector("#campaigns-panel")),
+    teams: () => loadTeamsPanel(teamId, teamsReady),
+  };
+  const loaded = new Set(["links"]);
+
+  function loadPanel(name) {
+    if (loaded.has(name)) return;
+    loaded.add(name);
+    loaders[name]();
   }
 
-  const tabGroup = container.querySelector("#dashboard-tabs");
   tabGroup.addEventListener("wa-tab-show", (e) => {
     if (e.target !== tabGroup) return;
-    if (e.detail.name === "campaigns") loadCampaignsPanel();
-    if (e.detail.name === "teams" && !teamsLoaded) {
-      teamsLoaded = true;
-      loadTeamsPanel();
-    }
-    const newPath = e.detail.name === "campaigns" ? "/campaigns"
-      : e.detail.name === "teams" ? "/teams"
-      : "/links";
-    if (location.pathname !== newPath) {
-      history.replaceState(null, "", newPath);
-    }
+    const name = e.detail.name;
+    loadPanel(name);
+    const path = name === "teams" ? teamsPath : `/${name}`;
+    if (location.pathname !== path) history.replaceState(null, "", path);
   });
 
   // wa-tab-group fires no wa-tab-show for its initial tab, so a deep-linked tab loads its panel here.
-  if (activeTab === "campaigns") loadCampaignsPanel();
-  if (activeTab === "teams") {
-    teamsLoaded = true;
-    loadTeamsPanel(teamId || null);
-  }
-
+  loadPanel(activeTab);
 }

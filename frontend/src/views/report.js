@@ -1,16 +1,11 @@
 import { createChart } from "../lib/chart-helper.js";
 import { escapeHtml } from "../lib/escape.js";
 import { getInstanceName } from "../lib/config.js";
-import { errorCallout, statCard } from "../lib/ui.js";
+import { SPINNER, errorCallout, statCard } from "../lib/ui.js";
 import { statsCard } from "../lib/stats-common.js";
 
 export async function renderReport(container, { token }) {
-  container.innerHTML = `
-    <div class="wa-stack wa-gap-m wa-align-items-center" style="padding:var(--wa-space-2xl);">
-      <wa-spinner class="wa-font-size-2xl"></wa-spinner>
-      <p>Loading report…</p>
-    </div>
-  `;
+  container.innerHTML = SPINNER;
 
   try {
     const res = await fetch(`/api/public-report/${encodeURIComponent(token)}`);
