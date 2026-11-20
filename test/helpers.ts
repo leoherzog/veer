@@ -243,6 +243,7 @@ export function mockExecutionCtx(): ExecutionContext {
     passThroughOnException: () => {},
     exports: {} as Cloudflare.Exports,
     props: {},
+    mapVirtualHost: () => "",
     tracing: {} as Tracing,
     abort: () => {},
   };

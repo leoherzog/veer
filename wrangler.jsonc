@@ -2,9 +2,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "veer",
   "main": "src/index.ts",
-  // Capped by the workerd bundled with @cloudflare/vitest-pool-workers: a
+  // Capped by the workerd bundled with @cloudflare/vitest-plugin: a
   // date newer than that binary supports makes `npm test` fail at startup.
-  "compatibility_date": "2026-08-22",
+  "compatibility_date": "2026-11-18",
   "compatibility_flags": ["nodejs_compat"],
   // Setting a build command replaces Wrangler's default dev watch on src/, so
   // src stays listed or Worker edits stop reloading.

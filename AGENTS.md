@@ -27,7 +27,7 @@ npm run seed:remote      # same, applied to the remote demo D1 (veer-db-demo, --
 
 Run a single test file or name: `npx vitest run test/integration/links.test.ts` / `npx vitest run -t "creates link"`.
 
-Tests run against a real workerd instance via `@cloudflare/vitest-pool-workers`. `vitest.config.ts` reads `drizzle/migrations/` with `readD1Migrations()` and passes them through the `TEST_MIGRATIONS` binding; `test/setup.ts` applies them to the test D1 in a `beforeAll`. The suite therefore enforces the same indexes, CHECKs and defaults a real deployment gets, and a new migration needs no test-side change. Vitest collects only `test/**/*.test.ts`, so checkout copies under `.claude/worktrees` never run.
+Tests run against a real workerd instance via `@cloudflare/vitest-plugin`. `vitest.config.ts` reads `drizzle/migrations/` with `readD1Migrations()` and passes them through the `TEST_MIGRATIONS` binding; `test/setup.ts` applies them to the test D1 in a `beforeAll`. The suite therefore enforces the same indexes, CHECKs and defaults a real deployment gets, and a new migration needs no test-side change. Vitest collects only `test/**/*.test.ts`, so checkout copies under `.claude/worktrees` never run.
 
 The pool loads the developer's `.dev.vars`, so `vitest.config.ts` pins every var the app reads: `PASSKEY_ENABLED` to `"false"`, and `DEMO_MODE`, `INSTANCE_NAME`, `ADMIN_EMAILS`, `CF_ACCOUNT_ID`, `CF_API_TOKEN` plus every `*_CLIENT_ID`/`*_CLIENT_SECRET` to empty values. Stats requests therefore take the D1 fallback by default. Tests that need a var supply it per request, e.g. `{ ...env, DEMO_MODE: "true" }`; tests of Analytics Engine reads or domain sync pass fake CF credentials and stub `fetch`.
 
@@ -124,7 +124,7 @@ The hot path: slug lookup, expiry/internal/max-click gates, bot preview, passwor
   - `lib/escape.js`.
 
 ### Environment & bindings (`wrangler.jsonc`)
-`DB` (D1), `KV` (cache, rate-limit counters), `ANALYTICS` (Analytics Engine dataset `veer_clicks`) and `ASSETS` (static site) are all required. `compatibility_flags: ["nodejs_compat"]` is required because Better Auth imports `node:async_hooks`. `compatibility_date` is capped at the newest date the workerd bundled with `@cloudflare/vitest-pool-workers` accepts; a later date makes `npm test` fail at startup.
+`DB` (D1), `KV` (cache, rate-limit counters), `ANALYTICS` (Analytics Engine dataset `veer_clicks`) and `ASSETS` (static site) are all required. `compatibility_flags: ["nodejs_compat"]` is required because Better Auth imports `node:async_hooks`. `compatibility_date` is capped at the newest date the workerd bundled with `@cloudflare/vitest-plugin` accepts; a later date makes `npm test` fail at startup.
 
 `WORKER_NAME` must equal the Worker's `name`: domain sync lists the hostnames Cloudflare routes to the Worker of that name. `AE_DATASET` must equal the env's `analytics_engine_datasets` `dataset`, so a self-hoster who renames the dataset changes both.
 
@@ -231,7 +231,7 @@ test/
 - New tests use the shared helpers in `test/helpers.ts` instead of inlining setup: `api(method, path, { body, headers, env, ctx })` (binds the app and defaults to the test env), `postLink`, `setupAuth(overrides)`, `newUser`, `uniq`, `adminEnv(email)`, `createTestLink`, `createTestDomain`, `createTestTeam(userId, role)`, `addTestTeamMember`, `insertClickStat(linkId, clicks, date)`, `isoDaysAgo`, `dayLabel`, `cachedRedirect`, `cfRequest`, `mockExecutionCtx`. They use the pool's env; none takes a `db` or `env` argument.
 - `mockExecutionCtx()` swallows `waitUntil` rejections. A test that asserts on a background KV or D1 write must pass `createExecutionContext()` from `cloudflare:test` (via `api(..., { ctx })` or `app.request(path, init, env, ctx)`) and `await waitOnExecutionContext(ctx)`, which also rethrows a rejected background task. Otherwise it races the write.
 - Unauthenticated 401 coverage lives in one `it.each` matrix in `test/integration/auth.test.ts`, one row per auth mount, plus `admin.test.ts`'s own matrix. A new authenticated mount needs a row there.
-- `tsconfig.json` sets `"types": ["@cloudflare/vitest-pool-workers/types"]`, which is what makes the `cloudflare:test` module visible to `tsc`.
+- `tsconfig.json` sets `"types": ["@cloudflare/vitest-plugin/types"]`, which is what makes the `cloudflare:test` module visible to `tsc`.
 - `tsconfig.json` typechecks `scripts/**`, and the repo has no Node types. `scripts/seed.ts` and the modules it imports (`src/services/password.ts`, `src/lib/demo.ts`) therefore use only globals such as `crypto` and `console`, with no `node:` import; keep it that way or the typecheck breaks.
 
 ## Design decisions

@@ -20,21 +20,21 @@
     "node": ">=22.18"
   },
   "dependencies": {
-    "@awesome.me/webawesome": "^3.14.0",
-    "@better-auth/passkey": "^1.6.25",
-    "better-auth": "^1.6.25",
-    "chart.js": "^4.5.1",
+    "@awesome.me/webawesome": "^3.15.0",
+    "@better-auth/passkey": "^1.7.26",
+    "better-auth": "^1.7.26",
+    "chart.js": "^4.6.1",
     "chartjs-chart-geo": "^4.3.6",
-    "drizzle-orm": "^0.45.3",
-    "hono": "^4.13.13",
+    "drizzle-orm": "^0.45.4",
+    "hono": "^4.13.19",
     "topojson-client": "^3.1.0"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.22.0",
+    "@cloudflare/vitest-plugin": "^1.8.5",
     "drizzle-kit": "^0.31.11",
     "esbuild": "^0.28.2",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11",
-    "wrangler": "^4.147.0"
+    "vitest": "^5.1.1",
+    "wrangler": "^4.165.0"
   }
 }
