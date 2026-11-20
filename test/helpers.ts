@@ -1,4 +1,5 @@
 import { env } from "cloudflare:workers";
+import { vi, type Mock } from "vitest";
 import { app } from "../src/index";
 import type { CachedRedirect } from "../src/services/kv-cache";
 
@@ -39,21 +40,22 @@ async function signSessionToken(token: string, secret: string): Promise<string> 
 
 /**
  * Create a test user + session directly in D1 and return headers carrying the
- * session cookie, signed the way Better Auth signs it.
+ * session cookie, signed the way Better Auth signs it. The email is verified
+ * unless `emailVerified` is false, and must be unique: `user.email` is.
  */
-export async function setupAuth(overrides: { email?: string; name?: string } = {}) {
+export async function setupAuth(overrides: { email?: string; name?: string; emailVerified?: boolean } = {}) {
   userCounter++;
   const id = `test-user-${userCounter}-${Date.now()}`;
-  const email = overrides.email ?? `test${userCounter}@example.com`;
+  const email = overrides.email ?? `${id}@example.com`;
   const name = overrides.name ?? "Test User";
   const now = Math.floor(Date.now() / 1000);
 
   await env.DB
     .prepare(
-      `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt)
-       VALUES (?, ?, ?, 0, ?, ?)`
+      `INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?)`
     )
-    .bind(id, name, email, now, now)
+    .bind(id, name, email, overrides.emailVerified === false ? 0 : 1, now, now)
     .run();
 
   const rawToken = `test-token-${id}`;
@@ -227,6 +229,14 @@ export function api(
 /** POST /api/links with the given headers. */
 export function postLink(body: JsonBody, headers: Record<string, string>) {
   return api("POST", "/api/links", { headers, body });
+}
+
+/**
+ * A Rate Limiting binding that records its calls and answers `success`. Pass it
+ * through the per-request env, since the pool's real binding cannot be steered.
+ */
+export function fakeLimiter(success = true): { limit: Mock<(options: RateLimitOptions) => Promise<RateLimitOutcome>> } {
+  return { limit: vi.fn(async (_options: RateLimitOptions) => ({ success })) };
 }
 
 /**

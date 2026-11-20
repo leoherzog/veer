@@ -32,7 +32,7 @@ const SLUG_SUBSTANCE = /[\p{L}\p{N}\p{Extended_Pictographic}]/u;
 export const RESERVED_SLUGS = new Set([
   "api", "auth", "login", "logout", "dashboard", "settings", "admin",
   "links", "campaigns", "domains", "teams", "health",
-  "favicon.ico", "robots.txt", "sitemap.xml",
+  "favicon.ico", "favicon.svg", "index.html", "robots.txt", "sitemap.xml",
 ]);
 
 export type SlugCheck =

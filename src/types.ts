@@ -12,7 +12,5 @@ export type AppEnv = {
   Bindings: Env;
   Variables: {
     user?: AuthUser;
-    /** Set by `rateLimitApiKeyCheck`; records the request against the key's counter. */
-    apiKeyRateLimitHit?: () => Promise<void>;
   };
 };

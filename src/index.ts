@@ -6,7 +6,7 @@ import { except } from "hono/combine";
 import type { AppEnv } from "./types";
 import { getAuth } from "./auth";
 import { requireAuth, requireAdmin, requireAuthOrApiKey } from "./middleware/auth";
-import { rateLimitApiKeyCheck, rateLimitApiKeyIncrement, checkRateLimit } from "./middleware/rate-limit";
+import { rateLimitPublicReport } from "./middleware/rate-limit";
 import linkRoutes from "./routes/api/links";
 import statsRoutes from "./routes/api/stats";
 import campaignRoutes from "./routes/api/campaigns";
@@ -17,7 +17,7 @@ import reportRoutes, { publicReportRoute } from "./routes/api/reports";
 import teamRoutes from "./routes/api/teams";
 import adminRoutes from "./routes/api/admin";
 import { handleRedirect, handleRedirectPost, handleCustomDomainRoot } from "./routes/redirect";
-import { getInstanceName, isDemoMode } from "./lib/branding";
+import { getInstanceName, isDemoMode, isPasskeyEnabled } from "./lib/branding";
 import { getConfiguredProviders } from "./lib/providers";
 import { DEMO_BLOCKED_MESSAGE } from "./lib/demo";
 import { scheduled } from "./scheduled";
@@ -40,20 +40,17 @@ app.onError((err, c) => {
   return c.json({ error: "Internal server error" }, 500);
 });
 
-// Security headers on every response. Hono runs onError below this middleware,
-// so the finally also decorates error responses.
+// Security headers on every response. Hono runs onError inside next(), so
+// error responses get them too.
 app.use("*", async (c, next) => {
-  try {
-    await next();
-  } finally {
-    c.header("X-Content-Type-Options", "nosniff");
-    c.header("X-Frame-Options", "DENY");
-    c.header("Referrer-Policy", "strict-origin-when-cross-origin");
-    // A handler that emitted its own policy keeps it: the password gate serves a
-    // CSP without form-action.
-    if (!c.res.headers.has("Content-Security-Policy")) {
-      c.header("Content-Security-Policy", CSP);
-    }
+  await next();
+  c.header("X-Content-Type-Options", "nosniff");
+  c.header("X-Frame-Options", "DENY");
+  c.header("Referrer-Policy", "strict-origin-when-cross-origin");
+  // A handler that emitted its own policy keeps it: the password gate serves a
+  // CSP without form-action.
+  if (!c.res.headers.has("Content-Security-Policy")) {
+    c.header("Content-Security-Policy", CSP);
   }
 });
 
@@ -89,7 +86,7 @@ app.get("/api/config", (c) => {
     instanceName: getInstanceName(c.env),
     demoMode: isDemoMode(c.env),
     providers: Object.keys(getConfiguredProviders(c.env)),
-    passkey: c.env.PASSKEY_ENABLED === "true",
+    passkey: isPasskeyEnabled(c.env),
   });
 });
 
@@ -102,24 +99,18 @@ app.route("/api/teams", teamRoutes);
 app.use("/api/admin/*", requireAuth, requireAdmin);
 app.route("/api/admin", adminRoutes);
 
-// Auth middleware for protected API routes (excludes /api/auth/*).
-// rateLimitApiKeyCheck runs first: it keys on the bearer prefix alone, so an
-// over-limit key is rejected without spending an HMAC and two D1 queries. The
-// counter is only written after authentication, so an unknown key costs no KV write.
-app.use("/api/me", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/links/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/stats/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/campaigns/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
+// Routes API clients reach with a key; requireAuthOrApiKey meters Bearer traffic.
+app.use("/api/me", requireAuthOrApiKey);
+app.use("/api/links/*", requireAuthOrApiKey);
+app.use("/api/stats/*", requireAuthOrApiKey);
+app.use("/api/campaigns/*", requireAuthOrApiKey);
+app.use("/api/bulk/*", requireAuthOrApiKey);
+app.use("/api/reports/*", requireAuthOrApiKey);
+
+// Session-only, so a leaked key cannot mint keys or touch domains. The domains
+// sub-app applies requireAdmin to everything below its list route.
 app.use("/api/domains/*", requireAuth);
 app.use("/api/keys/*", requireAuth);
-app.use("/api/bulk/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-app.use("/api/reports/*", rateLimitApiKeyCheck, requireAuthOrApiKey, rateLimitApiKeyIncrement);
-
-// Admin-only domain management routes (sync, individual config, access)
-app.post("/api/domains/sync", requireAdmin);
-app.get("/api/domains/:hostname", requireAdmin);
-app.put("/api/domains/:hostname", requireAdmin);
-app.put("/api/domains/:hostname/access", requireAdmin);
 
 app.get("/api/me", async (c) => {
   return c.json({ data: c.var.user! });
@@ -135,19 +126,7 @@ app.route("/api/bulk", bulkRoutes);
 app.route("/api/reports", reportRoutes);
 
 // Public report viewer: no auth, IP rate limited.
-app.get("/api/public-report/:token", async (c, next) => {
-  const ip = c.req.header("cf-connecting-ip") || "unknown";
-  const rl = await checkRateLimit(c.env.KV, `rl:pub:${ip}`, 30, 60);
-  if (rl.exceeded) {
-    return Response.json(
-      { error: "Rate limit exceeded", retryAfter: rl.secondsRemaining },
-      { status: 429, headers: { "Retry-After": String(rl.secondsRemaining) } }
-    );
-  }
-  c.executionCtx.waitUntil(rl.hit());
-
-  await next();
-}, publicReportRoute);
+app.get("/api/public-report/:token", rateLimitPublicReport, publicReportRoute);
 
 // Unmatched /api/* paths must never reach the SPA shell: API clients get a JSON 404.
 app.all("/api/*", (c) => c.json({ error: "Not found" }, 404));
@@ -157,7 +136,8 @@ app.get("/", handleCustomDomainRoot);
 
 // Redirect engine (must come after /api/*), falls through to SPA on miss
 app.get("/:slug", handleRedirect);
-app.post("/:slug", handleRedirectPost);
+// The password form holds one field; the cap applies before the body is parsed.
+app.post("/:slug", bodyLimit({ maxSize: 4_096, onError: tooLarge }), handleRedirectPost);
 
 // Static assets. The binding applies `not_found_handling: single-page-application`
 // from wrangler.jsonc, so a path with no file gets the SPA shell.

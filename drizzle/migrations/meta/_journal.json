@@ -22,6 +22,13 @@
       "when": 1795184723992,
       "tag": "0002_drop_link_is_active",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1795187213624,
+      "tag": "0003_better_auth_indexes",
+      "breakpoints": true
     }
   ]
 }

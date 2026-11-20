@@ -4,33 +4,32 @@ import { passkey } from "@better-auth/passkey";
 import { getDb } from "../db";
 import * as schema from "../db/schema";
 import { getConfiguredProviders } from "../lib/providers";
-import { getInstanceName } from "../lib/branding";
+import { getInstanceName, isPasskeyEnabled } from "../lib/branding";
 
 function createAuth(env: Env) {
-  const socialProviders = getConfiguredProviders(env);
-
-  const origin = env.BETTER_AUTH_URL;
-  const rpID = new URL(origin).hostname;
-
-  const plugins = [];
-  if (env.PASSKEY_ENABLED === "true") {
-    plugins.push(passkey({ rpID, rpName: getInstanceName(env), origin }));
-  }
-
-  const db = getDb(env.DB);
+  // Without a secret Better Auth signs with a public default string outside production.
+  if (!env.BETTER_AUTH_SECRET) throw new Error("BETTER_AUTH_SECRET is not set");
 
   return betterAuth({
-    database: drizzleAdapter(db, { provider: "sqlite", schema }),
-    baseURL: origin,
+    // The passkey rpName defaults to appName; rpID and origin derive from baseURL.
+    appName: getInstanceName(env),
+    database: drizzleAdapter(getDb(env.DB), { provider: "sqlite", schema }),
+    baseURL: env.BETTER_AUTH_URL,
     secret: env.BETTER_AUTH_SECRET,
-    session: {
-      cookieCache: {
-        enabled: true,
-        maxAge: 5 * 60,
+    // The cookie cache keeps its default 5-minute maxAge.
+    session: { cookieCache: { enabled: true } },
+    databaseHooks: {
+      user: {
+        create: {
+          // isAdmin, domain access and invite accept all trust user.email, so a
+          // provider that did not verify the address cannot create an account.
+          // Better Auth then redirects the OAuth callback to its error URL.
+          before: async (u) => (u.emailVerified ? undefined : false),
+        },
       },
     },
-    socialProviders,
-    plugins,
+    socialProviders: getConfiguredProviders(env),
+    plugins: isPasskeyEnabled(env) ? [passkey()] : [],
   });
 }
 

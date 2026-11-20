@@ -5,7 +5,7 @@ import { sql } from "drizzle-orm";
 export const user = sqliteTable("user", {
   id: text("id").primaryKey(),
   name: text("name").notNull(),
-  email: text("email").notNull(),
+  email: text("email").notNull().unique(),
   emailVerified: integer("emailVerified", { mode: "boolean" }).notNull().default(false),
   image: text("image"),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
@@ -24,6 +24,7 @@ export const session = sqliteTable("session", {
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
 }, (table) => [
   uniqueIndex("session_token_idx").on(table.token),
+  index("session_userId_idx").on(table.userId),
 ]);
 
 export const account = sqliteTable("account", {
@@ -51,7 +52,9 @@ export const verification = sqliteTable("verification", {
   expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
   createdAt: integer("createdAt", { mode: "timestamp" }),
   updatedAt: integer("updatedAt", { mode: "timestamp" }),
-});
+}, (table) => [
+  index("verification_identifier_idx").on(table.identifier),
+]);
 
 export const passkey = sqliteTable("passkey", {
   id: text("id").primaryKey(),

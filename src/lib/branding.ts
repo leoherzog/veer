@@ -7,3 +7,7 @@ export function getInstanceName(env: Env): string {
 export function isDemoMode(env: Env): boolean {
   return env.DEMO_MODE?.trim() === "true";
 }
+
+export function isPasskeyEnabled(env: Env): boolean {
+  return env.PASSKEY_ENABLED?.trim() === "true";
+}

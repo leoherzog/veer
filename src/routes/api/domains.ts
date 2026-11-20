@@ -8,9 +8,14 @@ import { HTTPException } from "hono/http-exception";
 import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
 import { getPrimaryHostname, parseOptionalHttpUrl } from "../../lib/validators";
+import { requireAdmin } from "../../middleware/auth";
 import type { AppEnv } from "../../types";
 
 const domainRoutes = new Hono<AppEnv>();
+
+// Everything but the list is admin-only. `/:hostname/*` also matches `/sync`,
+// `/:hostname` and `/:hostname/access`, but not `/`.
+domainRoutes.use("/:hostname/*", requireAdmin);
 
 // List domains user has access to (admin sees all)
 domainRoutes.get("/", async (c) => {
@@ -29,7 +34,7 @@ domainRoutes.get("/", async (c) => {
   return c.json({ data: rows.map(row => ({ ...row, isPrimary: row.hostname.toLowerCase() === primaryHost })) });
 });
 
-// Sync domains from Cloudflare API → D1 (admin only, guarded in index.ts)
+// Sync domains from Cloudflare API → D1
 domainRoutes.post("/sync", async (c) => {
   const { CF_ACCOUNT_ID, CF_API_TOKEN, WORKER_NAME, BETTER_AUTH_URL } = c.env;
 
@@ -117,7 +122,6 @@ domainRoutes.post("/sync", async (c) => {
   return c.json({ data: updated });
 });
 
-// Every route below is admin-only, guarded in index.ts.
 domainRoutes.get("/:hostname", async (c) => {
   const hostname = c.req.param("hostname").toLowerCase();
   const db = getDb(c.env.DB);

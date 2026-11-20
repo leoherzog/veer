@@ -1,80 +1,113 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
-import { Hono } from "hono";
-import { rateLimitApiKeyCheck, rateLimitApiKeyIncrement, checkRateLimit } from "../../src/middleware/rate-limit";
-import { app as veerApp } from "../../src/index";
-import { setupAuth } from "../helpers";
-import type { AppEnv } from "../../src/types";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { checkRateLimit } from "../../src/middleware/rate-limit";
+import { api, fakeLimiter, setupAuth } from "../helpers";
 
-function createApp() {
-  const app = new Hono<AppEnv>();
-  app.use("*", rateLimitApiKeyCheck, rateLimitApiKeyIncrement);
-  app.get("/test", (c) => c.json({ ok: true }));
-  return app;
+/** Every KV key name, sorted, to show that a request wrote none. */
+async function kvKeyNames(): Promise<string[]> {
+  const names: string[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.KV.list({ cursor });
+    names.push(...page.keys.map((k) => k.name));
+    cursor = page.list_complete ? undefined : page.cursor;
+  } while (cursor);
+  return names.sort();
 }
 
-describe("rateLimitApiKey middleware", () => {
-  it("passes through requests without Bearer token", async () => {
-    const app = createApp();
-    const res = await app.request("/test", {}, env);
+describe("unmetered traffic", () => {
+  // Session traffic is unmetered by design. The request must be authenticated,
+  // or requireAuth rejects it before any limiter could run.
+  it("session traffic on /api/teams and /api/links never calls the limiter, sets no header and writes no KV key", async () => {
+    const { headers } = await setupAuth();
+    const limiter = fakeLimiter();
+    const before = await kvKeyNames();
+
+    for (const path of ["/api/teams", "/api/links"]) {
+      const ctx = createExecutionContext();
+      const res = await api("GET", path, { headers, env: { ...env, API_KEY_RATE_LIMITER: limiter }, ctx });
+      await waitOnExecutionContext(ctx);
+      expect(res.status).toBe(200);
+      expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
+    }
+
+    expect(limiter.limit).not.toHaveBeenCalled();
+    expect(await kvKeyNames()).toEqual(before);
+    // The file's first full-app request pays the worker's cold start.
+  }, 30_000);
+
+  it("a non-Bearer Authorization header goes to session auth unmetered", async () => {
+    const { headers } = await setupAuth();
+    const limiter = fakeLimiter();
+
+    const res = await api("GET", "/api/links", {
+      headers: { ...headers, Authorization: "Basic dXNlcjpwYXNz" },
+      env: { ...env, API_KEY_RATE_LIMITER: limiter },
+    });
+
     expect(res.status).toBe(200);
     expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
+    expect(limiter.limit).not.toHaveBeenCalled();
   });
 
-  it("sets the headers and decrements the remaining count on each request", async () => {
-    const token = `veer_ratelimit_decr_${Date.now()}`;
-    const app = createApp();
+  it("demo mode with a Bearer header never calls the limiter and writes no KV key", async () => {
+    const limiter = fakeLimiter();
+    const before = await kvKeyNames();
 
-    const res1 = await app.request("/test", {
-      headers: { Authorization: `Bearer ${token}` },
-    }, env);
-    expect(res1.status).toBe(200);
-    expect(res1.headers.get("X-RateLimit-Limit")).toBe("60");
-    expect(Number(res1.headers.get("X-RateLimit-Remaining"))).toBe(59);
+    const ctx = createExecutionContext();
+    const res = await api("GET", "/api/links", {
+      headers: { Authorization: "Bearer veer_demoBearerNeverMetered0000000000000000" },
+      env: { ...env, DEMO_MODE: "true", API_KEY_RATE_LIMITER: limiter },
+      ctx,
+    });
+    await waitOnExecutionContext(ctx);
 
-    const res2 = await app.request("/test", {
-      headers: { Authorization: `Bearer ${token}` },
-    }, env);
-    expect(Number(res2.headers.get("X-RateLimit-Remaining"))).toBe(58);
-  });
-
-  it("uses independent counters for different tokens", async () => {
-    const tokenA = `veer_rl_AAAA_ind${Date.now()}`;
-    const tokenB = `veer_rl_BBBB_ind${Date.now()}`;
-    const app = createApp();
-
-    // Pre-fill tokenA to the limit
-    const prefixA = tokenA.slice(0, 16);
-    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-    await env.KV.put(`rl:${prefixA}:${windowEpoch}`, "60", { expirationTtl: 120 });
-
-    // tokenA should be blocked
-    const resA = await app.request("/test", {
-      headers: { Authorization: `Bearer ${tokenA}` },
-    }, env);
-    expect(resA.status).toBe(429);
-
-    // tokenB should still pass
-    const resB = await app.request("/test", {
-      headers: { Authorization: `Bearer ${tokenB}` },
-    }, env);
-    expect(resB.status).toBe(200);
-  });
-
-  it("non-Bearer Authorization header passes through unmetered", async () => {
-    const app = createApp();
-    const res = await app.request("/test", {
-      headers: { Authorization: "Basic dXNlcjpwYXNz" },
-    }, env);
     expect(res.status).toBe(200);
     expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
+    expect(limiter.limit).not.toHaveBeenCalled();
+    expect(await kvKeyNames()).toEqual(before);
   });
+});
+
+describe("API-key limiter binding", () => {
+  /** 61 requests with one never-issued key; the limiter counts it before verification. */
+  async function burst() {
+    const key = `veer_${crypto.randomUUID().replaceAll("-", "")}`;
+    const minute = () => Math.floor(Date.now() / 60_000);
+    const startMinute = minute();
+    const statuses: number[] = [];
+    for (let i = 0; i < 61; i++) {
+      const res = await api("GET", "/api/links", { headers: { Authorization: `Bearer ${key}` } });
+      statuses.push(res.status);
+    }
+    return { statuses, oneWindow: minute() === startMinute };
+  }
+
+  it("answers the 61st request from one key within a minute with 429", async () => {
+    // The simulator's windows align to the wall clock. A burst that straddles a
+    // rollover is rerun, and the rerun starts just after one.
+    let run = await burst();
+    if (!run.oneWindow) run = await burst();
+
+    expect(run.oneWindow).toBe(true);
+    expect(run.statuses.slice(0, 60)).toEqual(Array(60).fill(401));
+    expect(run.statuses[60]).toBe(429);
+  }, 60_000);
 });
 
 describe("checkRateLimit", () => {
   const WINDOW = 3600;
   /** The KV key checkRateLimit reads for `prefix` in the current window. */
   const windowKey = (prefix: string) => `${prefix}:${Math.floor(Date.now() / 1000 / WINDOW)}`;
+
+  // A frozen clock keeps every read in one window.
+  beforeEach(() => {
+    vi.setSystemTime(Date.now());
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it("reports zero for an unset key", async () => {
     const state = await checkRateLimit(env.KV, `rl:unset:${Date.now()}`, 60, WINDOW);
@@ -102,6 +135,16 @@ describe("checkRateLimit", () => {
     expect(state.exceeded).toBe(true);
   });
 
+  it("starts a fresh count in the next window", async () => {
+    const prefix = `rl:rollover:${Date.now()}`;
+    await env.KV.put(windowKey(prefix), "5", { expirationTtl: 120 });
+
+    vi.setSystemTime(Date.now() + WINDOW * 1000);
+    const state = await checkRateLimit(env.KV, prefix, 5, WINDOW);
+    expect(state.count).toBe(0);
+    expect(state.exceeded).toBe(false);
+  });
+
   it("keeps the counter's expiration on every write, not just the first", async () => {
     const prefix = `rl:ttl:${Date.now()}`;
     await (await checkRateLimit(env.KV, prefix, 60, WINDOW)).hit();
@@ -112,28 +155,4 @@ describe("checkRateLimit", () => {
     expect(await env.KV.get(keys[0].name)).toBe("2");
     expect(keys[0].expiration).toBeGreaterThan(Date.now() / 1000);
   });
-});
-
-describe("session-only routes are not rate limited", () => {
-  // Session traffic is unmetered: a session limiter would spend one KV write per
-  // request against the free tier's 1,000/day. The request must be authenticated,
-  // or requireAuth rejects it before any limiter runs and the test passes vacuously.
-  it("does not meter authenticated requests to /api/teams", async () => {
-    const { headers } = await setupAuth();
-
-    const res = await veerApp.request("/api/teams", { headers }, env);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("X-RateLimit-Limit")).toBeNull();
-    expect(res.headers.get("X-RateLimit-Remaining")).toBeNull();
-  });
-
-  it("does not meter a 65-request authenticated burst", async () => {
-    const { headers } = await setupAuth();
-
-    for (let i = 0; i < 65; i++) {
-      const res = await veerApp.request("/api/teams", { headers }, env);
-      expect(res.status).toBe(200);
-    }
-    // 65 session lookups exceed the default 5s timeout when the full suite shares the CPU.
-  }, 30_000);
 });

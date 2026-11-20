@@ -6,10 +6,20 @@ import { apiKeys, user as userTable } from "../db/schema";
 import { hashApiKey } from "../lib/crypto";
 import { isDemoMode } from "../lib/branding";
 import { DEMO_USER } from "../lib/demo";
+import { API_KEY_LIMIT, rateLimited } from "./rate-limit";
 import type { AppEnv, AuthUser } from "../types";
 
-/** Build `c.var.user` from a user row, deriving `isAdmin` from ADMIN_EMAILS. */
-function toAuthUser(env: Env, u: { id: string; name: string; email: string; image?: string | null }): AuthUser {
+/** `lastUsedAt` is written at most once per key in this interval. */
+const LAST_USED_WRITE_INTERVAL_MS = 5 * 60_000;
+
+/**
+ * Build `c.var.user` from a user row. `isAdmin` needs the email in ADMIN_EMAILS
+ * and verified by the provider, since anyone can claim an unverified address.
+ */
+function toAuthUser(
+  env: Env,
+  u: { id: string; name: string; email: string; emailVerified: boolean; image?: string | null },
+): AuthUser {
   const adminEmails = env.ADMIN_EMAILS?.split(",").map((e) => e.trim().toLowerCase()) ?? [];
   // Pick fields explicitly: the Better Auth user carries columns (emailVerified,
   // createdAt, …) that must not leak through `c.var.user` into API responses.
@@ -18,7 +28,7 @@ function toAuthUser(env: Env, u: { id: string; name: string; email: string; imag
     name: u.name,
     email: u.email,
     image: u.image ?? null,
-    isAdmin: adminEmails.includes(u.email.toLowerCase()),
+    isAdmin: u.emailVerified && adminEmails.includes(u.email.toLowerCase()),
   };
 }
 
@@ -41,19 +51,37 @@ export const requireAdmin = createMiddleware<AppEnv>(async (c, next) => {
   await next();
 });
 
+/**
+ * Session or Bearer API key. Bearer traffic is rate limited per key; session
+ * traffic and demo mode go straight to `requireAuth` and are never metered.
+ */
 export const requireAuthOrApiKey = createMiddleware<AppEnv>(async (c, next) => {
   const authHeader = c.req.header("Authorization");
   if (isDemoMode(c.env) || !authHeader?.startsWith("Bearer ")) return requireAuth(c, next);
 
   const key = authHeader.slice(7);
   if (!key) return c.json({ error: "Unauthorized" }, 401);
+
+  // Runs before the HMAC and the D1 lookup, so an over-limit key costs neither.
+  // The 16-character token prefix identifies the key without holding its secret.
+  const { success } = await c.env.API_KEY_RATE_LIMITER.limit({ key: key.slice(0, 16) });
+  if (!success) return rateLimited(c, API_KEY_LIMIT);
+  c.header("X-RateLimit-Limit", String(API_KEY_LIMIT));
+
   const keyHash = await hashApiKey(key, c.env.BETTER_AUTH_SECRET);
   const db = getDb(c.env.DB);
 
   const [row] = await db.select({
     keyId: apiKeys.id,
     keyExpiresAt: apiKeys.expiresAt,
-    user: { id: userTable.id, name: userTable.name, email: userTable.email, image: userTable.image },
+    keyLastUsedAt: apiKeys.lastUsedAt,
+    user: {
+      id: userTable.id,
+      name: userTable.name,
+      email: userTable.email,
+      emailVerified: userTable.emailVerified,
+      image: userTable.image,
+    },
   }).from(apiKeys)
     .innerJoin(userTable, eq(apiKeys.userId, userTable.id))
     .where(eq(apiKeys.keyHash, keyHash))
@@ -63,15 +91,18 @@ export const requireAuthOrApiKey = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  if (row.keyExpiresAt && row.keyExpiresAt < new Date()) {
+  const now = Date.now();
+  if (row.keyExpiresAt && row.keyExpiresAt.getTime() < now) {
     return c.json({ error: "API key expired" }, 401);
   }
 
   c.set("user", toAuthUser(c.env, row.user));
 
-  c.executionCtx.waitUntil(
-    db.update(apiKeys).set({ lastUsedAt: new Date() }).where(eq(apiKeys.id, row.keyId)),
-  );
+  if (!row.keyLastUsedAt || now - row.keyLastUsedAt.getTime() > LAST_USED_WRITE_INTERVAL_MS) {
+    c.executionCtx.waitUntil(
+      db.update(apiKeys).set({ lastUsedAt: new Date(now) }).where(eq(apiKeys.id, row.keyId)),
+    );
+  }
 
   return next();
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getInstanceName, isDemoMode } from "../../src/lib/branding";
+import { getInstanceName, isDemoMode, isPasskeyEnabled } from "../../src/lib/branding";
 
 function envWith(instanceName: string | undefined): Env {
   return { INSTANCE_NAME: instanceName } as unknown as Env;
@@ -7,6 +7,10 @@ function envWith(instanceName: string | undefined): Env {
 
 function envWithDemo(demoMode: string | undefined): Env {
   return { DEMO_MODE: demoMode } as unknown as Env;
+}
+
+function envWithPasskey(passkeyEnabled: string | undefined): Env {
+  return { PASSKEY_ENABLED: passkeyEnabled } as unknown as Env;
 }
 
 describe("getInstanceName", () => {
@@ -56,5 +60,21 @@ describe("isDemoMode", () => {
     expect(isDemoMode(envWithDemo("false"))).toBe(false);
     expect(isDemoMode(envWithDemo("1"))).toBe(false);
     expect(isDemoMode(envWithDemo("yes"))).toBe(false);
+  });
+});
+
+describe("isPasskeyEnabled", () => {
+  it("returns true when PASSKEY_ENABLED is 'true'", () => {
+    expect(isPasskeyEnabled(envWithPasskey("true"))).toBe(true);
+  });
+
+  it("trims whitespace around 'true'", () => {
+    expect(isPasskeyEnabled(envWithPasskey("  true  "))).toBe(true);
+  });
+
+  it("returns false when PASSKEY_ENABLED is unset, empty or anything else", () => {
+    for (const value of [undefined, "", "false", "TRUE", "1"]) {
+      expect(isPasskeyEnabled(envWithPasskey(value))).toBe(false);
+    }
   });
 });

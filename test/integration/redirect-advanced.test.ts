@@ -92,6 +92,13 @@ describe("Redirect engine – advanced", () => {
       expect(html).toContain("Please enter a password");
     });
 
+    it("POST with a form over 4 KB returns 413 before the password is read", async () => {
+      const res = await postPassword("pw-post", "x".repeat(5_000));
+
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual({ error: "Request body too large" });
+    });
+
     it("POST for non-password link returns 405", async () => {
       const res = await postPassword("no-pw-post", "whatever");
 

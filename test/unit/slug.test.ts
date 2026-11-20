@@ -155,6 +155,12 @@ describe("validateSlug", () => {
       ]));
     });
 
+    it("reserves the files at the root of public/, which reach /:slug", () => {
+      for (const slug of ["favicon.svg", "index.html"]) {
+        expect(validateSlug(slug)).toEqual({ valid: false, error: "This slug is reserved" });
+      }
+    });
+
     it("rejects every reserved slug", () => {
       for (const slug of RESERVED_SLUGS) {
         expect(validateSlug(slug)).toEqual({ valid: false, error: "This slug is reserved" });

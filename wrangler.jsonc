@@ -36,6 +36,21 @@
       "dataset": "veer_clicks"
     }
   ],
+  // Limits and periods must match the constants in src/middleware/rate-limit.ts.
+  // Named environments do not inherit this. Bindings with the same namespace_id
+  // share counters across Workers, so each environment uses its own IDs.
+  "ratelimits": [
+    {
+      "name": "API_KEY_RATE_LIMITER",
+      "namespace_id": "1001",
+      "simple": { "limit": 60, "period": 60 }
+    },
+    {
+      "name": "PUBLIC_REPORT_RATE_LIMITER",
+      "namespace_id": "1002",
+      "simple": { "limit": 30, "period": 60 }
+    }
+  ],
   "vars": {
     "WORKER_NAME": "veer",
     "BETTER_AUTH_URL": "https://veer.production.example",
@@ -79,6 +94,18 @@
         {
           "binding": "ANALYTICS",
           "dataset": "veer_clicks_demo"
+        }
+      ],
+      "ratelimits": [
+        {
+          "name": "API_KEY_RATE_LIMITER",
+          "namespace_id": "2001",
+          "simple": { "limit": 60, "period": 60 }
+        },
+        {
+          "name": "PUBLIC_REPORT_RATE_LIMITER",
+          "namespace_id": "2002",
+          "simple": { "limit": 30, "period": 60 }
         }
       ],
       "routes": [

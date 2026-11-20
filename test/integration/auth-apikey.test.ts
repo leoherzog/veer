@@ -1,7 +1,21 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { setupAuth, api, adminEnv, createTestDomain, type JsonBody } from "../helpers";
+import { setupAuth, api, adminEnv, createTestDomain, fakeLimiter, type JsonBody } from "../helpers";
+
+/** The key's stored lastUsedAt, in epoch seconds. */
+async function lastUsedAt(id: string): Promise<number | null> {
+  const row = await env.DB.prepare("SELECT lastUsedAt FROM api_keys WHERE id = ?").bind(id).first<{ lastUsedAt: number | null }>();
+  return row!.lastUsedAt;
+}
+
+/** Make one Bearer request to /api/links and wait for its background writes. */
+async function useKey(key: string) {
+  const ctx = createExecutionContext();
+  const res = await api("GET", "/api/links", { headers: { Authorization: `Bearer ${key}` }, ctx });
+  await waitOnExecutionContext(ctx);
+  expect(res.status).toBe(200);
+}
 
 /** Create an API key via the API, returns { id, key, prefix }. */
 async function createApiKey(
@@ -67,30 +81,35 @@ describe("API key auth (requireAuthOrApiKey)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // lastUsedAt updated after use
+  // lastUsedAt, written at most once per 5 minutes
   // -------------------------------------------------------------------------
-  it("lastUsedAt gets updated after a successful API key request", async () => {
+  it("lastUsedAt gets set on the first successful API key request", async () => {
     const { key, id } = await createApiKey(authHeaders, "lastused-test-key");
+    expect(await lastUsedAt(id)).toBeNull();
 
-    // Confirm lastUsedAt is null before first use
-    const before = await env.DB.prepare("SELECT lastUsedAt FROM api_keys WHERE id = ?")
-      .bind(id)
-      .first() as { lastUsedAt: number | null };
-    expect(before.lastUsedAt).toBeNull();
+    await useKey(key);
 
-    // The update happens in waitUntil.
-    const ctx = createExecutionContext();
-    const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-      ctx,
-    });
-    await waitOnExecutionContext(ctx);
-    expect(res.status).toBe(200);
+    expect(await lastUsedAt(id)).not.toBeNull();
+  });
 
-    const after = await env.DB.prepare("SELECT lastUsedAt FROM api_keys WHERE id = ?")
-      .bind(id)
-      .first() as { lastUsedAt: number | null };
-    expect(after.lastUsedAt).not.toBeNull();
+  it("lastUsedAt is not rewritten within 5 minutes of the last write", async () => {
+    const { key, id } = await createApiKey(authHeaders, "lastused-recent");
+    const recent = Math.floor(Date.now() / 1000) - 60;
+    await env.DB.prepare("UPDATE api_keys SET lastUsedAt = ? WHERE id = ?").bind(recent, id).run();
+
+    await useKey(key);
+
+    expect(await lastUsedAt(id)).toBe(recent);
+  });
+
+  it("lastUsedAt is rewritten once it is more than 5 minutes old", async () => {
+    const { key, id } = await createApiKey(authHeaders, "lastused-stale");
+    const stale = Math.floor(Date.now() / 1000) - 6 * 60;
+    await env.DB.prepare("UPDATE api_keys SET lastUsedAt = ? WHERE id = ?").bind(stale, id).run();
+
+    await useKey(key);
+
+    expect(await lastUsedAt(id)).toBeGreaterThan(stale);
   });
 
   // -------------------------------------------------------------------------
@@ -131,72 +150,53 @@ describe("API key auth (requireAuthOrApiKey)", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Integrated rate limiter test (full stack with real API key)
+  // Rate limiting (the binding is faked per request to control its answer)
   // -------------------------------------------------------------------------
-  it("rate limits API key after 60 requests", async () => {
-    const { key } = await createApiKey(authHeaders, "ratelimit-integration");
-    const tokenPrefix = key.slice(0, 16);
-    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-    const kvKey = `rl:${tokenPrefix}:${windowEpoch}`;
-
-    // First request should succeed and show rate limit headers
-    const res1 = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    expect(res1.status).toBe(200);
-    expect(res1.headers.get("X-RateLimit-Limit")).toBe("60");
-
-    // Pre-seed the KV counter to the limit to trigger 429
-    await env.KV.put(kvKey, "60", { expirationTtl: 120 });
-
-    const res61 = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    expect(res61.status).toBe(429);
-    expect((await res61.json() as { error: string }).error).toBe("Rate limit exceeded");
-    expect(res61.headers.get("Retry-After")).toBeTruthy();
-    expect(res61.headers.get("X-RateLimit-Remaining")).toBe("0");
-    expect(res61.headers.get("X-RateLimit-Limit")).toBe("60");
-  });
-
-  it("meters a collection-root request once", async () => {
-    // `/api/links` matches the `/api/links/*` middleware; a second registration
-    // for the bare path would run the whole chain twice and count two requests.
-    const { key } = await createApiKey(authHeaders, "ratelimit-once");
-    const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("X-RateLimit-Remaining")).toBe("59");
-
-    const { keys } = await env.KV.list({ prefix: `rl:${key.slice(0, 16)}:` });
-    expect(keys).toHaveLength(1);
-    expect(await env.KV.get(keys[0].name)).toBe("1");
-  });
-
-  it("rate limit is checked before key verification (429, not 401, for an over-limit unknown key)", async () => {
-    // The limiter keys on the bearer prefix alone, so an over-limit key never
-    // reaches the HMAC or the D1 lookup.
-    const key = `veer_neverissued${Date.now()}notarealkey00000000000000`;
-    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-    await env.KV.put(`rl:${key.slice(0, 16)}:${windowEpoch}`, "60", { expirationTtl: 120 });
+  it("answers 429 with the limit headers when the limiter refuses, keyed on the token prefix", async () => {
+    const { key } = await createApiKey(authHeaders, "ratelimit-refused");
+    const limiter = fakeLimiter(false);
 
     const res = await api("GET", "/api/links", {
       headers: { Authorization: `Bearer ${key}` },
+      env: { ...env, API_KEY_RATE_LIMITER: limiter },
     });
+
     expect(res.status).toBe(429);
+    expect(await res.json()).toEqual({ error: "Rate limit exceeded", retryAfter: 60 });
+    expect(res.headers.get("Retry-After")).toBe("60");
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
+    expect(res.headers.get("X-RateLimit-Remaining")).toBeNull();
+    expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: key.slice(0, 16) });
   });
 
-  it("an unknown key spends no KV write (the counter is incremented only after auth)", async () => {
-    const key = `veer_notawrite${Date.now()}notarealkey00000000000000`;
-    const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-    const kvKey = `rl:${key.slice(0, 16)}:${windowEpoch}`;
+  it("meters a collection-root request once and sets X-RateLimit-Limit", async () => {
+    // `/api/links` matches the `/api/links/*` middleware; a second registration
+    // for the bare path would run the chain twice and count two requests.
+    const { key } = await createApiKey(authHeaders, "ratelimit-once");
+    const limiter = fakeLimiter(true);
 
     const res = await api("GET", "/api/links", {
       headers: { Authorization: `Bearer ${key}` },
+      env: { ...env, API_KEY_RATE_LIMITER: limiter },
     });
-    expect(res.status).toBe(401);
-    expect(await env.KV.get(kvKey)).toBeNull();
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
+    expect(res.headers.get("X-RateLimit-Remaining")).toBeNull();
+    expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: key.slice(0, 16) });
+  });
+
+  it("checks the limit before key verification (429, not 401, for an over-limit unknown key)", async () => {
+    const key = `veer_neverissued${Date.now()}notarealkey00000000000000`;
+    const limiter = fakeLimiter(false);
+
+    const res = await api("GET", "/api/links", {
+      headers: { Authorization: `Bearer ${key}` },
+      env: { ...env, API_KEY_RATE_LIMITER: limiter },
+    });
+
+    expect(res.status).toBe(429);
+    expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: key.slice(0, 16) });
   });
 
   // -------------------------------------------------------------------------
@@ -242,5 +242,16 @@ describe("API key auth (requireAuthOrApiKey)", () => {
     expect(res.status).toBe(400);
     const json = await res.json() as { error: string };
     expect(json.error).toContain("access");
+  });
+
+  it("a key owner in ADMIN_EMAILS whose email is unverified is not admin", async () => {
+    const email = "unverified-admin-apikey@example.com";
+    const unverified = await setupAuth({ email, emailVerified: false });
+    const { key } = await createApiKey(unverified.headers, "unverified-admin-key");
+
+    const res = await api("GET", "/api/me", { headers: { Authorization: `Bearer ${key}` }, env: adminEnv(email) });
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { data: { isAdmin: boolean } }).data.isAdmin).toBe(false);
   });
 });

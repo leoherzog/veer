@@ -38,12 +38,14 @@ describe("App-level concerns", () => {
       expect(res.headers.get("X-Frame-Options")).toBe("DENY");
     });
 
-    it("CSP allows the choropleth's topojson source and locks down framing and forms", async () => {
+    it("CSP keeps connect-src same-origin and locks down framing and forms", async () => {
       const res = await app.request("/api/config", {}, env);
       const csp = res.headers.get("Content-Security-Policy") ?? "";
 
+      // The choropleth's topojson is served from public/data, not a CDN.
       const connectSrc = csp.split("; ").find((d) => d.startsWith("connect-src ")) ?? "";
-      expect(connectSrc).toContain("https://cdn.jsdelivr.net");
+      expect(connectSrc).toContain("'self'");
+      expect(connectSrc).not.toContain("https://cdn.jsdelivr.net");
 
       expect(csp).toContain("frame-ancestors 'none'");
       expect(csp).toContain("base-uri 'self'");

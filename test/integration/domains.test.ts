@@ -463,6 +463,18 @@ describe("Domains API", () => {
       return { ...adminEnvObj, CF_ACCOUNT_ID: "test-account-id", CF_API_TOKEN: "test-api-token" };
     }
 
+    it("returns 403 for non-admin user", async () => {
+      const fetchSpy = stubCloudflareDomains([]);
+
+      const res = await api("POST", "/api/domains/sync", {
+        headers: userHeaders,
+        env: { ...env, CF_ACCOUNT_ID: "test-account-id", CF_API_TOKEN: "test-api-token" },
+      });
+
+      expect(res.status).toBe(403);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
+
     it("removes a dropped domain's links instead of moving them onto the primary host", async () => {
       const removed = "sync-removed.example.com";
       await createTestDomain(removed);

@@ -1,16 +1,39 @@
 /**
- * Fixed-window rate limits backed by KV counters. KV has no atomic increment,
- * so concurrent requests can read the same count and all pass: every limit here
- * is advisory. The Workers Rate Limiting binding is also permissive and counts
- * per Cloudflare location, so it would not make them strict either.
+ * Rate limits. The API-key and public-report limits use the Workers Rate
+ * Limiting binding, which counts per Cloudflare location and is eventually
+ * consistent, so both are approximate. The password gate keeps a KV
+ * fixed-window counter: its 15-minute window exceeds the binding's longest
+ * period of 60 seconds.
  */
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import type { AppEnv } from "../types";
 
-const RATE_LIMIT = 60;
-const WINDOW_SECONDS = 60;
+// The binding does not expose its configuration, so these must match the
+// `ratelimits` entries in wrangler.jsonc.
+export const API_KEY_LIMIT = 60;
+const PUBLIC_REPORT_LIMIT = 30;
+const PERIOD_SECONDS = 60;
 
-export interface RateLimitState {
+/**
+ * The 429 both binding-backed limiters answer. The binding reports only
+ * success, so `Retry-After` is the full period.
+ */
+export function rateLimited(c: Context<AppEnv>, limit: number) {
+  c.header("Retry-After", String(PERIOD_SECONDS));
+  c.header("X-RateLimit-Limit", String(limit));
+  return c.json({ error: "Rate limit exceeded", retryAfter: PERIOD_SECONDS }, 429);
+}
+
+/** Requests per client IP on the unauthenticated public report viewer. */
+export const rateLimitPublicReport = createMiddleware<AppEnv>(async (c, next) => {
+  const ip = c.req.header("cf-connecting-ip") || "unknown";
+  const { success } = await c.env.PUBLIC_REPORT_RATE_LIMITER.limit({ key: ip });
+  if (!success) return rateLimited(c, PUBLIC_REPORT_LIMIT);
+  await next();
+});
+
+interface RateLimitState {
   /** True when the stored counter has already reached the limit. */
   exceeded: boolean;
   /** Seconds until the current fixed window rolls over. */
@@ -22,8 +45,10 @@ export interface RateLimitState {
 }
 
 /**
- * Reads the counter for `{prefix}:{windowEpoch}` and reports whether the limit
- * is reached. The caller sends its own 429 and records the attempt with `hit()`.
+ * Reads the KV counter for `{prefix}:{windowEpoch}` and reports whether the
+ * limit is reached. KV has no atomic increment, so concurrent requests can read
+ * the same count and all pass. The caller sends its own 429 and records the
+ * attempt with `hit()`.
  */
 export async function checkRateLimit(
   kv: KVNamespace,
@@ -50,39 +75,3 @@ export async function checkRateLimit(
 export function checkPasswordRateLimit(kv: KVNamespace, linkId: string, ip: string): Promise<RateLimitState> {
   return checkRateLimit(kv, `rl:pw:${linkId}:${ip}`, 5, 900);
 }
-
-/**
- * Reads the API-key counter, rejects with 429 when the limit is reached, and
- * sets the X-RateLimit-* headers. Register it before `requireAuthOrApiKey`.
- * Session-authenticated requests pass through unaffected.
- */
-export const rateLimitApiKeyCheck = createMiddleware<AppEnv>(async (c, next) => {
-  const authHeader = c.req.header("Authorization");
-  if (!authHeader?.startsWith("Bearer ")) return next();
-
-  // The first 16 characters of the token identify the key without storing it.
-  const rl = await checkRateLimit(c.env.KV, `rl:${authHeader.slice(7, 23)}`, RATE_LIMIT, WINDOW_SECONDS);
-  if (rl.exceeded) {
-    c.header("Retry-After", String(rl.secondsRemaining));
-    c.header("X-RateLimit-Limit", String(RATE_LIMIT));
-    c.header("X-RateLimit-Remaining", "0");
-    return c.json({ error: "Rate limit exceeded", retryAfter: rl.secondsRemaining }, 429);
-  }
-
-  c.set("apiKeyRateLimitHit", rl.hit);
-
-  // Set before next() so the headers survive error responses too.
-  c.header("X-RateLimit-Limit", String(RATE_LIMIT));
-  c.header("X-RateLimit-Remaining", String(RATE_LIMIT - (rl.count + 1)));
-
-  return next();
-});
-
-/**
- * Writes the incremented API-key counter to KV. Register it after
- * `requireAuthOrApiKey` so a rejected key never spends a KV write.
- */
-export const rateLimitApiKeyIncrement = createMiddleware<AppEnv>(async (c, next) => {
-  await c.var.apiKeyRateLimitHit?.();
-  return next();
-});

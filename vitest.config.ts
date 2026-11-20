@@ -21,6 +21,8 @@ export default defineConfig({
           PASSKEY_ENABLED: "false",
           DEMO_MODE: "",
           INSTANCE_NAME: "",
+          AE_DATASET: "veer_clicks",
+          WORKER_NAME: "veer",
           ADMIN_EMAILS: "",
           CF_ACCOUNT_ID: "",
           CF_API_TOKEN: "",

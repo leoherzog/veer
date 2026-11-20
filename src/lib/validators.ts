@@ -41,9 +41,9 @@ export function parseExpiresAt(value: string | number): Date {
   return d;
 }
 
-/** Hostname of BETTER_AUTH_URL, lowercased — the host whose links are stored with domainHostname NULL. */
+/** Hostname of BETTER_AUTH_URL, lowercased by URL parsing — the host whose links are stored with domainHostname NULL. */
 export function getPrimaryHostname(betterAuthUrl: string): string {
-  return new URL(betterAuthUrl).hostname.toLowerCase();
+  return new URL(betterAuthUrl).hostname;
 }
 
 /**

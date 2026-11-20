@@ -1,7 +1,6 @@
 import { env } from "cloudflare:workers";
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { setupAuth, createTestLink, createTestTeam, api, insertClickStat, isoDaysAgo, dayLabel } from "../helpers";
+import { setupAuth, createTestLink, createTestTeam, api, insertClickStat, isoDaysAgo, dayLabel, fakeLimiter } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -309,44 +308,47 @@ describe("Reports API", () => {
       expect(res.status).toBe(404);
     });
 
-    it("rate limits by IP after 30 requests", async () => {
-      const link = await createTestLink({
-        slug: `rpt-rl-${crypto.randomUUID().slice(0, 8)}`,
-        userId,
+    describe("rate limit", () => {
+      it("answers 429 when the limiter refuses the client IP", async () => {
+        const link = await createTestLink({ slug: `rpt-rl-${crypto.randomUUID().slice(0, 8)}`, userId });
+        const token = await createReport(link.id);
+        const limiter = fakeLimiter(false);
+
+        const res = await api("GET", `/api/public-report/${token}`, {
+          headers: { "cf-connecting-ip": "203.0.113.30" },
+          env: { ...env, PUBLIC_REPORT_RATE_LIMITER: limiter },
+        });
+
+        expect(res.status).toBe(429);
+        expect(await res.json()).toEqual({ error: "Rate limit exceeded", retryAfter: 60 });
+        expect(res.headers.get("Retry-After")).toBe("60");
+        expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: "203.0.113.30" });
       });
-      const token = await createReport(link.id);
 
-      // Pre-seed the KV counter to 29 so we only need 1 more to hit the limit
-      const testIp = `10.0.0.${Date.now() % 256}`;
-      const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-      const rlKey = `rl:pub:${testIp}:${windowEpoch}`;
-      await env.KV.put(rlKey, "29", { expirationTtl: 120 });
+      it("serves the report when the limiter allows the client IP", async () => {
+        const link = await createTestLink({ slug: `rpt-rl-ok-${crypto.randomUUID().slice(0, 8)}`, userId });
+        const token = await createReport(link.id);
+        const limiter = fakeLimiter(true);
 
-      // Request 30 should succeed. Its counter write runs in waitUntil, so await it before request 31.
-      const ctx = createExecutionContext();
-      const res30 = await api("GET", `/api/public-report/${token}`, { headers: { "cf-connecting-ip": testIp }, ctx });
-      expect(res30.status).toBe(200);
-      await waitOnExecutionContext(ctx);
+        const res = await api("GET", `/api/public-report/${token}`, {
+          headers: { "cf-connecting-ip": "203.0.113.31" },
+          env: { ...env, PUBLIC_REPORT_RATE_LIMITER: limiter },
+        });
 
-      // Request 31 should be rate limited
-      const res31 = await api("GET", `/api/public-report/${token}`, { headers: { "cf-connecting-ip": testIp } });
-      expect(res31.status).toBe(429);
-    });
-
-    it("uses 'unknown' as IP key when cf-connecting-ip is absent", async () => {
-      const windowEpoch = Math.floor(Date.now() / 1000 / 60);
-      const rlKey = `rl:pub:unknown:${windowEpoch}`;
-      await env.KV.put(rlKey, "30", { expirationTtl: 120 });
-
-      const link = await createTestLink({
-        slug: `rpt-noip-${crypto.randomUUID().slice(0, 8)}`,
-        userId,
+        expect(res.status).toBe(200);
+        expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: "203.0.113.31" });
       });
-      const token = await createReport(link.id);
 
-      // No cf-connecting-ip header → should use "unknown" and be rate limited
-      const res = await api("GET", `/api/public-report/${token}`);
-      expect(res.status).toBe(429);
+      it("keys on 'unknown' when cf-connecting-ip is absent", async () => {
+        const limiter = fakeLimiter(false);
+
+        const res = await api("GET", "/api/public-report/rpt_whatever", {
+          env: { ...env, PUBLIC_REPORT_RATE_LIMITER: limiter },
+        });
+
+        expect(res.status).toBe(429);
+        expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: "unknown" });
+      });
     });
   });
 });
