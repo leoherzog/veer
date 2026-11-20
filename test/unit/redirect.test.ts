@@ -1,8 +1,33 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, afterEach, vi } from "vitest";
-import { app } from "../../src/index";
-import { mockExecutionCtx, cachedRedirect, cfRequest } from "../helpers";
-import { setCachedRedirect } from "../../src/services/kv-cache";
+import { describe, it, expect, vi } from "vitest";
+import { api, cachedRedirect, uniq } from "../helpers";
+import { setCachedRedirect, type CachedRedirect, type CachedTarget } from "../../src/services/kv-cache";
+
+const DEFAULT = "https://default.example.com/";
+const IPHONE = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
+const IPAD = "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15";
+const MAC = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0";
+
+const geo = (matchValue: string, destinationUrl: string, priority = 10): CachedTarget =>
+  ({ type: "geo", matchValue, destinationUrl, priority });
+const device = (matchValue: string, destinationUrl: string, priority = 10): CachedTarget =>
+  ({ type: "device", matchValue, destinationUrl, priority });
+const ab = (matchValue: string, destinationUrl: string): CachedTarget =>
+  ({ type: "ab", matchValue, destinationUrl, priority: 0 });
+
+type Visitor = { cf?: Record<string, unknown>; ua?: string };
+
+/** Cache a link under a fresh slug, defaulting to DEFAULT with no targets, and return the slug. */
+async function cacheLink(overrides: Partial<CachedRedirect> = {}): Promise<string> {
+  const slug = uniq("link");
+  await setCachedRedirect(env.KV, slug, cachedRedirect({ url: DEFAULT, ...overrides }));
+  return slug;
+}
+
+/** GET `path` as a visitor with the given cf properties and user agent. */
+function visit(path: string, { cf, ua }: Visitor = {}, testEnv?: Cloudflare.Env) {
+  return api("GET", path, { cf, headers: ua ? { "User-Agent": ua } : {}, env: testEnv });
+}
 
 /** An Analytics Engine binding that records each data point. */
 function recordingAnalytics() {
@@ -10,241 +35,99 @@ function recordingAnalytics() {
   return { writeDataPoint, env: { ...env, ANALYTICS: { writeDataPoint } } };
 }
 
-afterEach(() => {
-  vi.restoreAllMocks();
+describe("Targeting evaluation via redirect", () => {
+  // Every roll picks the first A/B variant, so a row whose rule wins proves it beat the roll.
+  it.each<[string, CachedTarget[], Visitor, string]>([
+    ["follows a matching geo rule", [geo("DE", "https://de.example.com")], { cf: { country: "DE" } }, "https://de.example.com"],
+    ["ignores a geo rule for another country", [geo("JP", "https://jp.example.com")], { cf: { country: "US" } }, DEFAULT],
+    ["matches a geo rule case-insensitively", [geo("gb", "https://uk.example.com")], { cf: { country: "GB" } }, "https://uk.example.com"],
+    ["follows a mobile rule on an iPhone", [device("mobile", "https://m.example.com")], { ua: IPHONE }, "https://m.example.com"],
+    ["follows a tablet rule on an iPad", [device("tablet", "https://tablet.example.com")], { ua: IPAD }, "https://tablet.example.com"],
+    ["ignores a mobile rule on a desktop", [device("mobile", "https://m.example.com")], { ua: MAC }, DEFAULT],
+    [
+      "picks the higher-priority of two matching rules",
+      [geo("US", "https://low.example.com", 1), geo("US", "https://high.example.com", 10)],
+      { cf: { country: "US" } },
+      "https://high.example.com",
+    ],
+    [
+      "picks the first of two matching rules with equal priority",
+      [geo("US", "https://first.example.com"), geo("US", "https://second.example.com")],
+      { cf: { country: "US" } },
+      "https://first.example.com",
+    ],
+    [
+      "puts a higher-priority geo rule ahead of a matching device rule",
+      [device("mobile", "https://m.example.com", 1), geo("FR", "https://fr.example.com", 10)],
+      { cf: { country: "FR" }, ua: IPHONE },
+      "https://fr.example.com",
+    ],
+    [
+      "puts a matching geo rule ahead of an A/B variant",
+      [ab("50", "https://variant.example.com"), geo("FR", "https://fr.example.com", 5)],
+      { cf: { country: "FR" } },
+      "https://fr.example.com",
+    ],
+    [
+      "rolls A/B when no geo or device rule matches",
+      [geo("US", "https://us.example.com", 5), ab("50", "https://variant.example.com")],
+      { cf: { country: "FR" } },
+      "https://variant.example.com",
+    ],
+    ["keeps the link's own URL when it has no targets", [], {}, DEFAULT],
+  ])("%s", async (_title, targets, visitor, location) => {
+    const slug = await cacheLink({ targets });
+    vi.spyOn(Math, "random").mockReturnValue(0);
+
+    const res = await visit(`/${slug}`, visitor);
+
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe(location);
+  });
+
+  it("a geo rule pointing at the default URL never rolls A/B", async () => {
+    const slug = await cacheLink({ targets: [ab("99", "https://variant.example.com"), geo("US", DEFAULT, 5)] });
+    const random = vi.spyOn(Math, "random");
+
+    const res = await visit(`/${slug}`, { cf: { country: "US" } });
+
+    expect(res.headers.get("Location")).toBe(DEFAULT);
+    expect(random).not.toHaveBeenCalled();
+  });
 });
 
-describe("Targeting evaluation via redirect", () => {
-  describe("geo targeting", () => {
-    it("matches geo rule and redirects to target destination", async () => {
-      await setCachedRedirect(env.KV, "geo-de", cachedRedirect({
-        url: "https://default.example.com/fallback",
-        targets: [
-          { type: "geo", matchValue: "DE", destinationUrl: "https://de.example.com", priority: 10 },
-        ],
-      }));
+describe("A/B roll", () => {
+  // Variants fill [0, sum of weights); the default takes 100 minus that sum,
+  // floored at 1, and the roll is Math.random() times the whole span.
+  const pair = [ab("50", "https://a.example.com"), ab("50", "https://b.example.com")];
 
-      const req = cfRequest("/geo-de", {
-        cf: { country: "DE" },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
+  it.each<[string, CachedTarget[], number, string]>([
+    ["a low roll on a 50/50 pair picks the first variant", pair, 0, "https://a.example.com"],
+    ["a mid roll on a 50/50 pair picks the second variant", pair, 0.5, "https://b.example.com"],
+    ["the top of a 50/50 pair's 101-wide span lands on the default's floor", pair, 0.995, DEFAULT],
+    // A weight of 100 clamped to 99 covers [0, 99) of a 100-wide span. A clamp
+    // below 99 loses the 98.995 roll; no clamp covers [0, 100) of 101 and takes 99.995.
+    ["a weight of 100 clamps to 99: a roll just under 99 picks the variant", [ab("100", "https://variant.example.com")], 0.98995, "https://variant.example.com"],
+    ["a weight of 100 clamps to 99: a roll at 99 lands on the default", [ab("100", "https://variant.example.com")], 0.99005, DEFAULT],
+    // A non-numeric weight counted as 1 covers [0, 1) of a 100-wide span.
+    ["a non-numeric weight counts as 1: a roll under 1 picks the variant", [ab("not-a-number", "https://variant.example.com")], 0.005, "https://variant.example.com"],
+    ["a non-numeric weight counts as 1: a roll past 1 lands on the default", [ab("not-a-number", "https://variant.example.com")], 0.015, DEFAULT],
+  ])("%s", async (_title, targets, roll, location) => {
+    const slug = await cacheLink({ targets });
+    vi.spyOn(Math, "random").mockReturnValue(roll);
 
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://de.example.com");
-    });
+    const res = await visit(`/${slug}`);
 
-    it("falls back to default when geo rule does not match", async () => {
-      await setCachedRedirect(env.KV, "geo-miss", cachedRedirect({
-        url: "https://default.example.com/geo-miss",
-        targets: [
-          { type: "geo", matchValue: "JP", destinationUrl: "https://jp.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/geo-miss", {
-        cf: { country: "US" },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://default.example.com/geo-miss");
-    });
-
-    it("geo matching is case-insensitive", async () => {
-      await setCachedRedirect(env.KV, "geo-case", cachedRedirect({
-        url: "https://default.example.com/geo-case",
-        targets: [
-          { type: "geo", matchValue: "gb", destinationUrl: "https://uk.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/geo-case", {
-        cf: { country: "GB" },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://uk.example.com");
-    });
-  });
-
-  describe("device targeting", () => {
-    it("matches mobile device rule", async () => {
-      await setCachedRedirect(env.KV, "dev-mobile", cachedRedirect({
-        url: "https://default.example.com/dev-mobile",
-        targets: [
-          { type: "device", matchValue: "mobile", destinationUrl: "https://m.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/dev-mobile", {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://m.example.com");
-    });
-
-    it("matches tablet device rule", async () => {
-      await setCachedRedirect(env.KV, "dev-tablet", cachedRedirect({
-        url: "https://default.example.com/dev-tablet",
-        targets: [
-          { type: "device", matchValue: "tablet", destinationUrl: "https://tablet.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/dev-tablet", {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (iPad; CPU OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://tablet.example.com");
-    });
-
-    it("desktop user does not match mobile rule, falls back to default", async () => {
-      await setCachedRedirect(env.KV, "dev-desktop-miss", cachedRedirect({
-        url: "https://default.example.com/desktop-fallback",
-        targets: [
-          { type: "device", matchValue: "mobile", destinationUrl: "https://m.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/dev-desktop-miss", {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0",
-        },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://default.example.com/desktop-fallback");
-    });
-  });
-
-  describe("priority and ordering", () => {
-    it("higher priority rule wins over lower priority", async () => {
-      await setCachedRedirect(env.KV, "prio-high-low", cachedRedirect({
-        url: "https://default.example.com/prio",
-        targets: [
-          { type: "geo", matchValue: "US", destinationUrl: "https://low-prio.example.com", priority: 1 },
-          { type: "geo", matchValue: "US", destinationUrl: "https://high-prio.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/prio-high-low", {
-        cf: { country: "US" },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://high-prio.example.com");
-    });
-
-    it("first match wins among same priority rules", async () => {
-      // Among matching rules of equal priority, the one stored first wins.
-      await setCachedRedirect(env.KV, "prio-same", cachedRedirect({
-        url: "https://default.example.com/same-prio",
-        targets: [
-          { type: "geo", matchValue: "US", destinationUrl: "https://first.example.com", priority: 10 },
-          { type: "geo", matchValue: "US", destinationUrl: "https://second.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/prio-same", {
-        cf: { country: "US" },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://first.example.com");
-    });
-
-    it("geo rule at higher priority beats device rule at lower priority", async () => {
-      await setCachedRedirect(env.KV, "prio-geo-dev", cachedRedirect({
-        url: "https://default.example.com/mixed",
-        targets: [
-          { type: "device", matchValue: "mobile", destinationUrl: "https://mobile.example.com", priority: 1 },
-          { type: "geo", matchValue: "FR", destinationUrl: "https://fr.example.com", priority: 10 },
-        ],
-      }));
-
-      const req = cfRequest("/prio-geo-dev", {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15",
-        },
-        cf: { country: "FR" },
-      });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://fr.example.com");
-    });
-  });
-
-  describe("explicit rule match", () => {
-    it("a geo rule pointing at the default URL never rolls A/B", async () => {
-      await setCachedRedirect(env.KV, "geo-to-default", cachedRedirect({
-        url: "https://default.example.com/geo-default",
-        targets: [
-          { type: "ab", matchValue: "99", destinationUrl: "https://variant.example.com", priority: 0 },
-          { type: "geo", matchValue: "US", destinationUrl: "https://default.example.com/geo-default", priority: 5 },
-        ],
-      }));
-      const random = vi.spyOn(Math, "random");
-
-      const res = await app.fetch(cfRequest("/geo-to-default", { cf: { country: "US" } }), env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBe("https://default.example.com/geo-default");
-      expect(random).not.toHaveBeenCalled();
-    });
-
-    it("rolls A/B when no geo or device rule matches", async () => {
-      await setCachedRedirect(env.KV, "geo-miss-ab", cachedRedirect({
-        url: "https://default.example.com/geo-miss-ab",
-        targets: [
-          { type: "geo", matchValue: "US", destinationUrl: "https://us.example.com", priority: 5 },
-          { type: "ab", matchValue: "50", destinationUrl: "https://variant.example.com", priority: 0 },
-        ],
-      }));
-      vi.spyOn(Math, "random").mockReturnValue(0);
-
-      const res = await app.fetch(cfRequest("/geo-miss-ab", { cf: { country: "FR" } }), env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBe("https://variant.example.com");
-    });
-  });
-
-  describe("no rules match", () => {
-    it("returns default destination with empty targets array", async () => {
-      await setCachedRedirect(env.KV, "empty-targets", cachedRedirect({
-        url: "https://default.example.com/empty",
-        targets: [],
-      }));
-
-      const req = cfRequest("/empty-targets");
-      const res = await app.fetch(req, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://default.example.com/empty");
-    });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("Location")).toBe(location);
   });
 });
 
 describe("Param forwarding via redirect", () => {
   it("appends incoming params to destination", async () => {
-    await setCachedRedirect(env.KV, "pf-append", cachedRedirect({
-      url: "https://dest.example.com/page",
-      paramForwarding: true,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com/page", paramForwarding: true });
 
-    const req = cfRequest("/pf-append?utm_source=twitter&ref=home");
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}?utm_source=twitter&ref=home`);
 
     expect(res.status).toBe(302);
     const loc = new URL(res.headers.get("Location")!);
@@ -253,102 +136,68 @@ describe("Param forwarding via redirect", () => {
     expect(loc.origin + loc.pathname).toBe("https://dest.example.com/page");
   });
 
-  it("preserves existing destination params and does not duplicate them", async () => {
-    await setCachedRedirect(env.KV, "pf-existing", cachedRedirect({
-      url: "https://dest.example.com/page?existing=1",
-      paramForwarding: true,
-    }));
+  it("keeps a param the destination already has at its own value, once", async () => {
+    const slug = await cacheLink({ url: "https://dest.example.com/page?existing=1", paramForwarding: true });
 
-    const req = cfRequest("/pf-existing?existing=2&extra=yes");
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}?existing=2&extra=yes`);
 
     expect(res.status).toBe(302);
     const loc = new URL(res.headers.get("Location")!);
-    // Existing param kept at original value, NOT overwritten
-    expect(loc.searchParams.get("existing")).toBe("1");
-    // Only one "existing" param
     expect(loc.searchParams.getAll("existing")).toEqual(["1"]);
-    // New param appended
     expect(loc.searchParams.get("extra")).toBe("yes");
   });
 
   it("forwards multi-valued params correctly", async () => {
-    await setCachedRedirect(env.KV, "pf-multi", cachedRedirect({
-      url: "https://dest.example.com/page",
-      paramForwarding: true,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com/page", paramForwarding: true });
 
-    const req = cfRequest("/pf-multi?tag=a&tag=b&tag=c");
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}?tag=a&tag=b&tag=c`);
 
     expect(res.status).toBe(302);
-    const loc = new URL(res.headers.get("Location")!);
-    expect(loc.searchParams.getAll("tag")).toEqual(["a", "b", "c"]);
+    expect(new URL(res.headers.get("Location")!).searchParams.getAll("tag")).toEqual(["a", "b", "c"]);
   });
 
   it("destination unchanged when no incoming params", async () => {
-    await setCachedRedirect(env.KV, "pf-empty", cachedRedirect({
-      url: "https://dest.example.com/page",
-      paramForwarding: true,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com/page", paramForwarding: true });
 
-    const req = cfRequest("/pf-empty");
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}`);
 
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("https://dest.example.com/page");
   });
 
   it("keeps the destination's own query string as written", async () => {
-    await setCachedRedirect(env.KV, "pf-raw", cachedRedirect({
-      url: "https://dest.example.com/page?q=a%20b&list=1,2&flag#top",
-      paramForwarding: true,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com/page?q=a%20b&list=1,2&flag#top", paramForwarding: true });
 
-    const res = await app.fetch(cfRequest("/pf-raw?flag=1&utm_source=x"), env, mockExecutionCtx());
+    const res = await visit(`/${slug}?flag=1&utm_source=x`);
 
     expect(res.headers.get("Location")).toBe("https://dest.example.com/page?q=a%20b&list=1,2&flag&utm_source=x#top");
   });
 
   it("leaves the destination untouched when every incoming key is already on it", async () => {
-    await setCachedRedirect(env.KV, "pf-dupe", cachedRedirect({
-      url: "https://dest.example.com/page?q=a%20b&list=1,2",
-      paramForwarding: true,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com/page?q=a%20b&list=1,2", paramForwarding: true });
 
-    const res = await app.fetch(cfRequest("/pf-dupe?q=other"), env, mockExecutionCtx());
+    const res = await visit(`/${slug}?q=other`);
 
     expect(res.headers.get("Location")).toBe("https://dest.example.com/page?q=a%20b&list=1,2");
   });
 
   it("does not forward params when paramForwarding is false", async () => {
-    await setCachedRedirect(env.KV, "pf-off", cachedRedirect({
-      url: "https://dest.example.com/page",
-      paramForwarding: false,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com/page" });
 
-    const req = cfRequest("/pf-off?utm_source=twitter&ref=home");
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}?utm_source=twitter&ref=home`);
 
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("https://dest.example.com/page");
   });
-});
 
-describe("Targeting + param forwarding combined", () => {
   it("applies param forwarding to the targeted destination, not the default", async () => {
-    await setCachedRedirect(env.KV, "combo-target-pf", cachedRedirect({
+    const slug = await cacheLink({
       url: "https://default.example.com/page",
       paramForwarding: true,
-      targets: [
-        { type: "geo", matchValue: "DE", destinationUrl: "https://de.example.com/landing", priority: 10 },
-      ],
-    }));
-
-    const req = cfRequest("/combo-target-pf?campaign=spring", {
-      cf: { country: "DE" },
+      targets: [geo("DE", "https://de.example.com/landing")],
     });
-    const res = await app.fetch(req, env, mockExecutionCtx());
+
+    const res = await visit(`/${slug}?campaign=spring`, { cf: { country: "DE" } });
 
     expect(res.status).toBe(302);
     const loc = new URL(res.headers.get("Location")!);
@@ -359,17 +208,11 @@ describe("Targeting + param forwarding combined", () => {
 
 describe("Click logging", () => {
   it("records the chosen A/B variant, not the URL with forwarded params", async () => {
-    await setCachedRedirect(env.KV, "ab-log", cachedRedirect({
-      url: "https://default.example.com/ab-log",
-      paramForwarding: true,
-      targets: [
-        { type: "ab", matchValue: "50", destinationUrl: "https://a.example.com/landing", priority: 0 },
-      ],
-    }));
+    const slug = await cacheLink({ paramForwarding: true, targets: [ab("50", "https://a.example.com/landing")] });
     vi.spyOn(Math, "random").mockReturnValue(0);
     const analytics = recordingAnalytics();
 
-    const res = await app.fetch(cfRequest("/ab-log?utm_source=newsletter"), analytics.env, mockExecutionCtx());
+    const res = await visit(`/${slug}?utm_source=newsletter`, {}, analytics.env);
 
     expect(res.headers.get("Location")).toBe("https://a.example.com/landing?utm_source=newsletter");
     expect(analytics.writeDataPoint).toHaveBeenCalledOnce();
@@ -377,176 +220,40 @@ describe("Click logging", () => {
   });
 });
 
-// Each distribution test runs hundreds of redirects, which exceed the default 5s
-// timeout when the full suite shares the CPU.
-describe("A/B targeting via redirect", { timeout: 30_000 }, () => {
-  it("splits evenly between two 50-weight variants, leaving the default a clamped floor", async () => {
-    // Two variants at weight 50 sum to 100, so defaultWeight = max(1, 100 - 100) = 1.
-    // roll in [0, 101): a in [0,50), b in [50,100), default in [100,101).
-    // Each variant gets ~50/101 ≈ 49.5%; the default keeps only the ~1% floor.
-    await setCachedRedirect(env.KV, "ab-split", cachedRedirect({
-      url: "https://default.example.com/control",
-      targets: [
-        { type: "ab", matchValue: "50", destinationUrl: "https://a.example.com", priority: 0 },
-        { type: "ab", matchValue: "50", destinationUrl: "https://b.example.com", priority: 0 },
-      ],
-    }));
-
-    const counts: Record<string, number> = {};
-    const N = 400;
-    for (let i = 0; i < N; i++) {
-      const req = cfRequest("/ab-split");
-      const res = await app.fetch(req, env, mockExecutionCtx());
-      expect(res.status).toBe(302);
-      const loc = res.headers.get("Location")!;
-      counts[loc] = (counts[loc] ?? 0) + 1;
-    }
-
-    const a = counts["https://a.example.com"] ?? 0;
-    const b = counts["https://b.example.com"] ?? 0;
-    const def = counts["https://default.example.com/control"] ?? 0;
-    // Both variants dominate at roughly equal share (expected ~49.5% each).
-    // Bands are ~6σ wide (σ≈10 over 400 draws), so flakiness is negligible.
-    expect(a / N).toBeGreaterThan(0.3);
-    expect(a / N).toBeLessThan(0.7);
-    expect(b / N).toBeGreaterThan(0.3);
-    expect(b / N).toBeLessThan(0.7);
-    // The default is only the clamped floor (~1%), never a major bucket.
-    expect(def / N).toBeLessThan(0.1);
-  });
-
-  it("sends nearly all traffic to a single high-weight variant, keeping a small default floor", async () => {
-    // matchValue "100" is clamped by Math.min(99, …) to weight 99, not kept at 100.
-    // defaultWeight = max(1, 100 - 99) = 1, total = 100 → variant ~99%, default ~1%.
-    await setCachedRedirect(env.KV, "ab-heavy", cachedRedirect({
-      url: "https://default.example.com/ctl",
-      targets: [
-        { type: "ab", matchValue: "100", destinationUrl: "https://variant.example.com", priority: 0 },
-      ],
-    }));
-
-    const counts: Record<string, number> = {};
-    const N = 300;
-    for (let i = 0; i < N; i++) {
-      const req = cfRequest("/ab-heavy");
-      const res = await app.fetch(req, env, mockExecutionCtx());
-      expect(res.status).toBe(302);
-      const loc = res.headers.get("Location")!;
-      counts[loc] = (counts[loc] ?? 0) + 1;
-    }
-
-    const variant = counts["https://variant.example.com"] ?? 0;
-    const def = counts["https://default.example.com/ctl"] ?? 0;
-    // Variant should dominate (expected ~99%); ~9σ margin below the 0.9 bound.
-    expect(variant / N).toBeGreaterThan(0.9);
-    // Default is the ~1% floor at most, never a major share.
-    expect(def / N).toBeLessThan(0.1);
-  });
-
-  it("geo match takes precedence over A/B variants", async () => {
-    await setCachedRedirect(env.KV, "ab-plus-geo", cachedRedirect({
-      url: "https://default.example.com/ctl",
-      targets: [
-        { type: "ab", matchValue: "50", destinationUrl: "https://ab.example.com", priority: 0 },
-        { type: "geo", matchValue: "FR", destinationUrl: "https://fr.example.com", priority: 5 },
-      ],
-    }));
-
-    // 20 rolls — a matching geo rule must always win over the A/B bucket.
-    for (let i = 0; i < 20; i++) {
-      const req = cfRequest("/ab-plus-geo", { cf: { country: "FR" } });
-      const res = await app.fetch(req, env, mockExecutionCtx());
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://fr.example.com");
-    }
-  });
-
-  it("clamps a non-numeric weight to 1, sending the vast majority of traffic to the default", async () => {
-    // matchValue "not-a-number" → parseInt = NaN → Math.max(1, Math.min(99, NaN || 0)) = 1.
-    // defaultWeight = max(1, 100 - 1) = 99, total = 100 → default ~99%, variant ~1%.
-    // The default destination must keep a reachable share when A/B targets exist.
-    await setCachedRedirect(env.KV, "ab-nan", cachedRedirect({
-      url: "https://default.example.com/ctl",
-      targets: [
-        { type: "ab", matchValue: "not-a-number", destinationUrl: "https://variant.example.com", priority: 0 },
-      ],
-    }));
-
-    const counts: Record<string, number> = {};
-    const N = 300;
-    for (let i = 0; i < N; i++) {
-      const req = cfRequest("/ab-nan");
-      const res = await app.fetch(req, env, mockExecutionCtx());
-      expect(res.status).toBe(302);
-      const loc = res.headers.get("Location")!;
-      counts[loc] = (counts[loc] ?? 0) + 1;
-    }
-
-    const def = counts["https://default.example.com/ctl"] ?? 0;
-    const variant = counts["https://variant.example.com"] ?? 0;
-    // Default should dominate (expected ~99%); ~9σ margin below the 0.9 bound.
-    expect(def / N).toBeGreaterThan(0.9);
-    // The clamped-to-1 variant is at most the ~1% floor, never a major share.
-    expect(variant / N).toBeLessThan(0.1);
-  });
-});
-
 describe("OG meta page (bot/crawler)", () => {
   it("renders og:url from the request URL", async () => {
-    await setCachedRedirect(env.KV, "og-url-test", cachedRedirect({
-      url: "https://dest.example.com",
-      ogTitle: "Hello",
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com", ogTitle: "Hello" });
 
-    const req = cfRequest("/og-url-test", {
-      headers: { "User-Agent": "facebookexternalhit/1.1" },
-    });
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}`, { ua: "facebookexternalhit/1.1" });
 
     expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('<meta property="og:url"');
-    // The og:url should match the slug path on the request host
-    expect(html).toMatch(/<meta property="og:url" content="http:\/\/localhost\/og-url-test"/);
+    expect(await res.text()).toContain(`<meta property="og:url" content="http://localhost/${slug}"`);
   });
 
   it("HTML-escapes og:title so embedded quotes/angle brackets cannot break out", async () => {
-    await setCachedRedirect(env.KV, "og-xss", cachedRedirect({
+    const slug = await cacheLink({
       url: "https://dest.example.com",
       ogTitle: '<script>alert(1)</script>"evil"',
       ogDescription: "Desc with <b> & 'apostrophe'",
       ogImage: "https://img.example.com/a.png?x=<y>",
-    }));
-
-    const req = cfRequest("/og-xss", {
-      headers: { "User-Agent": "Twitterbot/1.0" },
     });
-    const res = await app.fetch(req, env, mockExecutionCtx());
+
+    const res = await visit(`/${slug}`, { ua: "Twitterbot/1.0" });
 
     expect(res.status).toBe(200);
     const html = await res.text();
-    // Raw <script> must not appear
     expect(html).not.toContain("<script>alert(1)</script>");
-    // Angle brackets inside content must be escaped
     expect(html).toContain("&lt;script&gt;");
     expect(html).toContain("&lt;b&gt;");
-    // Double quotes inside content must be escaped so they don't break out of the attr
+    // Escaped double quotes cannot close the content attribute.
     expect(html).toContain("&quot;evil&quot;");
-    // Ampersand must be escaped (including inside the URL)
     expect(html).toContain("?x=&lt;y&gt;");
   });
 
   it("omits og:image tag when ogImage is null", async () => {
-    await setCachedRedirect(env.KV, "og-no-image", cachedRedirect({
-      url: "https://dest.example.com",
-      ogTitle: "Only title",
-      ogImage: null,
-    }));
+    const slug = await cacheLink({ url: "https://dest.example.com", ogTitle: "Only title", ogImage: null });
 
-    const req = cfRequest("/og-no-image", {
-      headers: { "User-Agent": "LinkedInBot" },
-    });
-    const res = await app.fetch(req, env, mockExecutionCtx());
+    const res = await visit(`/${slug}`, { ua: "LinkedInBot" });
 
     expect(res.status).toBe(200);
     const html = await res.text();

@@ -1,70 +1,38 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll } from "vitest";
 import { hashPassword, verifyPassword } from "../../src/services/password";
 
-describe("hashPassword", () => {
-  it("returned hash contains exactly one colon (salt:hash format)", async () => {
-    const hash = await hashPassword("secret");
-    const parts = hash.split(":");
-    expect(parts).toHaveLength(2);
-    expect(parts[0].length).toBeGreaterThan(0);
-    expect(parts[1].length).toBeGreaterThan(0);
-  });
-});
+const PASSWORD = "Pässwörd 🔒 p@$$!";
 
-describe("verifyPassword", () => {
-  it("returns true for the correct password", async () => {
-    const password = "my-secret-password";
-    const hash = await hashPassword(password);
-    await expect(verifyPassword(password, hash)).resolves.toBe(true);
+describe("hashPassword / verifyPassword", () => {
+  let hash: string;
+
+  beforeAll(async () => {
+    hash = await hashPassword(PASSWORD);
   });
 
-  it("returns false for an incorrect password", async () => {
-    const hash = await hashPassword("correct-password");
-    await expect(verifyPassword("wrong-password", hash)).resolves.toBe(false);
+  it("stores a 16-byte hex salt and a 32-byte hex hash", () => {
+    expect(hash).toMatch(/^[0-9a-f]{32}:[0-9a-f]{64}$/);
   });
 
-  it("returns false for an empty password when hash was of a non-empty one", async () => {
-    const hash = await hashPassword("non-empty");
-    await expect(verifyPassword("", hash)).resolves.toBe(false);
+  it.each([
+    ["the exact password", PASSWORD, true],
+    ["a lowercased copy", PASSWORD.toLowerCase(), false],
+    ["an uppercased copy", PASSWORD.toUpperCase(), false],
+    ["a leading space", ` ${PASSWORD}`, false],
+    ["a trailing space", `${PASSWORD} `, false],
+    ["the password without its emoji", PASSWORD.replace("🔒", ""), false],
+    ["an empty string", "", false],
+  ])("verifies %s as %s", async (_label, attempt, valid) => {
+    await expect(verifyPassword(attempt, hash)).resolves.toBe(valid);
   });
 
-  it("returns true for an empty string password hashed as empty", async () => {
-    const hash = await hashPassword("");
-    await expect(verifyPassword("", hash)).resolves.toBe(true);
+  it("salts each hash, and both verify", async () => {
+    const other = await hashPassword(PASSWORD);
+    expect(other).not.toBe(hash);
+    await expect(verifyPassword(PASSWORD, other)).resolves.toBe(true);
   });
 
-  it("is case-sensitive", async () => {
-    const hash = await hashPassword("Secret");
-    await expect(verifyPassword("secret", hash)).resolves.toBe(false);
-    await expect(verifyPassword("SECRET", hash)).resolves.toBe(false);
-  });
-
-  it("returns false for a password that differs by whitespace", async () => {
-    const hash = await hashPassword("password");
-    await expect(verifyPassword(" password", hash)).resolves.toBe(false);
-    await expect(verifyPassword("password ", hash)).resolves.toBe(false);
-  });
-
-  it("correctly verifies special characters", async () => {
-    const password = "p@$$w0rd!#%^&*()";
-    const hash = await hashPassword(password);
-    await expect(verifyPassword(password, hash)).resolves.toBe(true);
-    await expect(verifyPassword("p@$$w0rd", hash)).resolves.toBe(false);
-  });
-
-  it("correctly verifies unicode passwords", async () => {
-    const password = "パスワード🔒";
-    const hash = await hashPassword(password);
-    await expect(verifyPassword(password, hash)).resolves.toBe(true);
-    await expect(verifyPassword("パスワード", hash)).resolves.toBe(false);
-  });
-
-  it("different hashes of the same password both verify correctly", async () => {
-    const password = "same-password";
-    const hash1 = await hashPassword(password);
-    const hash2 = await hashPassword(password);
-    expect(hash1).not.toBe(hash2); // different salts
-    await expect(verifyPassword(password, hash1)).resolves.toBe(true);
-    await expect(verifyPassword(password, hash2)).resolves.toBe(true);
+  it("verifies an empty password hashed as empty", async () => {
+    await expect(verifyPassword("", await hashPassword(""))).resolves.toBe(true);
   });
 });

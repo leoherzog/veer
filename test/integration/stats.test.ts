@@ -1,5 +1,5 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { setupAuth, createTestLink, api, insertClickStat, isoDaysAgo, dayLabel } from "../helpers";
 import type { AERow } from "../../src/services/analytics";
 
@@ -50,10 +50,6 @@ describe("Stats API", () => {
     const auth = await setupAuth();
     headers = auth.headers;
     userId = auth.user.id;
-  });
-
-  afterEach(() => {
-    vi.restoreAllMocks();
   });
 
   // -------------------------------------------------------------------------

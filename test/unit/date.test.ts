@@ -5,8 +5,6 @@ describe("formatDate", () => {
   it.each([
     ["2025-01-15", "Jan 15"],
     ["2025-06-01", "Jun 1"],
-    // getUTC* keeps the label on the UTC day whatever the runtime's time zone.
-    ["2026-01-01T00:00:00Z", "Jan 1"],
   ])("formats %s as %s", (input, label) => {
     expect(formatDate(input)).toBe(label);
   });

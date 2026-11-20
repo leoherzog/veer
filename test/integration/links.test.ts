@@ -418,7 +418,7 @@ describe("Links API", () => {
       const link = await createTestLink({
         slug: `clear-exp-${crypto.randomUUID().slice(0, 8)}`,
         userId,
-        expiresAt: Math.floor(Date.now() / 1000) + 86400,
+        expiresAt: new Date(Date.now() + 86_400_000),
       });
 
       const res = await api("PUT", `/api/links/${link.id}`, {

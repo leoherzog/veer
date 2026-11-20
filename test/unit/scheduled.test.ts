@@ -1,11 +1,9 @@
 import { env } from "cloudflare:workers";
 import { createScheduledController } from "cloudflare:test";
-import { describe, it, expect, beforeAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
 import { scheduled } from "../../src/scheduled";
 import { DEMO_USER_ID } from "../../src/lib/demo";
-import { mockExecutionCtx, isoDaysAgo, createTestLink, insertClickStat } from "../helpers";
-
-const demoEnv = { ...env, DEMO_MODE: "true" } as unknown as Env;
+import { mockExecutionCtx, isoDaysAgo, createTestLink, insertClickStat, createDemoUser, demoEnv } from "../helpers";
 
 async function getStatsRow(linkId: string, date: string) {
   return env.DB
@@ -15,17 +13,17 @@ async function getStatsRow(linkId: string, date: string) {
 }
 
 describe("scheduled handler", () => {
-  beforeAll(async () => {
-    const now = Math.floor(Date.now() / 1000);
-    await env.DB
-      .prepare(
-        `INSERT OR IGNORE INTO user (id, name, email, emailVerified, createdAt, updatedAt) VALUES (?, 'Demo', 'demo@x', 0, ?, ?)`,
-      )
-      .bind(DEMO_USER_ID, now, now)
-      .run();
+  beforeAll(createDemoUser);
+
+  // The handler writes today's row; a frozen clock keeps "today" the same day for the test.
+  beforeEach(() => {
+    vi.setSystemTime(new Date("2026-06-15T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("early-returns when DEMO_MODE is unset (no link_stats writes)", async () => {
+  it("writes no link_stats row when DEMO_MODE is unset", async () => {
     const link = await createTestLink({ userId: DEMO_USER_ID });
 
     await scheduled(createScheduledController(), env, mockExecutionCtx());
@@ -33,7 +31,7 @@ describe("scheduled handler", () => {
     expect(await getStatsRow(link.id, isoDaysAgo(0))).toBeNull();
   });
 
-  it("upserts today's link_stats for every seeded demo link when DEMO_MODE=true", async () => {
+  it("adds 1 to 5 clicks to a demo link's row for today", async () => {
     const link = await createTestLink({ userId: DEMO_USER_ID });
 
     await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
@@ -44,23 +42,25 @@ describe("scheduled handler", () => {
     expect(row!.clicks).toBeLessThanOrEqual(5);
   });
 
-  it("increments clicks on a second invocation (onConflictDoUpdate)", async () => {
+  it("adds to today's row on a second run instead of replacing it", async () => {
     const link = await createTestLink({ userId: DEMO_USER_ID });
     const today = isoDaysAgo(0);
+    // A roll of 0 makes each run add exactly one click.
+    vi.spyOn(Math, "random").mockReturnValue(0);
 
     await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
     const first = await getStatsRow(link.id, today);
     await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());
     const second = await getStatsRow(link.id, today);
 
-    expect(second!.clicks).toBeGreaterThan(first!.clicks);
+    expect(first!.clicks).toBe(1);
+    expect(second!.clicks).toBe(2);
   });
 
   it("skips expired and capped links", async () => {
-    const now = Math.floor(Date.now() / 1000);
-    const expired = await createTestLink({ userId: DEMO_USER_ID, expiresAt: now - 60 });
+    const expired = await createTestLink({ userId: DEMO_USER_ID, expiresAt: new Date(Date.now() - 60_000) });
     const capped = await createTestLink({ userId: DEMO_USER_ID, maxClicks: 1000 });
-    const expiresLater = await createTestLink({ userId: DEMO_USER_ID, expiresAt: now + 3600 });
+    const expiresLater = await createTestLink({ userId: DEMO_USER_ID, expiresAt: new Date(Date.now() + 3_600_000) });
     const today = isoDaysAgo(0);
 
     await scheduled(createScheduledController(), demoEnv, mockExecutionCtx());

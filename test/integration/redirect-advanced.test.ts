@@ -1,12 +1,10 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat, cachedRedirect, cfRequest, isoDaysAgo } from "../helpers";
+import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat, cachedRedirect, isoDaysAgo, api } from "../helpers";
 import { hashPassword } from "../../src/services/password";
 import { getCachedRedirect, setCachedRedirect } from "../../src/services/kv-cache";
-
-const now = Math.floor(Date.now() / 1000);
 
 /** Insert a link_targets row. */
 async function insertTarget(
@@ -111,7 +109,7 @@ describe("Redirect engine – advanced", () => {
         slug: "pw-expired-wrong",
         destinationUrl: "https://example.com/expired",
         password: passwordHash,
-        expiresAt: now - 3600,
+        expiresAt: new Date(Date.now() - 3_600_000),
         userId: owner.user.id,
       });
 
@@ -141,7 +139,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("POST re-checks constraints (expired link)", async () => {
-      const pastTs = now - 3600; // 1 hour ago
+      const pastTs = new Date(Date.now() - 3_600_000);
       await createTestLink({
         slug: "pw-expired-post",
         destinationUrl: "https://example.com/expired",
@@ -179,7 +177,7 @@ describe("Redirect engine – advanced", () => {
 
   describe("checkConstraints – expired / maxClicks / internal", () => {
     it("GET with expiresAt in the past returns 410", async () => {
-      const pastTs = now - 7200;
+      const pastTs = new Date(Date.now() - 7_200_000);
       await createTestLink({
         slug: "expired-link",
         destinationUrl: "https://example.com/expired",
@@ -526,7 +524,7 @@ describe("Redirect engine – advanced", () => {
         priority: 10,
       });
 
-      const res = await app.fetch(cfRequest("/geo-target", { cf: { country: "DE" } }), env, mockExecutionCtx());
+      const res = await api("GET", "/geo-target", { cf: { country: "DE" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/germany");
@@ -638,10 +636,6 @@ describe("Redirect engine – password POST rate limit", () => {
 });
 
 describe("Redirect engine – hot-path invariants", () => {
-  afterEach(() => {
-    vi.restoreAllMocks();
-  });
-
   it("a password-gated request never rolls A/B, for a visitor or a crawler", async () => {
     await setCachedRedirect(env.KV, "pw-ab-kv", cachedRedirect({
       url: "https://example.com/pw-ab-default",

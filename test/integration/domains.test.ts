@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestDomain, createTestLink, mockExecutionCtx, api, adminEnv } from "../helpers";
+import { setupAuth, createTestDomain, createTestLink, mockExecutionCtx, api, newAdmin } from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -27,7 +27,6 @@ describe("Domains API", () => {
 
   // Admin user
   let adminHeaders: Record<string, string>;
-  let adminEmail: string;
   let adminEnvObj: typeof env;
 
   beforeAll(async () => {
@@ -35,10 +34,9 @@ describe("Domains API", () => {
     userHeaders = userAuth.headers;
     userEmail = userAuth.user.email;
 
-    const adminAuth = await setupAuth({ email: "domains-admin@test.com" });
-    adminHeaders = adminAuth.headers;
-    adminEmail = adminAuth.user.email;
-    adminEnvObj = adminEnv(adminEmail);
+    const admin = await newAdmin();
+    adminHeaders = admin.headers;
+    adminEnvObj = admin.env;
   });
 
   // -----------------------------------------------------------------------
@@ -470,10 +468,6 @@ describe("Domains API", () => {
         })
       );
     }
-
-    afterEach(() => {
-      vi.restoreAllMocks();
-    });
 
     /** Admin env plus the Cloudflare API credentials sync requires. */
     function syncEnv() {

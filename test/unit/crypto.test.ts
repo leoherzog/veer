@@ -7,33 +7,17 @@ describe("generateApiKey", () => {
   });
 
   it("produces different keys on each call", () => {
-    const key1 = generateApiKey();
-    const key2 = generateApiKey();
-    expect(key1).not.toBe(key2);
+    expect(generateApiKey()).not.toBe(generateApiKey());
   });
 });
 
 describe("hashApiKey", () => {
-  it("returns a 64-character hex string (SHA-256 HMAC)", async () => {
-    const hash = await hashApiKey("veer_testkey", "my-secret");
-    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+  it("is HMAC-SHA256 of the key under the secret, in lowercase hex (RFC 4231 test case 2)", async () => {
+    expect(await hashApiKey("what do ya want for nothing?", "Jefe"))
+      .toBe("5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843");
   });
 
-  it("is deterministic — same inputs produce same hash", async () => {
-    const hash1 = await hashApiKey("veer_testkey", "my-secret");
-    const hash2 = await hashApiKey("veer_testkey", "my-secret");
-    expect(hash1).toBe(hash2);
-  });
-
-  it("different keys produce different hashes", async () => {
-    const hash1 = await hashApiKey("veer_key1", "my-secret");
-    const hash2 = await hashApiKey("veer_key2", "my-secret");
-    expect(hash1).not.toBe(hash2);
-  });
-
-  it("different secrets produce different hashes", async () => {
-    const hash1 = await hashApiKey("veer_samekey", "secret-a");
-    const hash2 = await hashApiKey("veer_samekey", "secret-b");
-    expect(hash1).not.toBe(hash2);
+  it("depends on the secret", async () => {
+    expect(await hashApiKey("veer_samekey", "secret-a")).not.toBe(await hashApiKey("veer_samekey", "secret-b"));
   });
 });

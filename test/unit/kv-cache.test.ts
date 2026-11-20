@@ -42,6 +42,17 @@ describe("KV cache service", () => {
     expect(await getCachedRedirect(kv, "slug-b")).toEqual(dataB);
   });
 
+  it("writes each entry with a 7-day TTL", async () => {
+    const before = Math.floor(Date.now() / 1000);
+    await setCachedRedirect(kv, "ttl-slug", sampleRedirect, "ttl.example.com");
+    const after = Math.ceil(Date.now() / 1000);
+
+    const { keys } = await kv.list({ prefix: "ttl.example.com:" });
+    expect(keys.map((k) => k.name)).toEqual(["ttl.example.com:ttl-slug"]);
+    expect(keys[0].expiration).toBeGreaterThanOrEqual(before + 7 * 86_400);
+    expect(keys[0].expiration).toBeLessThanOrEqual(after + 7 * 86_400);
+  });
+
   describe("domain-scoped keys", () => {
     it("domain-scoped key is isolated from default key", async () => {
       const domainData = { ...sampleRedirect, linkId: "link-domain" };

@@ -1,21 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect } from "vitest";
-import { setupAuth, createTestLink, createTestTeam, api, adminEnv, newUser, uniq } from "../helpers";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** An authenticated user plus the env that makes them an admin. */
-async function newAdmin() {
-  const email = `${uniq("admin")}@example.com`;
-  const auth = await setupAuth({ email });
-  return { ...auth, env: adminEnv(email) };
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
+import { setupAuth, createTestLink, createTestTeam, api, newAdmin, newUser, uniq } from "../helpers";
 
 describe("Admin API", () => {
   describe("authorization", () => {
@@ -98,39 +83,18 @@ describe("Admin API", () => {
   });
 
   describe("PATCH /api/admin/users/:id", () => {
-    it("rejects maxLinks of 0 with 400", async () => {
+    it.each([0, -5, 0.5, "abc"])("rejects a maxLinks of %j with 400 and leaves the user unchanged", async (maxLinks) => {
       const admin = await newAdmin();
       const target = await newUser("quota");
 
       const res = await api("PATCH", `/api/admin/users/${target.user.id}`, {
-        headers: admin.headers, env: admin.env, body: { maxLinks: 0 },
+        headers: admin.headers, env: admin.env, body: { maxLinks },
       });
       expect(res.status).toBe(400);
-      expect((await res.json() as { error: string }).error).toBe("maxLinks must be at least 1, or null for unlimited");
+      expect(await res.json()).toEqual({ error: "maxLinks must be at least 1, or null for unlimited" });
 
       const row = await env.DB.prepare("SELECT maxLinks FROM user WHERE id = ?").bind(target.user.id).first<{ maxLinks: number | null }>();
       expect(row?.maxLinks).toBeNull();
-    });
-
-    it("rejects a negative maxLinks with 400", async () => {
-      const admin = await newAdmin();
-      const target = await newUser("quota");
-      const res = await api("PATCH", `/api/admin/users/${target.user.id}`, {
-        headers: admin.headers, env: admin.env, body: { maxLinks: -5 },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("accepts null as unlimited", async () => {
-      const admin = await newAdmin();
-      const target = await newUser("quota");
-      await api("PATCH", `/api/admin/users/${target.user.id}`, { headers: admin.headers, env: admin.env, body: { maxLinks: 3 } });
-
-      const res = await api("PATCH", `/api/admin/users/${target.user.id}`, {
-        headers: admin.headers, env: admin.env, body: { maxLinks: null },
-      });
-      expect(res.status).toBe(200);
-      expect((await res.json() as { data: { maxLinks: number | null } }).data.maxLinks).toBeNull();
     });
 
     it("returns 404 for an unknown user", async () => {
@@ -173,7 +137,12 @@ describe("Admin API", () => {
       expect(second.status).toBe(400);
       expect((await second.json() as { error: string }).error).toContain("link limit");
 
-      await api("PATCH", `/api/admin/users/${target.user.id}`, { headers: admin.headers, env: admin.env, body: { maxLinks: null } });
+      const lifted = await api("PATCH", `/api/admin/users/${target.user.id}`, {
+        headers: admin.headers, env: admin.env, body: { maxLinks: null },
+      });
+      expect(lifted.status).toBe(200);
+      expect((await lifted.json() as { data: { maxLinks: number | null } }).data.maxLinks).toBeNull();
+
       const third = await api("POST", "/api/links", {
         headers: target.headers, body: { slug: uniq("cap"), destinationUrl: "https://example.com" },
       });

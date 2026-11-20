@@ -1,11 +1,6 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../../src/index";
 import { setupAuth, api } from "../helpers";
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 describe("API Keys", () => {
   let headers: Record<string, string>;
@@ -23,8 +18,7 @@ describe("API Keys", () => {
       const auth = await setupAuth();
       const res = await api("GET", "/api/keys", { headers: auth.headers });
       expect(res.status).toBe(200);
-      const json = await res.json() as { data: unknown[] };
-      expect(json.data).toEqual([]);
+      expect(await res.json()).toEqual({ data: [] });
     });
 
     it("returns created keys without full key value", async () => {
@@ -87,28 +81,6 @@ describe("API Keys", () => {
       expect(expiresAt).toBeNull();
     });
 
-    it("rejects empty name with 400", async () => {
-      const res = await api("POST", "/api/keys", {
-        headers,
-        body: { name: "" },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects missing name with 400", async () => {
-      const res = await api("POST", "/api/keys", {
-        headers,
-        body: {},
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it.each([42, { first: "x" }, ["x"]])("rejects the non-string name %j with 400", async (name) => {
-      const res = await api("POST", "/api/keys", { headers, body: { name } });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: "name is required" });
-    });
-
     it("creates a key with a future expiresAt", async () => {
       const future = new Date(Date.now() + 86400_000).toISOString();
       const res = await api("POST", "/api/keys", {
@@ -117,42 +89,30 @@ describe("API Keys", () => {
       });
       expect(res.status).toBe(201);
       const json = await res.json() as { data: { expiresAt: string } };
-      expect(json.data.expiresAt).toBeTruthy();
+      expect(json.data.expiresAt).toBe(future);
     });
 
-    it("rejects invalid expiresAt string with 400", async () => {
-      const res = await api("POST", "/api/keys", {
-        headers,
-        body: { name: "test", expiresAt: "not-a-date" },
-      });
-      expect(res.status).toBe(400);
-      const json = await res.json() as { error: string };
-      expect(json.error).toBe("Invalid expiresAt date");
-    });
+    it.each<[string, unknown, string]>([
+      ["no body at all", undefined, "Invalid JSON body"],
+      ["a missing name", {}, "name is required"],
+      ["an empty name", { name: "" }, "name is required"],
+      ["a blank name", { name: "   " }, "name is required"],
+      ["a numeric name", { name: 42 }, "name is required"],
+      ["an object name", { name: { first: "x" } }, "name is required"],
+      ["an array name", { name: ["x"] }, "name is required"],
+      ["a name over 200 characters", { name: "x".repeat(201) }, "name must be 200 characters or fewer"],
+      ["an unparseable expiresAt", { name: "test", expiresAt: "not-a-date" }, "Invalid expiresAt date"],
+      ["an expiresAt in the past", { name: "test", expiresAt: new Date(Date.now() - 86400_000).toISOString() }, "expiresAt must be in the future"],
+    ])("rejects %s with 400", async (_label, body, error) => {
+      const res = await api("POST", "/api/keys", { headers, body });
 
-    it("rejects request with no body at all with 400", async () => {
-      const res = await app.request("/api/keys", {
-        method: "POST",
-        headers,
-      }, env);
       expect(res.status).toBe(400);
-      const json = await res.json() as { error: string };
-      expect(json.error).toBe("Invalid JSON body");
-    });
-
-    it("rejects expiresAt in the past with 400", async () => {
-      const past = new Date(Date.now() - 86400_000).toISOString();
-      const res = await api("POST", "/api/keys", {
-        headers,
-        body: { name: "Expired Key", expiresAt: past },
-      });
-      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
     });
 
     it("enforces the 10-key limit", async () => {
       const auth = await setupAuth();
 
-      // Create 10 keys
       for (let i = 0; i < 10; i++) {
         const res = await api("POST", "/api/keys", {
           headers: auth.headers,
@@ -161,12 +121,12 @@ describe("API Keys", () => {
         expect(res.status).toBe(201);
       }
 
-      // The 11th key should fail
       const res = await api("POST", "/api/keys", {
         headers: auth.headers,
         body: { name: "Key overflow" },
       });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Maximum 10 API keys per user" });
     });
   });
 
@@ -212,7 +172,6 @@ describe("API Keys", () => {
       });
       const { data } = await createRes.json() as { data: { id: string } };
 
-      // Try to delete with a different user's auth
       const res = await api("DELETE", `/api/keys/${data.id}`, { headers });
       expect(res.status).toBe(404);
     });

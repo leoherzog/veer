@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { checkRateLimit } from "../../src/middleware/rate-limit";
-import { api, fakeLimiter, setupAuth } from "../helpers";
+import { api, demoEnv, fakeLimiter, setupAuth } from "../helpers";
 
 /** Every KV key name, sorted, to show that a request wrote none. */
 async function kvKeyNames(): Promise<string[]> {
@@ -58,7 +58,7 @@ describe("unmetered traffic", () => {
     const ctx = createExecutionContext();
     const res = await api("GET", "/api/links", {
       headers: { Authorization: "Bearer veer_demoBearerNeverMetered0000000000000000" },
-      env: { ...env, DEMO_MODE: "true", API_KEY_RATE_LIMITER: limiter },
+      env: { ...demoEnv, API_KEY_RATE_LIMITER: limiter },
       ctx,
     });
     await waitOnExecutionContext(ctx);

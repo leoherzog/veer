@@ -16,63 +16,24 @@ describe("parsePagination", () => {
     return result!;
   }
 
-  it("uses defaults when no query params", async () => {
-    const r = await withQuery("");
-    expect(r).toEqual({ page: 1, limit: 20, offset: 0 });
-  });
-
-  it("computes offset from page × limit", async () => {
-    const r = await withQuery("page=3&limit=10");
-    expect(r).toEqual({ page: 3, limit: 10, offset: 20 });
-  });
-
-  it("clamps page to minimum of 1 for zero or negative", async () => {
-    expect((await withQuery("page=0")).page).toBe(1);
-    expect((await withQuery("page=-5")).page).toBe(1);
-  });
-
-  it("clamps limit to minimum of 1 for negative values", async () => {
-    const r = await withQuery("limit=-10");
-    expect(r.limit).toBe(1);
-  });
-
-  it("falls back to default limit=20 when limit=0 (falsy)", async () => {
-    // Number(0) || 20 = 20
-    const r = await withQuery("limit=0");
-    expect(r.limit).toBe(20);
-  });
-
-  it("clamps limit to maximum of 100", async () => {
-    const r = await withQuery("limit=500");
-    expect(r.limit).toBe(100);
-  });
-
-  it("treats non-numeric page/limit as defaults", async () => {
-    const r = await withQuery("page=abc&limit=xyz");
-    expect(r).toEqual({ page: 1, limit: 20, offset: 0 });
-  });
-
   // OFFSET must be an integer; D1 rejects a fractional one with a datatype
-  // mismatch, so a fractional page is floored, not rejected.
-  it("floors a fractional page and limit", async () => {
-    const r = await withQuery("page=1.3&limit=10.9");
-    expect(r).toEqual({ page: 1, limit: 10, offset: 0 });
-    expect(Number.isInteger(r.offset)).toBe(true);
-  });
-
-  it("floors a fractional page above 2", async () => {
-    const r = await withQuery("page=2.7&limit=10");
-    expect(r).toEqual({ page: 2, limit: 10, offset: 10 });
-  });
-
-  it("treats infinite page/limit as defaults", async () => {
-    const r = await withQuery("page=Infinity&limit=Infinity");
-    expect(r).toEqual({ page: 1, limit: 20, offset: 0 });
-  });
-
-  it("floors a fractional limit below 1 up to the minimum", async () => {
-    const r = await withQuery("limit=0.5");
-    expect(r.limit).toBe(1);
+  // mismatch, so fractional values are floored, not rejected.
+  it.each([
+    ["", { page: 1, limit: 20, offset: 0 }],
+    ["page=3&limit=10", { page: 3, limit: 10, offset: 20 }],
+    ["page=0", { page: 1, limit: 20, offset: 0 }],
+    ["page=-5", { page: 1, limit: 20, offset: 0 }],
+    ["limit=-10", { page: 1, limit: 1, offset: 0 }],
+    // A limit of 0 is falsy and takes the default.
+    ["limit=0", { page: 1, limit: 20, offset: 0 }],
+    ["limit=500", { page: 1, limit: 100, offset: 0 }],
+    ["page=abc&limit=xyz", { page: 1, limit: 20, offset: 0 }],
+    ["page=1.3&limit=10.9", { page: 1, limit: 10, offset: 0 }],
+    ["page=2.7&limit=10", { page: 2, limit: 10, offset: 10 }],
+    ["page=Infinity&limit=Infinity", { page: 1, limit: 20, offset: 0 }],
+    ["limit=0.5", { page: 1, limit: 1, offset: 0 }],
+  ])("parses %j as %j", async (query, expected) => {
+    expect(await withQuery(query)).toEqual(expected);
   });
 });
 

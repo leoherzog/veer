@@ -42,5 +42,7 @@ export default defineConfig({
     // Scoped to test/ so checkout copies under .claude/worktrees are never collected.
     include: ["test/**/*.test.ts"],
     setupFiles: ["./test/setup.ts"],
+    // Every vi.spyOn is undone before the next test, so no file restores its own.
+    restoreMocks: true,
   },
 });

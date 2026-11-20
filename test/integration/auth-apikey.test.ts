@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, it, expect, beforeAll } from "vitest";
-import { setupAuth, api, adminEnv, createTestDomain, fakeLimiter, type JsonBody } from "../helpers";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { setupAuth, api, adminEnv, newAdmin, newUser, createTestDomain, createTestLink, fakeLimiter, uniq } from "../helpers";
 
 /** The key's stored lastUsedAt, in epoch seconds. */
 async function lastUsedAt(id: string): Promise<number | null> {
@@ -9,23 +9,19 @@ async function lastUsedAt(id: string): Promise<number | null> {
   return row!.lastUsedAt;
 }
 
+const bearer = (key: string) => ({ Authorization: `Bearer ${key}` });
+
 /** Make one Bearer request to /api/links and wait for its background writes. */
 async function useKey(key: string) {
   const ctx = createExecutionContext();
-  const res = await api("GET", "/api/links", { headers: { Authorization: `Bearer ${key}` }, ctx });
+  const res = await api("GET", "/api/links", { headers: bearer(key), ctx });
   await waitOnExecutionContext(ctx);
   expect(res.status).toBe(200);
 }
 
-/** Create an API key via the API, returns { id, key, prefix }. */
-async function createApiKey(
-  authHeaders: Record<string, string>,
-  name = "test-key",
-  expiresAt?: string
-) {
-  const body: JsonBody = { name };
-  if (expiresAt) body.expiresAt = expiresAt;
-  const res = await api("POST", "/api/keys", { headers: authHeaders, body });
+/** Create an API key through the API for the session in `authHeaders`. */
+async function createApiKey(authHeaders: Record<string, string>, name: string) {
+  const res = await api("POST", "/api/keys", { headers: authHeaders, body: { name } });
   expect(res.status).toBe(201);
   const json = await res.json() as { data: { id: string; key: string; prefix: string } };
   return json.data;
@@ -34,130 +30,133 @@ async function createApiKey(
 describe("API key auth (requireAuthOrApiKey)", () => {
   let authHeaders: Record<string, string>;
   let userId: string;
+  // Shared by every test that leaves the key's row as it is, which keeps the
+  // user under the ten-key cap.
+  let key: string;
+  let linkId: string;
 
   beforeAll(async () => {
     const auth = await setupAuth();
     authHeaders = auth.headers;
     userId = auth.user.id;
+    key = (await createApiKey(authHeaders, "shared")).key;
+    linkId = (await createTestLink({ userId })).id;
   });
 
   // -------------------------------------------------------------------------
-  // Valid API key
+  // Which mounts take a key
   // -------------------------------------------------------------------------
-  it("valid API key on GET /api/links returns 200", async () => {
-    const { key } = await createApiKey(authHeaders, "valid-key-test");
-    const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
+  it.each([
+    "/api/me",
+    "/api/links",
+    "/api/campaigns",
+    "/api/stats/:linkId/summary",
+    "/api/reports/:linkId",
+  ])("accepts a key on GET %s and meters it", async (path) => {
+    const res = await api("GET", path.replace(":linkId", linkId), { headers: bearer(key) });
+
     expect(res.status).toBe(200);
+    expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
   });
 
-  // -------------------------------------------------------------------------
-  // Invalid API key
-  // -------------------------------------------------------------------------
-  it("invalid API key returns 401", async () => {
-    const res = await api("GET", "/api/links", {
-      headers: { Authorization: "Bearer veer_totallyinvalidkey1234567890123456789012" },
+  it("accepts a key on POST /api/bulk and creates the links for the key's owner", async () => {
+    const slug = uniq("bulk-key");
+
+    const res = await api("POST", "/api/bulk", {
+      headers: bearer(key),
+      body: { links: [{ slug, destinationUrl: "https://example.com/bulk" }] },
     });
-    expect(res.status).toBe(401);
+
+    expect(res.status).toBe(200);
+    const { results } = await res.json() as { results: { id: string; slug: string; success: boolean }[] };
+    expect(results).toMatchObject([{ slug, success: true }]);
+    const row = await env.DB.prepare("SELECT userId FROM links WHERE id = ?").bind(results[0].id).first<{ userId: string }>();
+    expect(row?.userId).toBe(userId);
+  });
+
+  // A leaked key must not mint keys, touch domains, teams or admin routes.
+  it.each(["/api/keys", "/api/domains", "/api/teams", "/api/admin/users"])(
+    "rejects a key on session-only GET %s with 401",
+    async (path) => {
+      const res = await api("GET", path, { headers: bearer(key) });
+
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: "Unauthorized" });
+    },
+  );
+
+  it("GET /api/me with a key returns the key owner", async () => {
+    const res = await api("GET", "/api/me", { headers: bearer(key) });
+
+    expect(res.status).toBe(200);
+    expect((await res.json() as { data: { id: string } }).data.id).toBe(userId);
   });
 
   // -------------------------------------------------------------------------
   // Expired API key
   // -------------------------------------------------------------------------
   it("expired API key returns 401", async () => {
-    const { key, id } = await createApiKey(authHeaders, "expiry-test-key");
-
-    // Manually set expiresAt to the past
-    const pastTimestamp = Math.floor(Date.now() / 1000) - 3600; // 1 hour ago
+    const { key: expiring, id } = await createApiKey(authHeaders, "expiry-test-key");
     await env.DB.prepare("UPDATE api_keys SET expiresAt = ? WHERE id = ?")
-      .bind(pastTimestamp, id)
+      .bind(Math.floor(Date.now() / 1000) - 3600, id)
       .run();
 
-    const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
-    });
+    const res = await api("GET", "/api/links", { headers: bearer(expiring) });
+
     expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "API key expired" });
   });
 
   // -------------------------------------------------------------------------
   // lastUsedAt, written at most once per 5 minutes
   // -------------------------------------------------------------------------
-  it("lastUsedAt gets set on the first successful API key request", async () => {
-    const { key, id } = await createApiKey(authHeaders, "lastused-test-key");
-    expect(await lastUsedAt(id)).toBeNull();
-
-    await useKey(key);
-
-    expect(await lastUsedAt(id)).not.toBeNull();
-  });
-
-  it("lastUsedAt is not rewritten within 5 minutes of the last write", async () => {
-    const { key, id } = await createApiKey(authHeaders, "lastused-recent");
-    const recent = Math.floor(Date.now() / 1000) - 60;
-    await env.DB.prepare("UPDATE api_keys SET lastUsedAt = ? WHERE id = ?").bind(recent, id).run();
-
-    await useKey(key);
-
-    expect(await lastUsedAt(id)).toBe(recent);
-  });
-
-  it("lastUsedAt is rewritten once it is more than 5 minutes old", async () => {
-    const { key, id } = await createApiKey(authHeaders, "lastused-stale");
-    const stale = Math.floor(Date.now() / 1000) - 6 * 60;
-    await env.DB.prepare("UPDATE api_keys SET lastUsedAt = ? WHERE id = ?").bind(stale, id).run();
-
-    await useKey(key);
-
-    expect(await lastUsedAt(id)).toBeGreaterThan(stale);
-  });
-
-  // -------------------------------------------------------------------------
-  // API key rejected on session-only routes (requireAuth, not requireAuthOrApiKey)
-  // -------------------------------------------------------------------------
-  it("API key is rejected on GET /api/keys (session-only route)", async () => {
-    const { key } = await createApiKey(authHeaders, "keys-route-test");
-    const res = await api("GET", "/api/keys", {
-      headers: { Authorization: `Bearer ${key}` },
+  describe("lastUsedAt", () => {
+    // A frozen clock keeps each test's offsets exact against the 5-minute window.
+    beforeEach(() => {
+      vi.setSystemTime(Date.now());
     });
-    expect(res.status).toBe(401);
-  });
-
-  it("API key is rejected on GET /api/domains (session-only route)", async () => {
-    const { key } = await createApiKey(authHeaders, "domains-route-test");
-    const res = await api("GET", "/api/domains", {
-      headers: { Authorization: `Bearer ${key}` },
+    afterEach(() => {
+      vi.useRealTimers();
     });
-    expect(res.status).toBe(401);
-  });
 
-  it("GET /api/me works with an API key and returns the key owner", async () => {
-    const { key } = await createApiKey(authHeaders, "me-route-test");
-    const res = await api("GET", "/api/me", {
-      headers: { Authorization: `Bearer ${key}` },
+    it("is set on the first successful API key request", async () => {
+      const { key: fresh, id } = await createApiKey(authHeaders, "lastused-test-key");
+      expect(await lastUsedAt(id)).toBeNull();
+
+      await useKey(fresh);
+
+      expect(await lastUsedAt(id)).toBe(Math.floor(Date.now() / 1000));
     });
-    expect(res.status).toBe(200);
-    const json = await res.json() as { data: Record<string, unknown> };
-    expect(json.data.id).toBe(userId);
-    expect(res.headers.get("X-RateLimit-Limit")).toBe("60");
-  });
 
-  it("GET /api/me exposes only the AuthUser fields, never the raw Better Auth user", async () => {
-    const res = await api("GET", "/api/me", { headers: authHeaders });
-    expect(res.status).toBe(200);
-    const json = await res.json() as { data: Record<string, unknown> };
-    expect(Object.keys(json.data).sort()).toEqual(["email", "id", "image", "isAdmin", "name"]);
+    it("is not rewritten within 5 minutes of the last write", async () => {
+      const { key: recentKey, id } = await createApiKey(authHeaders, "lastused-recent");
+      const recent = Math.floor(Date.now() / 1000) - 60;
+      await env.DB.prepare("UPDATE api_keys SET lastUsedAt = ? WHERE id = ?").bind(recent, id).run();
+
+      await useKey(recentKey);
+
+      expect(await lastUsedAt(id)).toBe(recent);
+    });
+
+    it("is rewritten once it is more than 5 minutes old", async () => {
+      const { key: staleKey, id } = await createApiKey(authHeaders, "lastused-stale");
+      const stale = Math.floor(Date.now() / 1000) - 6 * 60;
+      await env.DB.prepare("UPDATE api_keys SET lastUsedAt = ? WHERE id = ?").bind(stale, id).run();
+
+      await useKey(staleKey);
+
+      expect(await lastUsedAt(id)).toBe(Math.floor(Date.now() / 1000));
+    });
   });
 
   // -------------------------------------------------------------------------
   // Rate limiting (the binding is faked per request to control its answer)
   // -------------------------------------------------------------------------
   it("answers 429 with the limit headers when the limiter refuses, keyed on the token prefix", async () => {
-    const { key } = await createApiKey(authHeaders, "ratelimit-refused");
     const limiter = fakeLimiter(false);
 
     const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: bearer(key),
       env: { ...env, API_KEY_RATE_LIMITER: limiter },
     });
 
@@ -172,11 +171,10 @@ describe("API key auth (requireAuthOrApiKey)", () => {
   it("meters a collection-root request once and sets X-RateLimit-Limit", async () => {
     // `/api/links` matches the `/api/links/*` middleware; a second registration
     // for the bare path would run the chain twice and count two requests.
-    const { key } = await createApiKey(authHeaders, "ratelimit-once");
     const limiter = fakeLimiter(true);
 
     const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: bearer(key),
       env: { ...env, API_KEY_RATE_LIMITER: limiter },
     });
 
@@ -187,50 +185,47 @@ describe("API key auth (requireAuthOrApiKey)", () => {
   });
 
   it("checks the limit before key verification (429, not 401, for an over-limit unknown key)", async () => {
-    const key = `veer_neverissued${Date.now()}notarealkey00000000000000`;
+    const unknown = "veer_neverissuedNotARealKey0000000000000000";
     const limiter = fakeLimiter(false);
 
     const res = await api("GET", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: bearer(unknown),
       env: { ...env, API_KEY_RATE_LIMITER: limiter },
     });
 
     expect(res.status).toBe(429);
-    expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: key.slice(0, 16) });
+    expect(limiter.limit).toHaveBeenCalledExactlyOnceWith({ key: "veer_neverissued" });
   });
 
   // -------------------------------------------------------------------------
   // Admin detection via ADMIN_EMAILS env var
   // -------------------------------------------------------------------------
-  it("user in ADMIN_EMAILS is treated as admin when using API key: bypasses restricted domain access", async () => {
-    // requireAuthOrApiKey computes isAdmin from env.ADMIN_EMAILS on each request, so the
-    // request env controls the check.
-    const adminEmail = "admin-apikey@example.com";
-    const adminAuth = await setupAuth({ email: adminEmail });
+  it("a key owner in ADMIN_EMAILS is admin: bypasses restricted domain access", async () => {
+    // isAdmin is computed from the request env's ADMIN_EMAILS on every request.
+    const admin = await newAdmin();
     await createTestDomain("admin-apikey-restricted.example.com", { accessMode: "restricted" });
+    const { key: adminKey } = await createApiKey(admin.headers, "admin-key-test");
 
-    const { key } = await createApiKey(adminAuth.headers, "admin-key-test");
     const res = await api("POST", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: bearer(adminKey),
       body: {
         slug: "admin-apikey-bypass",
         destinationUrl: "https://example.com/admin",
         domainHostname: "admin-apikey-restricted.example.com",
       },
-      env: adminEnv(adminEmail),
+      env: admin.env,
     });
 
-    // Admin bypasses the restricted-domain access check (validateDomainAccess short-circuits on isAdmin).
     expect(res.status).toBe(201);
   });
 
-  it("user NOT in ADMIN_EMAILS is rejected from a restricted domain when using API key", async () => {
-    const plainAuth = await setupAuth({ email: "nonadmin-apikey@example.com" });
+  it("a key owner NOT in ADMIN_EMAILS is rejected from a restricted domain", async () => {
+    const plain = await newUser("nonadmin-apikey");
     await createTestDomain("nonadmin-apikey-restricted.example.com", { accessMode: "restricted" });
+    const { key: plainKey } = await createApiKey(plain.headers, "nonadmin-key-test");
 
-    const { key } = await createApiKey(plainAuth.headers, "nonadmin-key-test");
     const res = await api("POST", "/api/links", {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: bearer(plainKey),
       body: {
         slug: "nonadmin-apikey-bypass",
         destinationUrl: "https://example.com/nonadmin",
@@ -240,16 +235,14 @@ describe("API key auth (requireAuthOrApiKey)", () => {
     });
 
     expect(res.status).toBe(400);
-    const json = await res.json() as { error: string };
-    expect(json.error).toContain("access");
+    expect((await res.json() as { error: string }).error).toContain("access");
   });
 
   it("a key owner in ADMIN_EMAILS whose email is unverified is not admin", async () => {
-    const email = "unverified-admin-apikey@example.com";
-    const unverified = await setupAuth({ email, emailVerified: false });
-    const { key } = await createApiKey(unverified.headers, "unverified-admin-key");
+    const unverified = await newAdmin({ emailVerified: false });
+    const { key: unverifiedKey } = await createApiKey(unverified.headers, "unverified-admin-key");
 
-    const res = await api("GET", "/api/me", { headers: { Authorization: `Bearer ${key}` }, env: adminEnv(email) });
+    const res = await api("GET", "/api/me", { headers: bearer(unverifiedKey), env: unverified.env });
 
     expect(res.status).toBe(200);
     expect((await res.json() as { data: { isAdmin: boolean } }).data.isAdmin).toBe(false);

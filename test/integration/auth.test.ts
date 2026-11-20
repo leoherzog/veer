@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { getAuth } from "../../src/auth";
-import { setupAuth, api, adminEnv, uniq } from "../helpers";
+import { setupAuth, api, newAdmin, uniq } from "../helpers";
 
 describe("Auth guards", () => {
   // One row per auth middleware mount; admin routes have their own matrix in admin.test.ts.
@@ -24,36 +24,42 @@ describe("Auth guards", () => {
     const res = await api(method, path);
 
     expect(res.status).toBe(401);
-    expect((await res.json() as { error: string }).error).toBeDefined();
+    expect(await res.json()).toEqual({ error: "Unauthorized" });
   });
 
-  it("GET /api/me with valid session returns 200 with user data", async () => {
+  it("GET /api/me with a session returns exactly the AuthUser fields, never the raw Better Auth user", async () => {
     const auth = await setupAuth();
 
     const res = await api("GET", "/api/me", { headers: auth.headers });
 
     expect(res.status).toBe(200);
-    const body = await res.json() as { data: { id: string; email: string } };
-    expect(body.data.id).toBe(auth.user.id);
+    expect(await res.json()).toEqual({ data: { ...auth.user, image: null, isAdmin: false } });
   });
 });
 
 describe("Admin detection", () => {
-  /** isAdmin as /api/me reports it for a session user whose email is in ADMIN_EMAILS. */
-  async function isAdminWith(emailVerified: boolean) {
-    const email = `${uniq("admin-verify")}@example.com`;
-    const auth = await setupAuth({ email, emailVerified });
-    const res = await api("GET", "/api/me", { headers: auth.headers, env: adminEnv(email) });
+  /** isAdmin as /api/me reports it for a session user and env. */
+  async function isAdmin(auth: Awaited<ReturnType<typeof setupAuth>>, testEnv: Cloudflare.Env) {
+    const res = await api("GET", "/api/me", { headers: auth.headers, env: testEnv });
     expect(res.status).toBe(200);
     return (await res.json() as { data: { isAdmin: boolean } }).data.isAdmin;
   }
 
   it("a verified user whose email is in ADMIN_EMAILS is admin", async () => {
-    expect(await isAdminWith(true)).toBe(true);
+    const admin = await newAdmin();
+    expect(await isAdmin(admin, admin.env)).toBe(true);
   });
 
   it("an unverified user whose email is in ADMIN_EMAILS is not admin", async () => {
-    expect(await isAdminWith(false)).toBe(false);
+    const admin = await newAdmin({ emailVerified: false });
+    expect(await isAdmin(admin, admin.env)).toBe(false);
+  });
+
+  it("matches a comma-separated ADMIN_EMAILS entry despite whitespace and case", async () => {
+    const auth = await setupAuth({ email: `${uniq("listed")}@example.com` });
+    const adminEmails = ` someone@example.com ,  ${auth.user.email.toUpperCase()}  ,other@example.com`;
+
+    expect(await isAdmin(auth, { ...env, ADMIN_EMAILS: adminEmails })).toBe(true);
   });
 });
 
@@ -63,6 +69,8 @@ describe("Auth construction", () => {
   });
 
   it("answers 500 to an authenticated route when BETTER_AUTH_SECRET is unset", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => {});
+
     const res = await api("GET", "/api/me", { env: { ...env, BETTER_AUTH_SECRET: "" } });
 
     expect(res.status).toBe(500);

@@ -1,80 +1,38 @@
 import { describe, it, expect } from "vitest";
 import { getInstanceName, isDemoMode, isPasskeyEnabled } from "../../src/lib/branding";
 
-function envWith(instanceName: string | undefined): Env {
-  return { INSTANCE_NAME: instanceName } as unknown as Env;
-}
-
-function envWithDemo(demoMode: string | undefined): Env {
-  return { DEMO_MODE: demoMode } as unknown as Env;
-}
-
-function envWithPasskey(passkeyEnabled: string | undefined): Env {
-  return { PASSKEY_ENABLED: passkeyEnabled } as unknown as Env;
+/** An env holding only `key`, which is all these readers look at. */
+function envWith(key: "INSTANCE_NAME" | "DEMO_MODE" | "PASSKEY_ENABLED", value: string | undefined): Env {
+  return { [key]: value } as unknown as Env;
 }
 
 describe("getInstanceName", () => {
-  it("falls back to 'Veer' when INSTANCE_NAME is undefined", () => {
-    expect(getInstanceName(envWith(undefined))).toBe("Veer");
-  });
-
-  it("falls back to 'Veer' when INSTANCE_NAME is an empty string", () => {
-    expect(getInstanceName(envWith(""))).toBe("Veer");
-  });
-
-  it("falls back to 'Veer' when INSTANCE_NAME is only whitespace", () => {
-    expect(getInstanceName(envWith("   "))).toBe("Veer");
-  });
-
-  it("returns the configured name when INSTANCE_NAME is set", () => {
-    expect(getInstanceName(envWith("Acme Links"))).toBe("Acme Links");
-  });
-
-  it("trims surrounding whitespace from a configured name", () => {
-    expect(getInstanceName(envWith("  Acme  "))).toBe("Acme");
+  it.each([
+    [undefined, "Veer"],
+    ["", "Veer"],
+    ["   ", "Veer"],
+    ["Acme Links", "Acme Links"],
+    ["  Acme  ", "Acme"],
+  ])("maps INSTANCE_NAME %j to %j", (value, name) => {
+    expect(getInstanceName(envWith("INSTANCE_NAME", value))).toBe(name);
   });
 });
 
-describe("isDemoMode", () => {
-  it("returns true when DEMO_MODE is 'true'", () => {
-    expect(isDemoMode(envWithDemo("true"))).toBe(true);
-  });
-
-  it("trims whitespace around 'true'", () => {
-    expect(isDemoMode(envWithDemo("  true  "))).toBe(true);
-  });
-
-  it("returns false when DEMO_MODE is an empty string", () => {
-    expect(isDemoMode(envWithDemo(""))).toBe(false);
-  });
-
-  it("returns false when DEMO_MODE is undefined", () => {
-    expect(isDemoMode(envWithDemo(undefined))).toBe(false);
-  });
-
-  it("is case-sensitive — 'TRUE' returns false", () => {
-    expect(isDemoMode(envWithDemo("TRUE"))).toBe(false);
-  });
-
-  it("returns false for unrelated values", () => {
-    expect(isDemoMode(envWithDemo("false"))).toBe(false);
-    expect(isDemoMode(envWithDemo("1"))).toBe(false);
-    expect(isDemoMode(envWithDemo("yes"))).toBe(false);
-  });
-});
-
-describe("isPasskeyEnabled", () => {
-  it("returns true when PASSKEY_ENABLED is 'true'", () => {
-    expect(isPasskeyEnabled(envWithPasskey("true"))).toBe(true);
-  });
-
-  it("trims whitespace around 'true'", () => {
-    expect(isPasskeyEnabled(envWithPasskey("  true  "))).toBe(true);
-  });
-
-  it("returns false when PASSKEY_ENABLED is unset, empty or anything else", () => {
-    for (const value of [undefined, "", "false", "TRUE", "1"]) {
-      expect(isPasskeyEnabled(envWithPasskey(value))).toBe(false);
-    }
+// Both flags are on only for "true", trimmed and case-sensitive.
+describe.each([
+  ["isDemoMode", "DEMO_MODE", isDemoMode],
+  ["isPasskeyEnabled", "PASSKEY_ENABLED", isPasskeyEnabled],
+] as const)("%s", (_name, key, read) => {
+  it.each([
+    ["true", true],
+    ["  true  ", true],
+    [undefined, false],
+    ["", false],
+    ["TRUE", false],
+    ["false", false],
+    ["1", false],
+    ["yes", false],
+  ])(`maps ${key} %j to %j`, (value, on) => {
+    expect(read(envWith(key, value))).toBe(on);
   });
 });

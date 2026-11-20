@@ -1,14 +1,14 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx } from "../helpers";
+import { setupAuth, api } from "../helpers";
 
 describe("App-level concerns", () => {
   // ── Security headers ─────────────────────────────────────────────────
 
   describe("Security headers", () => {
     it.each(["/api/config", "/nonexistent-page"])("sets the security headers on %s", async (path) => {
-      const res = await app.request(path, {}, env);
+      const res = await api("GET", path);
 
       expect(res.headers.get("X-Content-Type-Options")).toBe("nosniff");
       expect(res.headers.get("X-Frame-Options")).toBe("DENY");
@@ -17,10 +17,7 @@ describe("App-level concerns", () => {
 
     it("carries the headers on an HTTPException error response", async () => {
       const auth = await setupAuth();
-      const res = await app.request("/api/keys/does-not-exist", {
-        method: "DELETE",
-        headers: auth.headers,
-      }, env, mockExecutionCtx());
+      const res = await api("DELETE", "/api/keys/does-not-exist", { headers: auth.headers });
 
       expect(res.status).toBe(404);
       expect(res.headers.get("Content-Security-Policy")).toContain("default-src 'self'");
@@ -28,18 +25,19 @@ describe("App-level concerns", () => {
     });
 
     it("carries the headers on a 500 from an unhandled error", async () => {
+      vi.spyOn(console, "error").mockImplementation(() => {});
       // An unparseable BETTER_AUTH_URL makes getAuth() throw inside the auth
       // middleware, which is the shortest route to the generic 500 handler.
-      const brokenEnv = { ...env, BETTER_AUTH_URL: "not-a-url" };
-      const res = await app.request("/api/me", {}, brokenEnv, mockExecutionCtx());
+      const res = await api("GET", "/api/me", { env: { ...env, BETTER_AUTH_URL: "not-a-url" } });
 
       expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "Internal server error" });
       expect(res.headers.get("Content-Security-Policy")).toContain("default-src 'self'");
       expect(res.headers.get("X-Frame-Options")).toBe("DENY");
     });
 
     it("CSP keeps connect-src same-origin and locks down framing and forms", async () => {
-      const res = await app.request("/api/config", {}, env);
+      const res = await api("GET", "/api/config");
       const csp = res.headers.get("Content-Security-Policy") ?? "";
 
       // The choropleth's topojson is served from public/data, not a CDN.
@@ -56,6 +54,7 @@ describe("App-level concerns", () => {
 
   // ── Body size caps ───────────────────────────────────────────────────
 
+  // These build raw requests: the caps key on the body stream and Content-Length.
   describe("Body size caps", () => {
     it("rejects a streamed body over 10 KB that carries no Content-Length", async () => {
       const chunk = new TextEncoder().encode("x".repeat(6_000));
@@ -85,13 +84,14 @@ describe("App-level concerns", () => {
     });
 
     it("caps bulk at 100 KB instead of 10 KB", async () => {
-      const post = (size: number) => app.request("/api/bulk", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: "x".repeat(size),
-      }, env, mockExecutionCtx());
+      const { headers } = await setupAuth();
+      const post = (size: number) => api("POST", "/api/bulk", { headers, body: "x".repeat(size) });
 
-      expect((await post(50_000)).status).not.toBe(413);
+      // A 50 KB body is read in full and reaches the JSON parser.
+      const under = await post(50_000);
+      expect(under.status).toBe(400);
+      expect(await under.json()).toEqual({ error: "Invalid JSON body" });
+
       expect((await post(100_001)).status).toBe(413);
     });
   });
@@ -99,13 +99,12 @@ describe("App-level concerns", () => {
   // ── Error handling ───────────────────────────────────────────────────
 
   describe("Error handling", () => {
-    it("an unknown API path returns a JSON 404 for every method, not the SPA shell", async () => {
-      for (const method of ["GET", "POST", "DELETE"]) {
-        const res = await app.request("/api/no/such/thing", { method }, env, mockExecutionCtx());
-        expect(res.status).toBe(404);
-        expect(res.headers.get("content-type")).toContain("application/json");
-        expect(await res.json()).toEqual({ error: "Not found" });
-      }
+    it.each(["GET", "POST", "DELETE"])("answers %s on an unknown API path with a JSON 404, not the SPA shell", async (method) => {
+      const res = await api(method, "/api/no/such/thing");
+
+      expect(res.status).toBe(404);
+      expect(res.headers.get("content-type")).toContain("application/json");
+      expect(await res.json()).toEqual({ error: "Not found" });
     });
   });
 });

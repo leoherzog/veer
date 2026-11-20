@@ -55,9 +55,10 @@ describe("requestVisitor", () => {
   });
 
   it("reads country, city and region from request.cf", () => {
-    const request = new Request("https://veer.ing/x", { cf: { country: "DE", city: "Berlin", region: "Berlin" } });
+    // Distinct values, so a swapped city and region fails.
+    const request = new Request("https://veer.ing/x", { cf: { country: "DE", city: "Munich", region: "Bavaria" } });
 
-    expect(requestVisitor(request)).toMatchObject({ country: "DE", city: "Berlin", region: "Berlin" });
+    expect(requestVisitor(request)).toMatchObject({ country: "DE", city: "Munich", region: "Bavaria" });
   });
 
   it("falls back to empty strings, not null/undefined, for every missing header or cf field", () => {

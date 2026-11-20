@@ -1,6 +1,14 @@
+// Shared test helpers: requests against the app, and fixtures inserted through
+// Drizzle into the pool's D1, so schema defaults apply and a renamed column
+// fails the typecheck. None takes a db or env argument.
 import { env } from "cloudflare:workers";
+import { createExecutionContext } from "cloudflare:test";
 import { vi, type Mock } from "vitest";
+import { makeSignature } from "better-auth/crypto";
 import { app } from "../src/index";
+import { getDb } from "../src/db";
+import { domainConfig, links, linkStats, session, teamMembers, teams, user } from "../src/db/schema";
+import { DEMO_USER } from "../src/lib/demo";
 import type { CachedRedirect } from "../src/services/kv-cache";
 
 /** JSON body type used in integration tests. */
@@ -9,10 +17,10 @@ export type JsonBody = Record<string, unknown>;
 let userCounter = 0;
 let seq = 0;
 
-/** Unique identifier fragment for emails, slugs and names. */
+/** Unique identifier fragment for emails, slugs and names. Storage is per test file, so a counter suffices. */
 export function uniq(prefix: string): string {
   seq++;
-  return `${prefix}-${Date.now().toString(36)}-${seq}`;
+  return `${prefix}-${seq}`;
 }
 
 /** Env in which the given email is treated as an admin. */
@@ -20,59 +28,46 @@ export function adminEnv(email: string): Cloudflare.Env {
   return { ...env, ADMIN_EMAILS: email };
 }
 
-/**
- * Sign a session token the same way Better Auth does:
- * HMAC-SHA256(rawToken, secret) → base64 → "rawToken.signature"
- */
-async function signSessionToken(token: string, secret: string): Promise<string> {
-  const encoder = new TextEncoder();
-  const key = await crypto.subtle.importKey(
-    "raw",
-    encoder.encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
-  const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(token));
-  const base64 = btoa(String.fromCharCode(...new Uint8Array(signature)));
-  return `${token}.${base64}`;
-}
+/** The pool env with demo mode on. */
+export const demoEnv: Cloudflare.Env = { ...env, DEMO_MODE: "true" };
 
 /**
- * Create a test user + session directly in D1 and return headers carrying the
- * session cookie, signed the way Better Auth signs it. The email is verified
- * unless `emailVerified` is false, and must be unique: `user.email` is.
+ * Create a user and session in D1 and return headers carrying the session
+ * cookie, signed as Better Auth signs it. The email defaults to verified and
+ * must be unique, since `user.email` is.
  */
-export async function setupAuth(overrides: { email?: string; name?: string; emailVerified?: boolean } = {}) {
+export async function setupAuth(overrides: Partial<typeof user.$inferInsert> = {}) {
   userCounter++;
-  const id = `test-user-${userCounter}-${Date.now()}`;
-  const email = overrides.email ?? `${id}@example.com`;
-  const name = overrides.name ?? "Test User";
-  const now = Math.floor(Date.now() / 1000);
+  const now = new Date();
+  // `??` rather than spread order, so an override passed as undefined keeps its default.
+  const row = {
+    ...overrides,
+    id: overrides.id ?? `test-user-${userCounter}`,
+    name: overrides.name ?? "Test User",
+    emailVerified: overrides.emailVerified ?? true,
+    createdAt: overrides.createdAt ?? now,
+    updatedAt: overrides.updatedAt ?? now,
+  };
+  const email = row.email ?? `${row.id}@example.com`;
+  const db = getDb(env.DB);
+  await db.insert(user).values({ ...row, email });
 
-  await env.DB
-    .prepare(
-      `INSERT INTO user (id, name, email, emailVerified, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .bind(id, name, email, overrides.emailVerified === false ? 0 : 1, now, now)
-    .run();
-
-  const rawToken = `test-token-${id}`;
-  await env.DB
-    .prepare(
-      `INSERT INTO session (id, expiresAt, token, userId, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .bind(`session-${id}`, now + 86400, rawToken, id, now, now)
-    .run();
+  const rawToken = `test-token-${row.id}`;
+  await db.insert(session).values({
+    id: `session-${row.id}`,
+    expiresAt: new Date(now.getTime() + 86_400_000),
+    token: rawToken,
+    userId: row.id,
+    createdAt: now,
+    updatedAt: now,
+  });
 
   const headers: Record<string, string> = {
-    Cookie: `better-auth.session_token=${await signSessionToken(rawToken, env.BETTER_AUTH_SECRET)}`,
+    Cookie: `better-auth.session_token=${rawToken}.${await makeSignature(rawToken, env.BETTER_AUTH_SECRET)}`,
     "Content-Type": "application/json",
   };
 
-  return { user: { id, name, email }, headers };
+  return { user: { id: row.id, name: row.name, email }, headers };
 }
 
 /** A fresh authenticated user with a unique email. */
@@ -80,95 +75,70 @@ export function newUser(label = "user") {
   return setupAuth({ email: `${uniq(label)}@example.com` });
 }
 
-/** Insert a link directly into D1 for test setup. */
-export async function createTestLink(
-  fields: { userId: string } & Partial<{
-    slug: string;
-    destinationUrl: string;
-    redirectType: number;
-    title: string | null;
-    domainHostname: string | null;
-    expiresAt: number | null;
-    maxClicks: number | null;
-    password: string | null;
-    isInternal: boolean;
-    ogTitle: string | null;
-    ogDescription: string | null;
-    ogImage: string | null;
-    teamId: string | null;
-  }>
-) {
-  const id = crypto.randomUUID();
-  const slug = fields.slug ?? `test-${id.slice(0, 8)}`;
-  const destinationUrl = fields.destinationUrl ?? "https://example.com";
-  const now = Math.floor(Date.now() / 1000);
-
-  await env.DB
-    .prepare(
-      `INSERT INTO links (id, userId, slug, destinationUrl, redirectType, title, createdAt, updatedAt, domainHostname, expiresAt, maxClicks, password, isInternal, ogTitle, ogDescription, ogImage, teamId)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .bind(
-      id, fields.userId, slug, destinationUrl, fields.redirectType ?? 302, fields.title ?? null, now, now,
-      fields.domainHostname ?? null, fields.expiresAt ?? null,
-      fields.maxClicks ?? null, fields.password ?? null, fields.isInternal ? 1 : 0,
-      fields.ogTitle ?? null, fields.ogDescription ?? null, fields.ogImage ?? null, fields.teamId ?? null
-    )
-    .run();
-
-  return { id, slug, destinationUrl };
+/** A fresh authenticated user plus the env that lists their email in ADMIN_EMAILS. */
+export async function newAdmin(overrides: Partial<typeof user.$inferInsert> = {}) {
+  const auth = await setupAuth({ email: `${uniq("admin")}@example.com`, ...overrides });
+  return { ...auth, env: adminEnv(auth.user.email) };
 }
 
-/** Insert a domain_config row directly into D1 for test setup. */
-export async function createTestDomain(
-  hostname: string,
-  overrides: Partial<{
-    rootRedirect: string | null;
-    notFoundRedirect: string | null;
-    accessMode: string;
-  }> = {}
-) {
-  await env.DB
-    .prepare(
-      `INSERT OR IGNORE INTO domain_config (hostname, rootRedirect, notFoundRedirect, accessMode, updatedAt)
-       VALUES (?, ?, ?, ?, ?)`
-    )
-    .bind(
-      hostname,
-      overrides.rootRedirect ?? null,
-      overrides.notFoundRedirect ?? null,
-      overrides.accessMode ?? "all",
-      Math.floor(Date.now() / 1000)
-    )
-    .run();
+/** Insert the user row DEMO_USER stands for, which links owned by the demo user need for their FK. */
+export async function createDemoUser() {
+  const now = new Date();
+  await getDb(env.DB).insert(user).values({
+    id: DEMO_USER.id,
+    name: DEMO_USER.name,
+    email: DEMO_USER.email,
+    image: DEMO_USER.image,
+    createdAt: now,
+    updatedAt: now,
+  });
 }
 
-/** Add a membership row directly, bypassing the invite flow. */
+/** Insert a link for test setup. The slug defaults to one derived from the id. */
+export async function createTestLink(fields: { userId: string } & Partial<typeof links.$inferInsert>) {
+  const now = new Date();
+  const id = fields.id ?? crypto.randomUUID();
+  const row = {
+    ...fields,
+    id,
+    slug: fields.slug ?? `test-${id.slice(0, 8)}`,
+    destinationUrl: fields.destinationUrl ?? "https://example.com",
+    createdAt: fields.createdAt ?? now,
+    updatedAt: fields.updatedAt ?? now,
+  };
+  await getDb(env.DB).insert(links).values(row);
+  return { id: row.id, slug: row.slug, destinationUrl: row.destinationUrl };
+}
+
+/** Insert a domain_config row; a hostname that already has one is left as it is. */
+export async function createTestDomain(hostname: string, overrides: Partial<typeof domainConfig.$inferInsert> = {}) {
+  await getDb(env.DB).insert(domainConfig)
+    .values({ hostname, updatedAt: new Date(), ...overrides })
+    .onConflictDoNothing();
+}
+
+/** Add or update a membership row, bypassing the invite flow. */
 export async function addTestTeamMember(teamId: string, userId: string, role: "admin" | "member" = "member") {
-  await env.DB
-    .prepare("INSERT OR REPLACE INTO team_members (teamId, userId, role, joinedAt) VALUES (?, ?, ?, ?)")
-    .bind(teamId, userId, role, Math.floor(Date.now() / 1000))
-    .run();
+  await getDb(env.DB).insert(teamMembers)
+    .values({ teamId, userId, role, joinedAt: new Date() })
+    .onConflictDoUpdate({ target: [teamMembers.teamId, teamMembers.userId], set: { role } });
 }
 
-/** Insert a team directly into D1 with the given user as its only member. */
+/** Insert a team with the given user as its only member. */
 export async function createTestTeam(userId: string, role: "admin" | "member" = "admin") {
   const id = crypto.randomUUID();
   const name = `Team ${id.slice(0, 8)}`;
-  const now = Math.floor(Date.now() / 1000);
-  await env.DB.prepare("INSERT INTO teams (id, name, createdAt, updatedAt) VALUES (?, ?, ?, ?)")
-    .bind(id, name, now, now)
-    .run();
+  const now = new Date();
+  await getDb(env.DB).insert(teams).values({ id, name, createdAt: now, updatedAt: now });
   await addTestTeamMember(id, userId, role);
   return { id, name };
 }
 
-/** Insert a click stat row directly into D1 for the given link. */
+/** Set a link's click count for one YYYY-MM-DD date. */
 export async function insertClickStat(linkId: string, clicks: number, date: string) {
-  await env.DB
-    .prepare("INSERT OR REPLACE INTO link_stats (linkId, date, clicks) VALUES (?, ?, ?)")
-    .bind(linkId, date, clicks)
-    .run();
+  await getDb(env.DB).insert(linkStats)
+    .values({ linkId, date, clicks })
+    .onConflictDoUpdate({ target: [linkStats.linkId, linkStats.date], set: { clicks } });
 }
 
 /** UTC date `n` days before today as YYYY-MM-DD, the link_stats.date format. */
@@ -203,26 +173,31 @@ export function cachedRedirect(overrides: Partial<CachedRedirect> = {}): CachedR
   };
 }
 
-/** A request to the app with `request.cf` set, for app.fetch. */
-export function cfRequest(
-  path: string,
-  { headers, cf }: { headers?: Record<string, string>; cf?: Record<string, unknown> } = {}
-): Request {
-  return new Request(`http://localhost${path}`, { headers, cf });
-}
-
-/** Request the app, JSON-encoding `body`, against the test env unless overridden. */
+/**
+ * Request the app against the test env unless overridden. A string or
+ * URLSearchParams body is sent as is; any other body is JSON-encoded. `cf`
+ * becomes `request.cf`.
+ */
 export function api(
   method: string,
   path: string,
-  opts: { body?: unknown; headers?: Record<string, string>; env?: Cloudflare.Env; ctx?: ExecutionContext } = {}
+  opts: {
+    body?: unknown;
+    headers?: Record<string, string>;
+    env?: Cloudflare.Env;
+    ctx?: ExecutionContext;
+    cf?: Record<string, unknown>;
+  } = {}
 ) {
   const headers: Record<string, string> = { ...opts.headers };
   const init: RequestInit = { method, headers };
-  if (opts.body !== undefined) {
+  if (typeof opts.body === "string" || opts.body instanceof URLSearchParams) {
+    init.body = opts.body;
+  } else if (opts.body !== undefined) {
     init.body = JSON.stringify(opts.body);
     headers["Content-Type"] ||= "application/json";
   }
+  if (opts.cf) init.cf = opts.cf;
   return app.request(path, init, opts.env ?? env, opts.ctx ?? mockExecutionCtx());
 }
 
@@ -244,15 +219,8 @@ export function fakeLimiter(success = true): { limit: Mock<(options: RateLimitOp
  * A test that asserts on a background write uses cloudflare:test's createExecutionContext instead.
  */
 export function mockExecutionCtx(): ExecutionContext {
-  return {
-    waitUntil: (p: Promise<unknown>) => {
-      p.catch(() => {});
-    },
-    passThroughOnException: () => {},
-    exports: {} as Cloudflare.Exports,
-    props: {},
-    mapVirtualHost: () => "",
-    tracing: {} as Tracing,
-    abort: () => {},
-  };
+  const ctx = createExecutionContext();
+  const waitUntil = ctx.waitUntil.bind(ctx);
+  ctx.waitUntil = (promise) => waitUntil(promise.catch(() => {}));
+  return ctx;
 }
