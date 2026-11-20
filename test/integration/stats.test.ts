@@ -1,6 +1,6 @@
 import { env } from "cloudflare:workers";
-import { describe, it, expect, beforeAll, vi } from "vitest";
-import { setupAuth, createTestLink, api, insertClickStat, isoDaysAgo, dayLabel } from "../helpers";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import { setupAuth, newUser, createTestLink, api, insertClickStat, isoDaysAgo, dayLabel } from "../helpers";
 import type { AERow } from "../../src/services/analytics";
 
 // vitest.config.ts pins the AE credentials empty, so a request takes the D1
@@ -52,6 +52,15 @@ describe("Stats API", () => {
     userId = auth.user.id;
   });
 
+  // The test side and the route each read the clock for "today" and "this hour"; a
+  // frozen clock keeps them in the same bucket across a midnight or hour boundary.
+  beforeEach(() => {
+    vi.setSystemTime(Date.now());
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   // -------------------------------------------------------------------------
   // Middleware: linkId validation + ownership
   // -------------------------------------------------------------------------
@@ -59,22 +68,22 @@ describe("Stats API", () => {
     it("returns 400 for an invalid linkId format (not UUID)", async () => {
       const res = await api("GET", "/api/stats/not-a-uuid/timeseries", { headers });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Invalid link ID" });
     });
 
     it("returns 404 for a well-formed UUID that does not exist", async () => {
       const fakeId = "00000000-0000-0000-0000-000000000000";
       const res = await api("GET", `/api/stats/${fakeId}/timeseries`, { headers });
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Link not found" });
     });
 
     it("returns 404 for a link owned by a different user", async () => {
-      const otherAuth = await setupAuth({ email: "stats-other@test.com" });
-      const link = await createTestLink({
-        slug: "stats-other-link",
-        userId: otherAuth.user.id,
-      });
+      const other = await newUser("stats-other");
+      const link = await createTestLink({ userId: other.user.id });
       const res = await api("GET", `/api/stats/${link.id}/timeseries`, { headers });
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Link not found" });
     });
   });
 
@@ -121,7 +130,7 @@ describe("Stats API", () => {
   // -------------------------------------------------------------------------
   describe("GET /api/stats/:linkId/timeseries (D1 fallback)", () => {
     it("fills every day of the window, with zero for a day without clicks", async () => {
-      const link = await createTestLink({ slug: "ts-with-data", userId });
+      const link = await createTestLink({ userId });
       await insertClickStat(link.id, 5, isoDaysAgo(5));
       await insertClickStat(link.id, 12, isoDaysAgo(4));
       await insertClickStat(link.id, 8, isoDaysAgo(2));
@@ -136,20 +145,19 @@ describe("Stats API", () => {
     });
 
     it("excludes rows older than the window", async () => {
-      const link = await createTestLink({ slug: "ts-days-filter", userId });
+      const link = await createTestLink({ userId });
       await insertClickStat(link.id, 999, "2020-01-01");
       await insertClickStat(link.id, 42, isoDaysAgo(2));
 
       const res = await api("GET", `/api/stats/${link.id}/timeseries?days=7`, { headers });
       const json = await res.json() as Json<Series>;
-      expect(json.data.clicks).not.toContain(999);
-      expect(json.data.clicks.reduce((s, n) => s + n, 0)).toBe(42);
+      expect(json.data).toEqual({ labels: dailyLabels(7), clicks: [0, 0, 0, 0, 0, 42, 0, 0] });
     });
   });
 
   describe("GET /api/stats/:linkId/summary (D1 fallback)", () => {
     it("aggregates totalClicks from D1 link_stats rows", async () => {
-      const link = await createTestLink({ slug: "sum-clicks", userId });
+      const link = await createTestLink({ userId });
       await insertClickStat(link.id, 10, isoDaysAgo(5));
       await insertClickStat(link.id, 20, isoDaysAgo(4));
       await insertClickStat(link.id, 30, isoDaysAgo(3));
@@ -161,7 +169,7 @@ describe("Stats API", () => {
     });
 
     it("respects days parameter and excludes old stats rows", async () => {
-      const link = await createTestLink({ slug: "sum-days-filter", userId });
+      const link = await createTestLink({ userId });
       await insertClickStat(link.id, 500, "2020-06-01");
       await insertClickStat(link.id, 15, isoDaysAgo(3));
 
@@ -169,20 +177,6 @@ describe("Stats API", () => {
       const json = await res.json() as Json<{ totalClicks: number; period: { days: number } }>;
       expect(json.data.totalClicks).toBe(15);
       expect(json.data.period.days).toBe(7);
-    });
-
-    it("caps days at 90", async () => {
-      const link = await createTestLink({ slug: "sum-days-cap", userId });
-      const res = await api("GET", `/api/stats/${link.id}/summary?days=999`, { headers });
-      const json = await res.json() as Json<{ period: { days: number } }>;
-      expect(json.data.period.days).toBe(90);
-    });
-
-    it("falls back to default 30 days when days param is invalid", async () => {
-      const link = await createTestLink({ slug: "sum-invalid-days", userId });
-      const res = await api("GET", `/api/stats/${link.id}/summary?days=notanumber`, { headers });
-      const json = await res.json() as Json<{ period: { days: number } }>;
-      expect(json.data.period.days).toBe(30);
     });
   });
 
@@ -193,20 +187,21 @@ describe("Stats API", () => {
     it("timeseries falls back to D1 data when the AE fetch rejects", async () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       const fetchSpy = vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("network down"));
-      const link = await createTestLink({ slug: "ts-ae-fail", userId });
+      const link = await createTestLink({ userId });
       await insertClickStat(link.id, 17, isoDaysAgo(2));
 
       const res = await api("GET", `/api/stats/${link.id}/timeseries?days=30`, { headers, env: aeEnv });
       const json = await res.json() as Json<Series>;
       expect(json.fallback).toBe(true);
-      expect(json.data.clicks).toContain(17);
+      // Index 28 of 31 is two days ago.
+      expect(json.data).toEqual({ labels: dailyLabels(30), clicks: Array.from({ length: 31 }, (_, i) => i === 28 ? 17 : 0) });
       expect(fetchSpy.mock.calls[0][0]).toContain("/analytics_engine/sql");
     });
 
     it("logs the AE response text and the route on a non-2xx answer", async () => {
       const log = vi.spyOn(console, "error").mockImplementation(() => {});
       vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("bad query", { status: 422 }));
-      const link = await createTestLink({ slug: "sum-ae-422", userId });
+      const link = await createTestLink({ userId });
       await insertClickStat(link.id, 11, isoDaysAgo(2));
       await insertClickStat(link.id, 22, isoDaysAgo(1));
 
@@ -221,7 +216,7 @@ describe("Stats API", () => {
     it("falls back when a 200 body has no data array", async () => {
       vi.spyOn(console, "error").mockImplementation(() => {});
       vi.spyOn(globalThis, "fetch").mockImplementation(async () => Response.json({ success: true }));
-      const link = await createTestLink({ slug: "ref-ae-nodata", userId });
+      const link = await createTestLink({ userId });
 
       const res = await api("GET", `/api/stats/${link.id}/referrers`, { headers, env: aeEnv });
       expect(await res.json()).toEqual({ data: [], fallback: true });
@@ -328,7 +323,7 @@ describe("Stats API", () => {
         { referrer: "https://news.example.com/b", clicks: "2" },
         { referrer: "https://other.example.org/", clicks: "4" },
       ]);
-      const link = await createTestLink({ slug: "ref-ae-ok", userId });
+      const link = await createTestLink({ userId });
 
       const res = await api("GET", `/api/stats/${link.id}/referrers?days=7`, { headers, env: aeEnv });
       expect(await res.json()).toEqual({

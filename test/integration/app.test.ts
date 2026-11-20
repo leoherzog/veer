@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, it, expect, vi } from "vitest";
 import { app } from "../../src/index";
 import { setupAuth, api } from "../helpers";
+import { CSP } from "../../src/lib/csp";
 
 describe("App-level concerns", () => {
   // ── Security headers ─────────────────────────────────────────────────
@@ -49,6 +50,18 @@ describe("App-level concerns", () => {
       expect(csp).toContain("base-uri 'self'");
       expect(csp).toContain("form-action 'self'");
       expect(csp).toContain("object-src 'none'");
+    });
+
+    it("script-src carries the SHA-256 of every inline script in the SPA shell", async () => {
+      const html = await (await env.ASSETS.fetch("http://localhost/index.html")).text();
+      const inline = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+      expect(inline.length).toBeGreaterThan(0);
+
+      const scriptSrc = CSP.split("; ").find((d) => d.startsWith("script-src ")) ?? "";
+      for (const script of inline) {
+        const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(script));
+        expect(scriptSrc).toContain(`'sha256-${new Uint8Array(digest).toBase64()}'`);
+      }
     });
   });
 

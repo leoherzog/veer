@@ -3,11 +3,12 @@
 // fails the typecheck. None takes a db or env argument.
 import { env } from "cloudflare:workers";
 import { createExecutionContext } from "cloudflare:test";
-import { vi, type Mock } from "vitest";
+import { expect, vi, type Mock } from "vitest";
 import { makeSignature } from "better-auth/crypto";
+import { and, eq, sql } from "drizzle-orm";
 import { app } from "../src/index";
 import { getDb } from "../src/db";
-import { domainConfig, links, linkStats, session, teamMembers, teams, user } from "../src/db/schema";
+import { domainAccess, domainConfig, links, linkStats, session, teamMembers, teams, user } from "../src/db/schema";
 import { DEMO_USER } from "../src/lib/demo";
 import type { CachedRedirect } from "../src/services/kv-cache";
 
@@ -117,11 +118,24 @@ export async function createTestDomain(hostname: string, overrides: Partial<type
     .onConflictDoNothing();
 }
 
+/** Grant an email access to a restricted domain. The email is stored lowercased, as the routes store it. */
+export async function createDomainAccess(hostname: string, email: string) {
+  await getDb(env.DB).insert(domainAccess)
+    .values({ hostname, email: email.toLowerCase() })
+    .onConflictDoNothing();
+}
+
 /** Add or update a membership row, bypassing the invite flow. */
 export async function addTestTeamMember(teamId: string, userId: string, role: "admin" | "member" = "member") {
   await getDb(env.DB).insert(teamMembers)
     .values({ teamId, userId, role, joinedAt: new Date() })
     .onConflictDoUpdate({ target: [teamMembers.teamId, teamMembers.userId], set: { role } });
+}
+
+/** Delete a membership row, ending the user's access to the team's links. */
+export async function removeTestTeamMember(teamId: string, userId: string) {
+  await getDb(env.DB).delete(teamMembers)
+    .where(and(eq(teamMembers.teamId, teamId), eq(teamMembers.userId, userId)));
 }
 
 /** Insert a team with the given user as its only member. */
@@ -134,11 +148,40 @@ export async function createTestTeam(userId: string, role: "admin" | "member" = 
   return { id, name };
 }
 
+/**
+ * A team whose admin owns one link, with `memberId` as a plain member, so the
+ * member reaches the link only through the team.
+ */
+export async function createTeamLink(memberId: string) {
+  const owner = await setupAuth();
+  const team = await createTestTeam(owner.user.id);
+  await addTestTeamMember(team.id, memberId);
+  const link = await createTestLink({ userId: owner.user.id, teamId: team.id });
+  return { team, link };
+}
+
 /** Set a link's click count for one YYYY-MM-DD date. */
 export async function insertClickStat(linkId: string, clicks: number, date: string) {
   await getDb(env.DB).insert(linkStats)
     .values({ linkId, date, clicks })
     .onConflictDoUpdate({ target: [linkStats.linkId, linkStats.date], set: { clicks } });
+}
+
+/** A link's click count summed over every link_stats row, so no test-side date can miss the day the route wrote. */
+export async function totalClicks(linkId: string): Promise<number> {
+  const row = await getDb(env.DB)
+    .select({ clicks: sql<number>`coalesce(sum(${linkStats.clicks}), 0)` })
+    .from(linkStats)
+    .where(eq(linkStats.linkId, linkId))
+    .get();
+  return row?.clicks ?? 0;
+}
+
+/** Assert the response is the SPA shell from ASSETS, which a 500 or a redirect would fail. */
+export async function expectSpaShell(res: Response) {
+  expect(res.status).toBe(200);
+  expect(res.headers.get("Location")).toBeNull();
+  expect(await res.text()).toContain('src="/dist/app.js"');
 }
 
 /** UTC date `n` days before today as YYYY-MM-DD, the link_stats.date format. */

@@ -1,7 +1,11 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, createTestLink, createTestDomain, createTestTeam, mockExecutionCtx, api, insertClickStat, isoDaysAgo } from "../helpers";
+import { eq } from "drizzle-orm";
+import {
+  setupAuth, newUser, createTestLink, createTestDomain, createTeamLink, removeTestTeamMember, api, insertClickStat, isoDaysAgo,
+} from "../helpers";
+import { getDb } from "../../src/db";
+import { campaigns, linkCampaigns } from "../../src/db/schema";
 import { CAMPAIGN_LINKS_MAX } from "../../src/lib/limits";
 
 // ---------------------------------------------------------------------------
@@ -9,32 +13,28 @@ import { CAMPAIGN_LINKS_MAX } from "../../src/lib/limits";
 // ---------------------------------------------------------------------------
 
 /** Insert a campaign directly into D1. */
-async function createTestCampaign(
-  userId: string,
-  overrides: Partial<{ id: string; name: string; description: string | null }> = {}
-) {
-  const id = overrides.id ?? crypto.randomUUID();
-  const name = overrides.name ?? `Campaign ${id.slice(0, 8)}`;
-  const description = overrides.description ?? null;
-  const now = Math.floor(Date.now() / 1000);
-
-  await env.DB.prepare(
-    `INSERT INTO campaigns (id, userId, name, description, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?)`
-  )
-    .bind(id, userId, name, description, now, now)
-    .run();
-
-  return { id, userId, name, description, createdAt: now, updatedAt: now };
+async function createTestCampaign(userId: string, overrides: { name?: string; description?: string | null } = {}) {
+  const now = new Date();
+  return getDb(env.DB).insert(campaigns).values({
+    id: crypto.randomUUID(),
+    userId,
+    name: overrides.name ?? "Campaign",
+    description: overrides.description ?? null,
+    createdAt: now,
+    updatedAt: now,
+  }).returning().get();
 }
 
 /** Associate a link with a campaign directly in D1. */
 async function linkToCampaign(linkId: string, campaignId: string) {
-  await env.DB.prepare(
-    `INSERT OR IGNORE INTO link_campaigns (linkId, campaignId) VALUES (?, ?)`
-  )
-    .bind(linkId, campaignId)
-    .run();
+  await getDb(env.DB).insert(linkCampaigns).values({ linkId, campaignId }).onConflictDoNothing();
+}
+
+/** A campaign's name and link count, or undefined once the row is gone. */
+async function campaignState(id: string) {
+  const db = getDb(env.DB);
+  const row = await db.select({ name: campaigns.name }).from(campaigns).where(eq(campaigns.id, id)).get();
+  return row && { name: row.name, links: await db.$count(linkCampaigns, eq(linkCampaigns.campaignId, id)) };
 }
 
 // ---------------------------------------------------------------------------
@@ -56,9 +56,8 @@ describe("Campaigns API", () => {
   // -------------------------------------------------------------------------
   describe("GET /api/campaigns", () => {
     it("returns an empty list when user has no campaigns", async () => {
-      // Use a fresh user with no campaigns
-      const freshAuth = await setupAuth({ email: "campaigns-empty@test.com" });
-      const res = await api("GET", "/api/campaigns", { headers: freshAuth.headers });
+      const fresh = await newUser("campaigns-empty");
+      const res = await api("GET", "/api/campaigns", { headers: fresh.headers });
       expect(res.status).toBe(200);
       const json = await res.json() as { data: unknown[] };
       expect(json.data).toEqual([]);
@@ -66,7 +65,7 @@ describe("Campaigns API", () => {
 
     it("returns campaigns with linkCount for the authenticated user", async () => {
       const campaign = await createTestCampaign(userId, { name: "List Test Campaign" });
-      const link = await createTestLink({ slug: "list-camp-link", userId });
+      const link = await createTestLink({ userId });
       await linkToCampaign(link.id, campaign.id);
 
       const res = await api("GET", "/api/campaigns", { headers });
@@ -79,10 +78,8 @@ describe("Campaigns API", () => {
     });
 
     it("does not return campaigns belonging to another user", async () => {
-      const otherAuth = await setupAuth({ email: "campaigns-other@test.com" });
-      const otherCampaign = await createTestCampaign(otherAuth.user.id, {
-        name: "Other User Campaign",
-      });
+      const other = await newUser("campaigns-other");
+      const otherCampaign = await createTestCampaign(other.user.id, { name: "Other User Campaign" });
 
       const res = await api("GET", "/api/campaigns", { headers });
       const json = await res.json() as { data: { id: string }[] };
@@ -117,37 +114,89 @@ describe("Campaigns API", () => {
       expect(json.data.name).toBe("Minimal Campaign");
       expect(json.data.description).toBeNull();
     });
+  });
 
-    it("rejects missing name with 400", async () => {
-      const res = await api("POST", "/api/campaigns", {
-        headers,
-        body: { description: "No name here" },
-      });
-      expect(res.status).toBe(400);
+  // -------------------------------------------------------------------------
+  // Validation: every rejected body answers 400 with its message
+  // -------------------------------------------------------------------------
+  describe("validation", () => {
+    let campaignId: string;
+
+    beforeAll(async () => {
+      campaignId = (await createTestCampaign(userId, { name: "Validation Target" })).id;
     });
 
-    it("rejects empty string name with 400", async () => {
-      const res = await api("POST", "/api/campaigns", {
-        headers,
-        body: { name: "   " },
-      });
+    // `:id` is replaced with a campaign the caller owns.
+    it.each<[string, string, string, unknown, string]>([
+      ["a missing name on create", "POST", "", { description: "No name here" }, "name is required"],
+      ["a blank name on create", "POST", "", { name: "   " }, "name is required"],
+      ["a name over 200 characters on create", "POST", "", { name: "x".repeat(201) }, "name must be 200 characters or fewer"],
+      ["a description over 2000 characters on create", "POST", "", { name: "Valid Name", description: "d".repeat(2001) }, "description must be 2000 characters or fewer"],
+      ["a non-string description on create", "POST", "", { name: "Bad Description", description: { text: "nope" } }, "description must be a string"],
+      ["no body on update", "PUT", "/:id", undefined, "Invalid JSON body"],
+      ["an empty name on update", "PUT", "/:id", { name: "" }, "name is required"],
+      ["a name over 200 characters on update", "PUT", "/:id", { name: "y".repeat(201) }, "name must be 200 characters or fewer"],
+      ["a non-string description on update", "PUT", "/:id", { description: 42 }, "description must be a string"],
+      ["no body on add links", "POST", "/:id/links", undefined, "Invalid JSON body"],
+      ["an empty linkIds array", "POST", "/:id/links", { linkIds: [] }, "linkIds must be a non-empty array"],
+      ["a non-array linkIds", "POST", "/:id/links", { linkIds: "not-an-array" }, "linkIds must be a non-empty array"],
+      ["non-string linkIds entries", "POST", "/:id/links", { linkIds: [123] }, "linkIds must contain strings"],
+      [
+        "more than CAMPAIGN_LINKS_MAX linkIds",
+        "POST",
+        "/:id/links",
+        { linkIds: Array.from({ length: CAMPAIGN_LINKS_MAX + 1 }, (_, i) => `link-${i}`) },
+        `linkIds must contain ${CAMPAIGN_LINKS_MAX} or fewer items`,
+      ],
+    ])("rejects %s", async (_label, method, suffix, body, error) => {
+      const res = await api(method, `/api/campaigns${suffix.replace(":id", campaignId)}`, { headers, body });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
     });
 
-    it("rejects name exceeding 200 characters with 400", async () => {
-      const res = await api("POST", "/api/campaigns", {
+    it("rejects link IDs that do not belong to the user", async () => {
+      const other = await newUser("campaigns-links-iso");
+      const otherLink = await createTestLink({ userId: other.user.id });
+
+      const res = await api("POST", `/api/campaigns/${campaignId}/links`, {
         headers,
-        body: { name: "x".repeat(201) },
+        body: { linkIds: [otherLink.id] },
       });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: `Links not found: ${otherLink.id}` });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Every /:id route 404s a missing campaign and another user's campaign
+  // -------------------------------------------------------------------------
+  describe("campaign not found", () => {
+    let foreignId: string;
+    let linkId: string;
+
+    beforeAll(async () => {
+      const other = await newUser("campaigns-foreign");
+      foreignId = (await createTestCampaign(other.user.id, { name: "Not Mine" })).id;
+      linkId = (await createTestLink({ userId })).id;
     });
 
-    it("rejects description exceeding 2000 characters with 400", async () => {
-      const res = await api("POST", "/api/campaigns", {
-        headers,
-        body: { name: "Valid Name", description: "d".repeat(2001) },
-      });
-      expect(res.status).toBe(400);
+    const routes: [string, string, (linkId: string) => unknown][] = [
+      ["GET", "", () => undefined],
+      ["PUT", "", () => ({ name: "Hijacked" })],
+      ["DELETE", "", () => undefined],
+      ["POST", "/links", (id) => ({ linkIds: [id] })],
+      ["DELETE", "/links/:linkId", () => undefined],
+      ["GET", "/stats", () => undefined],
+    ];
+    const cases = routes.flatMap(([method, suffix, body]) => (["a missing", "another user's"] as const)
+      .map((whose) => [method, suffix, whose, body] as const));
+
+    it.each(cases)("%s /api/campaigns/:id%s 404s %s campaign", async (method, suffix, whose, body) => {
+      const id = whose === "a missing" ? "nonexistent-id" : foreignId;
+      const res = await api(method, `/api/campaigns/${id}${suffix.replace(":linkId", linkId)}`, { headers, body: body(linkId) });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Campaign not found" });
+      expect(await campaignState(foreignId)).toEqual({ name: "Not Mine", links: 0 });
     });
   });
 
@@ -168,10 +217,8 @@ describe("Campaigns API", () => {
 
     it("returns campaign with associated links and their click counts", async () => {
       const campaign = await createTestCampaign(userId, { name: "Campaign With Links" });
-      const link = await createTestLink({ slug: "detail-camp-link", userId });
+      const link = await createTestLink({ userId });
       await linkToCampaign(link.id, campaign.id);
-
-      // Insert click stats for the link
       await insertClickStat(link.id, 42, "2026-03-20");
 
       const res = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
@@ -181,23 +228,8 @@ describe("Campaigns API", () => {
       };
       expect(json.data.links).toHaveLength(1);
       expect(json.data.links[0].id).toBe(link.id);
-      expect(json.data.links[0].slug).toBe("detail-camp-link");
+      expect(json.data.links[0].slug).toBe(link.slug);
       expect(json.data.links[0].totalClicks).toBe(42);
-    });
-
-    it("returns 404 for non-existent campaign ID", async () => {
-      const res = await api("GET", "/api/campaigns/nonexistent-id", { headers });
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 404 for a campaign owned by a different user", async () => {
-      const otherAuth = await setupAuth({ email: "campaigns-iso1@test.com" });
-      const otherCampaign = await createTestCampaign(otherAuth.user.id, {
-        name: "Other's Campaign",
-      });
-
-      const res = await api("GET", `/api/campaigns/${otherCampaign.id}`, { headers });
-      expect(res.status).toBe(404);
     });
   });
 
@@ -225,10 +257,7 @@ describe("Campaigns API", () => {
     });
 
     it("updates the campaign description", async () => {
-      const campaign = await createTestCampaign(userId, {
-        name: "Desc Update",
-        description: "Old description",
-      });
+      const campaign = await createTestCampaign(userId, { name: "Desc Update", description: "Old description" });
 
       const res = await api("PUT", `/api/campaigns/${campaign.id}`, {
         headers,
@@ -245,10 +274,7 @@ describe("Campaigns API", () => {
     });
 
     it("clears description when set to null", async () => {
-      const campaign = await createTestCampaign(userId, {
-        name: "Clear Desc",
-        description: "Will be cleared",
-      });
+      const campaign = await createTestCampaign(userId, { name: "Clear Desc", description: "Will be cleared" });
 
       const res = await api("PUT", `/api/campaigns/${campaign.id}`, {
         headers,
@@ -262,55 +288,6 @@ describe("Campaigns API", () => {
       const getRes = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
       const getJson = await getRes.json() as { data: { description: string | null } };
       expect(getJson.data.description).toBeNull();
-    });
-
-    it("rejects empty name with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Will Not Change" });
-
-      const res = await api("PUT", `/api/campaigns/${campaign.id}`, {
-        headers,
-        body: { name: "" },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects name exceeding 200 characters with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Long Name Test" });
-
-      const res = await api("PUT", `/api/campaigns/${campaign.id}`, {
-        headers,
-        body: { name: "y".repeat(201) },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 404 for non-existent campaign", async () => {
-      const res = await api("PUT", "/api/campaigns/nonexistent-id", {
-        headers,
-        body: { name: "Nope" },
-      });
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 400 when no body is sent", async () => {
-      const campaign = await createTestCampaign(userId, { name: "No Body PUT" });
-
-      const res = await app.request(`/api/campaigns/${campaign.id}`, {
-        method: "PUT",
-        headers,
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 404 when updating another user's campaign", async () => {
-      const otherAuth = await setupAuth({ email: "campaigns-iso2@test.com" });
-      const otherCampaign = await createTestCampaign(otherAuth.user.id, { name: "Not Mine" });
-
-      const res = await api("PUT", `/api/campaigns/${otherCampaign.id}`, {
-        headers,
-        body: { name: "Hijacked" },
-      });
-      expect(res.status).toBe(404);
     });
   });
 
@@ -329,25 +306,10 @@ describe("Campaigns API", () => {
       expect(getRes.status).toBe(404);
     });
 
-    it("returns 404 for non-existent campaign", async () => {
-      const res = await api("DELETE", "/api/campaigns/nonexistent-id", { headers });
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 404 when deleting another user's campaign", async () => {
-      const otherAuth = await setupAuth({ email: "campaigns-iso3@test.com" });
-      const otherCampaign = await createTestCampaign(otherAuth.user.id, {
-        name: "Other Delete",
-      });
-
-      const res = await api("DELETE", `/api/campaigns/${otherCampaign.id}`, { headers });
-      expect(res.status).toBe(404);
-    });
-
     it("deletes link_campaigns rows but preserves the links themselves", async () => {
       const campaign = await createTestCampaign(userId, { name: "Cascade Test" });
-      const link1 = await createTestLink({ slug: "cascade-link-1", userId });
-      const link2 = await createTestLink({ slug: "cascade-link-2", userId });
+      const link1 = await createTestLink({ userId });
+      const link2 = await createTestLink({ userId });
       await linkToCampaign(link1.id, campaign.id);
       await linkToCampaign(link2.id, campaign.id);
 
@@ -380,7 +342,7 @@ describe("Campaigns API", () => {
   describe("POST /api/campaigns/:id/links", () => {
     it("adds links to a campaign", async () => {
       const campaign = await createTestCampaign(userId, { name: "Add Links Campaign" });
-      const link = await createTestLink({ slug: "add-to-camp", userId });
+      const link = await createTestLink({ userId });
 
       const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
         headers,
@@ -398,7 +360,7 @@ describe("Campaigns API", () => {
 
     it("is idempotent — adding the same link twice does not error", async () => {
       const campaign = await createTestCampaign(userId, { name: "Idempotent Campaign" });
-      const link = await createTestLink({ slug: "idempotent-link", userId });
+      const link = await createTestLink({ userId });
 
       await api("POST", `/api/campaigns/${campaign.id}/links`, {
         headers,
@@ -413,8 +375,8 @@ describe("Campaigns API", () => {
 
     it("adds multiple links at once", async () => {
       const campaign = await createTestCampaign(userId, { name: "Multi Links Campaign" });
-      const link1 = await createTestLink({ slug: "multi-link-1", userId });
-      const link2 = await createTestLink({ slug: "multi-link-2", userId });
+      const link1 = await createTestLink({ userId });
+      const link2 = await createTestLink({ userId });
 
       const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
         headers,
@@ -427,61 +389,6 @@ describe("Campaigns API", () => {
       const ids = detailJson.data.links.map((l) => l.id);
       expect(ids).toContain(link1.id);
       expect(ids).toContain(link2.id);
-    });
-
-    it("returns 400 when no body is sent", async () => {
-      const campaign = await createTestCampaign(userId, { name: "No Body Add Links" });
-
-      const res = await app.request(`/api/campaigns/${campaign.id}/links`, {
-        method: "POST",
-        headers,
-      }, env, mockExecutionCtx());
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects empty linkIds array with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Empty LinkIds" });
-
-      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
-        headers,
-        body: { linkIds: [] },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects linkIds that are not an array with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Bad LinkIds Type" });
-
-      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
-        headers,
-        body: { linkIds: "not-an-array" },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects link IDs that do not belong to the user with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Wrong User Links" });
-      const otherAuth = await setupAuth({ email: "campaigns-links-iso@test.com" });
-      const otherLink = await createTestLink({
-        slug: "other-user-link",
-        userId: otherAuth.user.id,
-      });
-
-      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
-        headers,
-        body: { linkIds: [otherLink.id] },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("returns 404 for non-existent campaign", async () => {
-      const link = await createTestLink({ slug: "camp-404-link", userId });
-
-      const res = await api("POST", "/api/campaigns/nonexistent-id/links", {
-        headers,
-        body: { linkIds: [link.id] },
-      });
-      expect(res.status).toBe(404);
     });
 
     it("adds CAMPAIGN_LINKS_MAX links in one request", async () => {
@@ -498,15 +405,6 @@ describe("Campaigns API", () => {
         .bind(campaign.id).first<{ n: number }>();
       expect(row!.n).toBe(CAMPAIGN_LINKS_MAX);
     });
-
-    it("rejects more than CAMPAIGN_LINKS_MAX linkIds with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Too Many Links Campaign" });
-      const linkIds = Array.from({ length: CAMPAIGN_LINKS_MAX + 1 }, (_, i) => `link-${i}`);
-
-      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, { headers, body: { linkIds } });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: `linkIds must contain ${CAMPAIGN_LINKS_MAX} or fewer items` });
-    });
   });
 
   // -------------------------------------------------------------------------
@@ -515,7 +413,7 @@ describe("Campaigns API", () => {
   describe("DELETE /api/campaigns/:id/links/:linkId", () => {
     it("removes a link from a campaign", async () => {
       const campaign = await createTestCampaign(userId, { name: "Remove Link Campaign" });
-      const link = await createTestLink({ slug: "remove-from-camp", userId });
+      const link = await createTestLink({ userId });
       await linkToCampaign(link.id, campaign.id);
 
       const res = await api("DELETE", `/api/campaigns/${campaign.id}/links/${link.id}`, {
@@ -533,37 +431,13 @@ describe("Campaigns API", () => {
 
     it("succeeds even if the link was not associated with the campaign", async () => {
       const campaign = await createTestCampaign(userId, { name: "No-Op Remove" });
-      const link = await createTestLink({ slug: "not-associated", userId });
+      const link = await createTestLink({ userId });
 
       const res = await api("DELETE", `/api/campaigns/${campaign.id}/links/${link.id}`, {
         headers,
       });
       // DELETE is idempotent — no error for non-existent association
       expect(res.status).toBe(200);
-    });
-
-    it("returns 404 for non-existent campaign", async () => {
-      const link = await createTestLink({ slug: "remove-404-link", userId });
-
-      const res = await api("DELETE", `/api/campaigns/nonexistent-id/links/${link.id}`, {
-        headers,
-      });
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 404 when removing from another user's campaign", async () => {
-      const otherAuth = await setupAuth({ email: "campaigns-iso4@test.com" });
-      const otherCampaign = await createTestCampaign(otherAuth.user.id, {
-        name: "Other Remove",
-      });
-      const link = await createTestLink({ slug: "other-remove-link", userId });
-
-      const res = await api(
-        "DELETE",
-        `/api/campaigns/${otherCampaign.id}/links/${link.id}`,
-        { headers }
-      );
-      expect(res.status).toBe(404);
     });
   });
 
@@ -586,8 +460,8 @@ describe("Campaigns API", () => {
 
     it("aggregates click stats across all campaign links", async () => {
       const campaign = await createTestCampaign(userId, { name: "Stats Aggregate" });
-      const link1 = await createTestLink({ slug: "stats-link-1", userId });
-      const link2 = await createTestLink({ slug: "stats-link-2", userId });
+      const link1 = await createTestLink({ userId });
+      const link2 = await createTestLink({ userId });
       await linkToCampaign(link1.id, campaign.id);
       await linkToCampaign(link2.id, campaign.id);
 
@@ -620,36 +494,15 @@ describe("Campaigns API", () => {
       expect(json.data.linkCount).toBe(2);
       expect(json.data.period.days).toBe(7);
     });
-
-    it("returns 404 for non-existent campaign", async () => {
-      const res = await api("GET", "/api/campaigns/nonexistent-id/stats", { headers });
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 404 for another user's campaign stats", async () => {
-      const otherAuth = await setupAuth({ email: "campaigns-iso5@test.com" });
-      const otherCampaign = await createTestCampaign(otherAuth.user.id, { name: "Other Stats" });
-
-      const res = await api("GET", `/api/campaigns/${otherCampaign.id}/stats`, { headers });
-      expect(res.status).toBe(404);
-    });
   });
 
   // -------------------------------------------------------------------------
   // Access filtering on campaign links
   // -------------------------------------------------------------------------
   describe("campaign links follow current access", () => {
-    /** Create a team owning one link, with the given user as a member. */
-    async function createTeamWithLink(memberId: string, slug: string) {
-      const { id: teamId } = await createTestTeam(memberId, "member");
-      const ownerAuth = await setupAuth({ email: `team-owner-${teamId.slice(0, 8)}@test.com` });
-      const link = await createTestLink({ slug, userId: ownerAuth.user.id, teamId });
-      return { teamId, link };
-    }
-
     it("drops a team link from campaign detail once membership ends", async () => {
       const campaign = await createTestCampaign(userId, { name: "Team Link Campaign" });
-      const { teamId, link } = await createTeamWithLink(userId, `team-camp-${crypto.randomUUID().slice(0, 8)}`);
+      const { team, link } = await createTeamLink(userId);
 
       const attach = await api("POST", `/api/campaigns/${campaign.id}/links`, {
         headers,
@@ -661,8 +514,7 @@ describe("Campaigns API", () => {
       const beforeJson = await before.json() as { data: { links: { id: string }[] } };
       expect(beforeJson.data.links.map((l) => l.id)).toContain(link.id);
 
-      await env.DB.prepare("DELETE FROM team_members WHERE teamId = ? AND userId = ?")
-        .bind(teamId, userId).run();
+      await removeTestTeamMember(team.id, userId);
 
       const after = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
       const afterJson = await after.json() as { data: { links: { id: string }[] } };
@@ -682,19 +534,16 @@ describe("Campaigns API", () => {
 
     it("excludes inaccessible links from campaign stats", async () => {
       const campaign = await createTestCampaign(userId, { name: "Team Stats Campaign" });
-      const { teamId, link } = await createTeamWithLink(userId, `team-stats-${crypto.randomUUID().slice(0, 8)}`);
+      const { team, link } = await createTeamLink(userId);
       await api("POST", `/api/campaigns/${campaign.id}/links`, { headers, body: { linkIds: [link.id] } });
-
-      const recent = isoDaysAgo(2);
-      await insertClickStat(link.id, 9, recent);
+      await insertClickStat(link.id, 9, isoDaysAgo(2));
 
       const before = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
       const beforeJson = await before.json() as { data: { totalClicks: number; linkCount: number } };
       expect(beforeJson.data.linkCount).toBe(1);
       expect(beforeJson.data.totalClicks).toBe(9);
 
-      await env.DB.prepare("DELETE FROM team_members WHERE teamId = ? AND userId = ?")
-        .bind(teamId, userId).run();
+      await removeTestTeamMember(team.id, userId);
 
       const after = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
       const afterJson = await after.json() as { data: { totalClicks: number; linkCount: number } };
@@ -707,44 +556,12 @@ describe("Campaigns API", () => {
       await createTestDomain(hostname);
 
       const campaign = await createTestCampaign(userId, { name: "Domain Links Campaign" });
-      const link = await createTestLink({
-        slug: `camp-dom-${crypto.randomUUID().slice(0, 8)}`,
-        userId,
-        domainHostname: hostname,
-      });
+      const link = await createTestLink({ userId, domainHostname: hostname });
       await linkToCampaign(link.id, campaign.id);
 
       const res = await api("GET", `/api/campaigns/${campaign.id}`, { headers });
       const json = await res.json() as { data: { links: { id: string; domainHostname: string | null }[] } };
       expect(json.data.links.find((l) => l.id === link.id)!.domainHostname).toBe(hostname);
-    });
-  });
-
-  describe("body type validation", () => {
-    it("rejects a non-string description on create with 400", async () => {
-      const res = await api("POST", "/api/campaigns", {
-        headers,
-        body: { name: "Bad Description", description: { text: "nope" } },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects a non-string description on update with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Bad Update Description" });
-      const res = await api("PUT", `/api/campaigns/${campaign.id}`, {
-        headers,
-        body: { description: 42 },
-      });
-      expect(res.status).toBe(400);
-    });
-
-    it("rejects non-string linkIds entries with 400", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Bad LinkIds Entries" });
-      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
-        headers,
-        body: { linkIds: [123] },
-      });
-      expect(res.status).toBe(400);
     });
   });
 });

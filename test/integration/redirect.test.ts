@@ -1,8 +1,7 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx, cachedRedirect, isoDaysAgo } from "../helpers";
+import { setupAuth, createTestLink, cachedRedirect, api, expectSpaShell, totalClicks } from "../helpers";
 import { setCachedRedirect } from "../../src/services/kv-cache";
 
 let owner: Awaited<ReturnType<typeof setupAuth>>;
@@ -22,7 +21,7 @@ describe("Redirect engine – GET /:slug", () => {
         userId: owner.user.id,
       });
 
-      const res = await app.request("/d1-302", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/d1-302");
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/target-302");
@@ -37,30 +36,15 @@ describe("Redirect engine – GET /:slug", () => {
         userId: owner.user.id,
       });
 
-      const res = await app.request("/d1-301", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/d1-301");
 
       expect(res.status).toBe(301);
       expect(res.headers.get("Location")).toBe("https://example.com/target-301");
       expect(res.headers.get("Cache-Control")).toBeNull();
     });
 
-    it("non-existent slug falls through (not a redirect)", async () => {
-      const res = await app.request("/no-such-slug-xyz", {}, env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBeNull();
-    });
-  });
-
-  // ── KV cache hit ─────────────────────────────────────────────────────
-
-  describe("KV cache hit", () => {
-    it("redirects when KV has a cached entry", async () => {
-      await setCachedRedirect(env.KV, "kv-hit", cachedRedirect({ url: "https://example.com/from-kv", linkId: "kv-link-1" }));
-
-      const res = await app.request("/kv-hit", {}, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://example.com/from-kv");
+    it("non-existent slug falls through to the SPA", async () => {
+      await expectSpaShell(await api("GET", "/no-such-slug-xyz"));
     });
   });
 
@@ -75,7 +59,7 @@ describe("Redirect engine – GET /:slug", () => {
       });
 
       for (const path of ["/case-fold", "/Case-Fold", "/CASE-FOLD"]) {
-        const res = await app.request(path, {}, env, mockExecutionCtx());
+        const res = await api("GET", path);
         expect(res.status).toBe(302);
         expect(res.headers.get("Location")).toBe("https://example.com/case-fold");
       }
@@ -89,7 +73,7 @@ describe("Redirect engine – GET /:slug", () => {
       });
       await setCachedRedirect(env.KV, "cached-case", cachedRedirect({ url: "https://example.com/from-cache", linkId: link.id }));
 
-      const res = await app.request("/Cached-Case", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/Cached-Case");
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/from-cache");
     });
@@ -101,7 +85,7 @@ describe("Redirect engine – GET /:slug", () => {
         userId: owner.user.id,
       });
 
-      const res = await app.request("/%F0%9F%8E%89", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/%F0%9F%8E%89");
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/emoji");
     });
@@ -119,16 +103,13 @@ describe("Redirect engine – GET /:slug", () => {
 
       // The upsert runs in waitUntil.
       const ctx = createExecutionContext();
-      const first = await app.request("/stats-agg", {}, env, ctx);
+      const first = await api("GET", "/stats-agg", { ctx });
       expect(first.status).toBe(302);
-      const second = await app.request("/stats-agg", {}, env, ctx);
+      const second = await api("GET", "/stats-agg", { ctx });
       expect(second.status).toBe(302);
       await waitOnExecutionContext(ctx);
 
-      const row = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
-        .bind(link.id, isoDaysAgo(0))
-        .first<{ clicks: number }>();
-      expect(row?.clicks).toBe(2);
+      expect(await totalClicks(link.id)).toBe(2);
     });
   });
 });
@@ -136,29 +117,21 @@ describe("Redirect engine – GET /:slug", () => {
 describe("Redirect engine – HEAD requests", () => {
   it("HEAD redirects without recording a click", async () => {
     const link = await createTestLink({ slug: "head-slug", destinationUrl: "https://example.com/head", userId: owner.user.id });
-    const today = isoDaysAgo(0);
 
     const headCtx = createExecutionContext();
-    const res = await app.request("/head-slug", { method: "HEAD" }, env, headCtx);
+    const res = await api("HEAD", "/head-slug", { ctx: headCtx });
     await waitOnExecutionContext(headCtx);
 
     expect(res.status).toBe(302);
     expect(res.headers.get("Location")).toBe("https://example.com/head");
-
-    const row = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
-      .bind(link.id, today)
-      .first<{ clicks: number }>();
-    expect(row).toBeNull();
+    expect(await totalClicks(link.id)).toBe(0);
 
     // The same slug over GET still counts, so the guard is on the method only.
     const getCtx = createExecutionContext();
-    const res2 = await app.request("/head-slug", {}, env, getCtx);
+    const res2 = await api("GET", "/head-slug", { ctx: getCtx });
     await waitOnExecutionContext(getCtx);
     expect(res2.status).toBe(302);
-    const after = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
-      .bind(link.id, today)
-      .first<{ clicks: number }>();
-    expect(after?.clicks).toBe(1);
+    expect(await totalClicks(link.id)).toBe(1);
   });
 });
 
@@ -171,47 +144,30 @@ describe("Redirect engine – reserved slugs", () => {
       linkId: "reserved-link",
     }));
 
-    const res = await app.request("/settings", {}, env, mockExecutionCtx());
-
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Location")).toBeNull();
+    await expectSpaShell(await api("GET", "/settings"));
   });
 });
 
 describe("Trailing slash", () => {
-  it("301s /:slug/ to the canonical /:slug", async () => {
-    await createTestLink({ slug: "ts-slug", destinationUrl: "https://example.com/ts", userId: owner.user.id });
-
-    const res = await app.request("/ts-slug/", {}, env, mockExecutionCtx());
-
-    expect(res.status).toBe(301);
-    expect(new URL(res.headers.get("Location")!).pathname).toBe("/ts-slug");
-  });
-
-  it("301s an unknown path with a trailing slash rather than serving the SPA", async () => {
-    const res = await app.request("/no-such-slug/", {}, env, mockExecutionCtx());
+  it("301s a path with a trailing slash to the canonical path", async () => {
+    const res = await api("GET", "/no-such-slug/");
 
     expect(res.status).toBe(301);
     expect(new URL(res.headers.get("Location")!).pathname).toBe("/no-such-slug");
   });
 
   it("preserves the query string", async () => {
-    const res = await app.request("/ts-slug/?utm_source=x", {}, env, mockExecutionCtx());
+    const res = await api("GET", "/ts-slug/?utm_source=x");
 
     const location = new URL(res.headers.get("Location")!);
     expect(location.pathname).toBe("/ts-slug");
     expect(location.search).toBe("?utm_source=x");
   });
 
-  it("leaves / alone", async () => {
-    const res = await app.request("/", {}, env, mockExecutionCtx());
+  it("does not redirect a POST, which the asset binding answers with 405", async () => {
+    const res = await api("POST", "/ts-slug/");
 
-    expect(res.status).not.toBe(301);
-  });
-
-  it("leaves non-GET requests alone", async () => {
-    const res = await app.request("/ts-slug/", { method: "POST" }, env, mockExecutionCtx());
-
-    expect(res.status).not.toBe(301);
+    expect(res.status).toBe(405);
+    expect(res.headers.get("Location")).toBeNull();
   });
 });

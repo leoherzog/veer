@@ -1,32 +1,25 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
-import { describe, it, expect, beforeAll, vi } from "vitest";
-import { app } from "../../src/index";
-import { setupAuth, mockExecutionCtx, createTestLink, createTestDomain, insertClickStat, cachedRedirect, isoDaysAgo, api } from "../helpers";
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from "vitest";
+import {
+  setupAuth, createTestLink, createTestDomain, insertClickStat, cachedRedirect, isoDaysAgo, api, expectSpaShell, totalClicks,
+} from "../helpers";
+import { getDb } from "../../src/db";
+import { linkTargets } from "../../src/db/schema";
 import { hashPassword } from "../../src/services/password";
 import { getCachedRedirect, setCachedRedirect } from "../../src/services/kv-cache";
 
 /** Insert a link_targets row. */
-async function insertTarget(
-  db: D1Database,
-  opts: { linkId: string; type: string; matchValue: string; destinationUrl: string; priority?: number }
-) {
-  await db
-    .prepare(
-      `INSERT INTO link_targets (id, linkId, type, matchValue, destinationUrl, priority)
-       VALUES (?, ?, ?, ?, ?, ?)`
-    )
-    .bind(crypto.randomUUID(), opts.linkId, opts.type, opts.matchValue, opts.destinationUrl, opts.priority ?? 0)
-    .run();
+async function insertTarget(target: Omit<typeof linkTargets.$inferInsert, "id">) {
+  await getDb(env.DB).insert(linkTargets).values({ id: crypto.randomUUID(), ...target });
 }
 
 /** Submit the password gate form for `slug`, omitting the field when `password` is undefined. */
-function postPassword(slug: string, password?: string) {
-  return app.request(`/${slug}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams(password === undefined ? {} : { password }).toString(),
-  }, env, mockExecutionCtx());
+function postPassword(slug: string, password?: string, opts: { headers?: Record<string, string>; ctx?: ExecutionContext; cf?: Record<string, unknown> } = {}) {
+  return api("POST", `/${slug}`, {
+    ...opts,
+    body: new URLSearchParams(password === undefined ? {} : { password }),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -125,14 +118,9 @@ describe("Redirect engine – advanced", () => {
         password: passwordHash,
         userId: owner.user.id,
       });
-      await insertTarget(env.DB, { linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/pw-de", priority: 1 });
+      await insertTarget({ linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/pw-de", priority: 1 });
 
-      const res = await app.fetch(new Request("http://localhost/pw-geo-post", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ password: PASSWORD }).toString(),
-        cf: { country: "DE" },
-      }), env, mockExecutionCtx());
+      const res = await postPassword("pw-geo-post", PASSWORD, { cf: { country: "DE" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/pw-de");
@@ -185,7 +173,7 @@ describe("Redirect engine – advanced", () => {
         userId: owner.user.id,
       });
 
-      const res = await app.request("/expired-link", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/expired-link");
 
       expect(res.status).toBe(410);
       const html = await res.text();
@@ -202,7 +190,7 @@ describe("Redirect engine – advanced", () => {
       await insertClickStat(linkId, 7, "2026-03-20");
       await insertClickStat(linkId, 5, "2026-03-21");
 
-      const res = await app.request("/maxclicks-link", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/maxclicks-link");
 
       expect(res.status).toBe(410);
       const html = await res.text();
@@ -217,8 +205,7 @@ describe("Redirect engine – advanced", () => {
         userId: owner.user.id,
       });
 
-      // No auth cookies — should be forbidden
-      const res = await app.request("/internal-link", {}, env, mockExecutionCtx());
+      const res = await api("GET", "/internal-link");
 
       expect(res.status).toBe(403);
       const html = await res.text();
@@ -233,9 +220,7 @@ describe("Redirect engine – advanced", () => {
         userId: owner.user.id,
       });
 
-      const res = await app.request("/internal-authed", {
-        headers: { Cookie: owner.headers.Cookie },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/internal-authed", { headers: { Cookie: owner.headers.Cookie } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/internal-ok");
@@ -266,9 +251,7 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("bot UA with OG data returns 200 HTML with og:* meta tags", async () => {
-      const res = await app.request("/og-link", {
-        headers: { "User-Agent": "facebookexternalhit/1.1" },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/og-link", { headers: { "User-Agent": "facebookexternalhit/1.1" } });
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -286,31 +269,22 @@ describe("Redirect engine – advanced", () => {
       });
 
       const ctx = createExecutionContext();
-      const res = await app.request("/bot-no-og", {
-        headers: { "User-Agent": "facebookexternalhit/1.1" },
-      }, env, ctx);
+      const res = await api("GET", "/bot-no-og", { headers: { "User-Agent": "facebookexternalhit/1.1" }, ctx });
       await waitOnExecutionContext(ctx);
 
       expect(res.status).toBe(302);
-      const row = await env.DB.prepare("SELECT clicks FROM link_stats WHERE linkId = ? AND date = ?")
-        .bind(linkId, isoDaysAgo(0))
-        .first<{ clicks: number }>();
-      expect(row?.clicks).toBe(1);
+      expect(await totalClicks(linkId)).toBe(1);
     });
 
     it("normal UA with OG data redirects normally", async () => {
-      const res = await app.request("/og-link", {
-        headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/og-link", { headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/og-dest");
     });
 
     it("bot UA on password-protected link serves og:* tags but never the destination", async () => {
-      const res = await app.request("/og-pw-link", {
-        headers: { "User-Agent": "Twitterbot/1.0" },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/og-pw-link", { headers: { "User-Agent": "Twitterbot/1.0" } });
 
       expect(res.status).toBe(200);
       const html = await res.text();
@@ -338,42 +312,18 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET / with custom domain that has rootRedirect returns 302", async () => {
-      const res = await app.request("/", {
-        headers: { Host: "custom-root.example.com" },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/", { headers: { Host: "custom-root.example.com" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/root-dest");
     });
 
-    it("GET / with custom domain with no rootRedirect falls through (200 SPA)", async () => {
-      const res = await app.request("/", {
-        headers: { Host: "custom-noroot.example.com" },
-      }, env, mockExecutionCtx());
-
-      // Falls through to the SPA wildcard handler, which serves the built
-      // index.html via the ASSETS binding (200 text/html) — not a redirect.
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
-    });
-
-    it("GET / with custom domain that has no domain_config record falls through", async () => {
-      const res = await app.request("/", {
-        headers: { Host: "unknown-domain.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBeNull();
-    });
-
-    it("GET / with primary domain falls through (200 SPA)", async () => {
-      const res = await app.request("/", {
-        headers: { Host: "localhost" },
-      }, env, mockExecutionCtx());
-
-      // Falls through to the SPA wildcard handler, which serves the built
-      // index.html via the ASSETS binding (200 text/html) — not a redirect.
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
+    it.each([
+      ["a custom domain with no rootRedirect", "custom-noroot.example.com"],
+      ["a host with no domain_config row", "unknown-domain.example.com"],
+      ["the primary host", "localhost"],
+    ])("GET / on %s serves the SPA", async (_label, host) => {
+      await expectSpaShell(await api("GET", "/", { headers: { Host: host } }));
     });
   });
 
@@ -389,56 +339,30 @@ describe("Redirect engine – advanced", () => {
       });
     });
 
-    it("GET /nonexistent with notFoundRedirect configured redirects", async () => {
-      const res = await app.request("/nonexistent-slug-nf", {
-        headers: { Host: "custom-nf.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://example.com/not-found-page");
-    });
-
-    it("GET /login on a custom domain takes notFoundRedirect like any unknown slug", async () => {
-      const res = await app.request("/login", {
-        headers: { Host: "custom-nf.example.com" },
-      }, env, mockExecutionCtx());
+    it.each([
+      ["an unknown slug", "/nonexistent-slug-nf"],
+      ["/login, like any unknown slug", "/login"],
+      ["a slug validateSlug rejects", "/a%7Cb"],
+    ])("GET %s on a custom domain takes notFoundRedirect", async (_label, path) => {
+      const res = await api("GET", path, { headers: { Host: "custom-nf.example.com" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/not-found-page");
     });
 
     it("GET /login on the primary host serves the SPA", async () => {
-      const res = await app.request("/login", {
-        headers: { Host: "localhost" },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
+      await expectSpaShell(await api("GET", "/login", { headers: { Host: "localhost" } }));
     });
 
-    it("GET with a slug validateSlug rejects takes notFoundRedirect on a custom domain", async () => {
-      const res = await app.request("/a%7Cb", {
-        headers: { Host: "custom-nf.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://example.com/not-found-page");
-    });
-
-    it("GET /nonexistent with no notFoundRedirect falls through", async () => {
-      const res = await app.request("/nonexistent-slug-nonf", {
-        headers: { Host: "custom-nonf.example.com" },
-      }, env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBeNull();
+    it("GET /nonexistent with no notFoundRedirect serves the SPA", async () => {
+      await expectSpaShell(await api("GET", "/nonexistent-slug-nonf", { headers: { Host: "custom-nonf.example.com" } }));
     });
   });
 
   // ── isHttpUrl defense-in-depth: protocol smuggling ─────────────────────
   //
-  // rootRedirect and notFoundRedirect are editable by domain admins; we must
-  // never honor javascript:, data:, or malformed URLs — even if the row in
-  // domain_config somehow contains one.
+  // Only instance admins edit rootRedirect and notFoundRedirect, but a
+  // javascript:, data: or malformed value in domain_config must never be honored.
 
   describe("isHttpUrl — domain_config values", () => {
     it.each([
@@ -449,9 +373,7 @@ describe("Redirect engine – advanced", () => {
     ])("ignores an unsafe redirect on %s", async (hostname, config, path) => {
       await createTestDomain(hostname, config);
 
-      const res = await app.request(path, { headers: { Host: hostname } }, env, mockExecutionCtx());
-
-      expect(res.headers.get("Location")).toBeNull();
+      await expectSpaShell(await api("GET", path, { headers: { Host: hostname } }));
     });
   });
 
@@ -460,14 +382,13 @@ describe("Redirect engine – advanced", () => {
   describe("Domain-scoped slug lookup", () => {
     beforeAll(async () => {
       await createTestDomain("scope.example.com");
-      // Same slug on custom domain → different destination
+      await createTestDomain("other.example.com");
       await createTestLink({
         slug: "shared-slug",
         destinationUrl: "https://example.com/custom-domain-dest",
         domainHostname: "scope.example.com",
         userId: owner.user.id,
       });
-      // Same slug on default domain (domainHostname NULL)
       await createTestLink({
         slug: "shared-slug",
         destinationUrl: "https://example.com/default-domain-dest",
@@ -477,81 +398,39 @@ describe("Redirect engine – advanced", () => {
     });
 
     it("GET /:slug with matching custom domain Host redirects to domain-scoped destination", async () => {
-      const res = await app.request("/shared-slug", {
-        headers: { Host: "scope.example.com" },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/shared-slug", { headers: { Host: "scope.example.com" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/custom-domain-dest");
     });
 
     it("same slug on default domain redirects to default destination", async () => {
-      const res = await app.request("/shared-slug", {
-        headers: { Host: "localhost" },
-      }, env, mockExecutionCtx());
+      const res = await api("GET", "/shared-slug", { headers: { Host: "localhost" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/default-domain-dest");
     });
 
-    it("GET /:slug with wrong Host does not find domain-scoped slug", async () => {
-      // A slug that only exists on scope.example.com — try from a different custom domain
-      await createTestDomain("other.example.com");
-
-      const res = await app.request("/shared-slug", {
-        headers: { Host: "other.example.com" },
-      }, env, mockExecutionCtx());
-
-      // Should not redirect — slug doesn't exist on other.example.com
-      expect(res.headers.get("Location")).toBeNull();
+    it("GET /:slug on another custom domain does not find the slug", async () => {
+      await expectSpaShell(await api("GET", "/shared-slug", { headers: { Host: "other.example.com" } }));
     });
   });
 
   // ── D1-path targeting resolution ───────────────────────────────────────
 
   describe("D1-path targeting resolution", () => {
-    it("geo targeting: request with matching country redirects to target URL", async () => {
+    it("loads the link's targets from D1 on a cache miss", async () => {
       const { id: linkId } = await createTestLink({
         slug: "geo-target",
         destinationUrl: "https://example.com/default-geo",
         userId: owner.user.id,
       });
-      await insertTarget(env.DB, {
-        linkId,
-        type: "geo",
-        matchValue: "DE",
-        destinationUrl: "https://example.com/germany",
-        priority: 10,
-      });
+      await insertTarget({ linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/germany", priority: 10 });
 
       const res = await api("GET", "/geo-target", { cf: { country: "DE" } });
 
       expect(res.status).toBe(302);
       expect(res.headers.get("Location")).toBe("https://example.com/germany");
-    });
-
-    it("device targeting: mobile UA redirects to mobile target URL", async () => {
-      const { id: linkId } = await createTestLink({
-        slug: "device-target",
-        destinationUrl: "https://example.com/default-device",
-        userId: owner.user.id,
-      });
-      await insertTarget(env.DB, {
-        linkId,
-        type: "device",
-        matchValue: "mobile",
-        destinationUrl: "https://example.com/mobile-page",
-        priority: 10,
-      });
-
-      const res = await app.request("/device-target", {
-        headers: {
-          "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
-        },
-      }, env, mockExecutionCtx());
-
-      expect(res.status).toBe(302);
-      expect(res.headers.get("Location")).toBe("https://example.com/mobile-page");
     });
   });
 });
@@ -565,7 +444,7 @@ describe("Redirect engine – password gate GET", () => {
       userId: owner.user.id,
     });
 
-    const res = await app.request("/pw-gate-d1", {}, env, mockExecutionCtx());
+    const res = await api("GET", "/pw-gate-d1");
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Location")).toBeNull();
@@ -576,7 +455,7 @@ describe("Redirect engine – password gate GET", () => {
   });
 
   it("gate CSP omits form-action so Chrome allows the redirect the POST returns", async () => {
-    const res = await app.request("/pw-gate-d1", {}, env, mockExecutionCtx());
+    const res = await api("GET", "/pw-gate-d1");
 
     const csp = res.headers.get("Content-Security-Policy") ?? "";
     expect(csp).toContain("default-src 'self'");
@@ -592,7 +471,7 @@ describe("Redirect engine – password gate GET", () => {
       hasPassword: true,
     }));
 
-    const res = await app.request("/pw-gate-kv", {}, env, mockExecutionCtx());
+    const res = await api("GET", "/pw-gate-kv");
 
     expect(res.status).toBe(200);
     expect(res.headers.get("Location")).toBeNull();
@@ -603,6 +482,14 @@ describe("Redirect engine – password gate GET", () => {
 });
 
 describe("Redirect engine – password POST rate limit", () => {
+  // Date is frozen one second into a 900 s window, so all six attempts share one counter key.
+  beforeEach(() => {
+    vi.setSystemTime(Math.floor(Date.now() / 900_000) * 900_000 + 1_000);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it("returns 429 on the sixth attempt in a window", async () => {
     await createTestLink({
       slug: "pw-brute",
@@ -613,11 +500,7 @@ describe("Redirect engine – password POST rate limit", () => {
 
     const attempt = async (password: string) => {
       const ctx = createExecutionContext();
-      const res = await app.request("/pw-brute", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", "CF-Connecting-IP": "203.0.113.7" },
-        body: new URLSearchParams({ password }).toString(),
-      }, env, ctx);
+      const res = await postPassword("pw-brute", password, { headers: { "CF-Connecting-IP": "203.0.113.7" }, ctx });
       // The counter is written in waitUntil; await it so attempts are ordered.
       await waitOnExecutionContext(ctx);
       return res;
@@ -645,8 +528,8 @@ describe("Redirect engine – hot-path invariants", () => {
     }));
     const random = vi.spyOn(Math, "random");
 
-    const visitor = await app.request("/pw-ab-kv", {}, env, mockExecutionCtx());
-    const crawler = await app.request("/pw-ab-kv", { headers: { "User-Agent": "Twitterbot/1.0" } }, env, mockExecutionCtx());
+    const visitor = await api("GET", "/pw-ab-kv");
+    const crawler = await api("GET", "/pw-ab-kv", { headers: { "User-Agent": "Twitterbot/1.0" } });
 
     expect(visitor.status).toBe(200);
     expect(await visitor.text()).toContain("This link is password protected");
@@ -661,7 +544,7 @@ describe("Redirect engine – hot-path invariants", () => {
       password: await hashPassword("late-targets"),
       userId: owner.user.id,
     });
-    await insertTarget(env.DB, { linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/pw-targets-de", priority: 1 });
+    await insertTarget({ linkId, type: "geo", matchValue: "DE", destinationUrl: "https://example.com/pw-targets-de", priority: 1 });
     const prepare = vi.spyOn(env.DB, "prepare");
     const targetReads = () => prepare.mock.calls.filter(([sql]) => sql.includes("link_targets")).length;
 
@@ -685,11 +568,11 @@ describe("Redirect engine – hot-path invariants", () => {
     await insertClickStat(linkId, 2, isoDaysAgo(1));
 
     const ctx = createExecutionContext();
-    const first = await app.request("/kv-capped", {}, env, ctx);
+    const first = await api("GET", "/kv-capped", { ctx });
     await waitOnExecutionContext(ctx);
     expect(first.status).toBe(302);
 
-    const second = await app.request("/kv-capped", {}, env, mockExecutionCtx());
+    const second = await api("GET", "/kv-capped");
     expect(second.status).toBe(410);
   });
 
@@ -703,7 +586,7 @@ describe("Redirect engine – hot-path invariants", () => {
     });
 
     const ctx = createExecutionContext();
-    const res = await app.request("/fill-scope", { headers: { Host: "fill.example.com" } }, env, ctx);
+    const res = await api("GET", "/fill-scope", { headers: { Host: "fill.example.com" }, ctx });
     await waitOnExecutionContext(ctx);
 
     expect(res.status).toBe(302);
@@ -715,8 +598,6 @@ describe("Redirect engine – hot-path invariants", () => {
     // Only a planted entry can hold such a slug.
     await setCachedRedirect(env.KV, "a|b", cachedRedirect({ url: "https://example.com/invalid-slug" }));
 
-    const res = await app.request("/a%7Cb", {}, env, mockExecutionCtx());
-
-    expect(res.headers.get("Location")).toBeNull();
+    await expectSpaShell(await api("GET", "/a%7Cb"));
   });
 });

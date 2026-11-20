@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import {
-  setupAuth, createTestLink, createTestDomain, createTestTeam, addTestTeamMember, api, newUser, postLink,
+  setupAuth, createTestLink, createTestDomain, createDomainAccess, createTestTeam, addTestTeamMember, api, newUser, postLink, uniq,
 } from "../helpers";
 
 // ---------------------------------------------------------------------------
@@ -14,7 +14,7 @@ describe("Links API — domain-scoped operations", () => {
   let userId: string;
 
   beforeAll(async () => {
-    const auth = await setupAuth({ email: "domain-links@test.com" });
+    const auth = await newUser("domain-links");
     headers = auth.headers;
     userId = auth.user.id;
     await createTestDomain("custom.example.com");
@@ -57,6 +57,23 @@ describe("Links API — domain-scoped operations", () => {
       expect(res.status).toBe(400);
       const json = await res.json() as { error: string };
       expect(json.error).toContain("access");
+    });
+
+    it.each([
+      ["a lowercase email", `${uniq("granted")}@example.com`],
+      ["a mixed-case email", `Granted-${uniq("Mixed")}@Example.COM`],
+    ])("creates a link on a restricted domain for a user granted access, with %s", async (_label, email) => {
+      const granted = await setupAuth({ email });
+      await createDomainAccess("restricted.example.com", email);
+
+      const res = await postLink({
+        slug: uniq("dom-granted"),
+        destinationUrl: "https://example.com/granted",
+        domainHostname: "restricted.example.com",
+      }, granted.headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { domainHostname: string } };
+      expect(json.data.domainHostname).toBe("restricted.example.com");
     });
 
     it("treats the primary hostname as the default domain", async () => {
@@ -151,14 +168,11 @@ describe("Links API — domain-scoped operations", () => {
     });
 
     it("returns 409 when slug collides on target domain", async () => {
-      // Create existing link on custom domain with slug "collision-slug"
       await createTestLink({
         slug: "collision-slug",
         userId,
         domainHostname: "custom.example.com",
       });
-      // Write KV for it
-      await env.KV.put("custom.example.com:collision-slug", JSON.stringify({ url: "https://example.com" }));
 
       // Create another link on default domain with same slug
       const link2 = await createTestLink({

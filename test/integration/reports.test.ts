@@ -1,6 +1,8 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
-import { setupAuth, createTestLink, createTestTeam, api, insertClickStat, isoDaysAgo, dayLabel, fakeLimiter } from "../helpers";
+import {
+  setupAuth, newUser, createTestLink, createTeamLink, removeTestTeamMember, api, insertClickStat, isoDaysAgo, dayLabel, fakeLimiter,
+} from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -28,7 +30,7 @@ describe("Reports API", () => {
   // -------------------------------------------------------------------------
   describe("GET /api/reports/:linkId", () => {
     it("returns null and creates nothing when no report exists", async () => {
-      const link = await createTestLink({ slug: `rpt-get-none-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
 
       const res = await api("GET", `/api/reports/${link.id}`, { headers });
       expect(res.status).toBe(200);
@@ -41,7 +43,7 @@ describe("Reports API", () => {
     });
 
     it("returns the existing report", async () => {
-      const link = await createTestLink({ slug: `rpt-get-one-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
       const token = await createReport(link.id);
 
       const res = await api("GET", `/api/reports/${link.id}`, { headers });
@@ -53,11 +55,8 @@ describe("Reports API", () => {
     });
 
     it("returns 404 for a link the caller cannot access", async () => {
-      const otherAuth = await setupAuth({ email: `rpt-get-other-${Date.now()}@test.com` });
-      const link = await createTestLink({
-        slug: `rpt-get-other-${crypto.randomUUID().slice(0,8)}`,
-        userId: otherAuth.user.id,
-      });
+      const other = await newUser("rpt-get-other");
+      const link = await createTestLink({ userId: other.user.id });
 
       const res = await api("GET", `/api/reports/${link.id}`, { headers });
       expect(res.status).toBe(404);
@@ -75,13 +74,7 @@ describe("Reports API", () => {
   // -------------------------------------------------------------------------
   describe("team member access", () => {
     it("lets a teammate create and read a report for a team link", async () => {
-      const ownerAuth = await setupAuth({ email: `rpt-team-owner-${Date.now()}@test.com` });
-      const team = await createTestTeam(userId, "member");
-      const link = await createTestLink({
-        slug: `rpt-team-${crypto.randomUUID().slice(0,8)}`,
-        userId: ownerAuth.user.id,
-        teamId: team.id,
-      });
+      const { link } = await createTeamLink(userId);
 
       const createRes = await api("POST", `/api/reports/${link.id}`, { headers });
       expect(createRes.status).toBe(201);
@@ -96,16 +89,8 @@ describe("Reports API", () => {
     });
 
     it("returns 404 once the caller is no longer a team member", async () => {
-      const ownerAuth = await setupAuth({ email: `rpt-team-ex-${Date.now()}@test.com` });
-      const team = await createTestTeam(userId, "member");
-      const link = await createTestLink({
-        slug: `rpt-team-ex-${crypto.randomUUID().slice(0,8)}`,
-        userId: ownerAuth.user.id,
-        teamId: team.id,
-      });
-
-      await env.DB.prepare("DELETE FROM team_members WHERE teamId = ? AND userId = ?")
-        .bind(team.id, userId).run();
+      const { team, link } = await createTeamLink(userId);
+      await removeTestTeamMember(team.id, userId);
 
       const res = await api("GET", `/api/reports/${link.id}`, { headers });
       expect(res.status).toBe(404);
@@ -117,7 +102,7 @@ describe("Reports API", () => {
   // -------------------------------------------------------------------------
   describe("POST /api/reports/:linkId", () => {
     it("creates a report for the user's own link", async () => {
-      const link = await createTestLink({ slug: `rpt-create-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
       const res = await api("POST", `/api/reports/${link.id}`, { headers });
       expect(res.status).toBe(201);
       const json = await res.json() as { data: { token: string; isEnabled: boolean; createdAt: unknown; linkId: string } };
@@ -128,7 +113,7 @@ describe("Reports API", () => {
     });
 
     it("returns existing report (idempotent) when called again", async () => {
-      const link = await createTestLink({ slug: `rpt-idem-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
 
       const res1 = await api("POST", `/api/reports/${link.id}`, { headers });
       expect(res1.status).toBe(201);
@@ -142,7 +127,7 @@ describe("Reports API", () => {
     });
 
     it("concurrent creates yield one report, created once", async () => {
-      const link = await createTestLink({ slug: `rpt-race-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
 
       const responses = await Promise.all([1, 2, 3].map(() => api("POST", `/api/reports/${link.id}`, { headers })));
       expect(responses.map(r => r.status).sort()).toEqual([200, 200, 201]);
@@ -157,11 +142,8 @@ describe("Reports API", () => {
     });
 
     it("returns 404 for a link owned by another user", async () => {
-      const otherAuth = await setupAuth({ email: `rpt-other-${Date.now()}@test.com` });
-      const link = await createTestLink({
-        slug: `rpt-other-${crypto.randomUUID().slice(0,8)}`,
-        userId: otherAuth.user.id,
-      });
+      const other = await newUser("rpt-other");
+      const link = await createTestLink({ userId: other.user.id });
 
       const res = await api("POST", `/api/reports/${link.id}`, { headers });
       expect(res.status).toBe(404);
@@ -169,14 +151,11 @@ describe("Reports API", () => {
 
     it("rejects an internal link with 400 and creates no report row", async () => {
       // The public viewer 404s an internal link, so the token would be dead on arrival.
-      const link = await createTestLink({
-        slug: `rpt-int-${crypto.randomUUID().slice(0,8)}`,
-        userId,
-        isInternal: true,
-      });
+      const link = await createTestLink({ userId, isInternal: true });
 
       const res = await api("POST", `/api/reports/${link.id}`, { headers });
       expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "Internal links cannot have a public report" });
 
       const row = await env.DB.prepare("SELECT linkId FROM public_reports WHERE linkId = ?").bind(link.id).first();
       expect(row).toBeNull();
@@ -188,7 +167,7 @@ describe("Reports API", () => {
   // -------------------------------------------------------------------------
   describe("PUT /api/reports/:linkId", () => {
     it("rejects re-enabling a report on a link that became internal", async () => {
-      const link = await createTestLink({ slug: `rpt-int-put-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
       await api("POST", `/api/reports/${link.id}`, { headers });
       await api("PUT", `/api/reports/${link.id}`, { headers, body: { isEnabled: false } });
       await env.DB.prepare("UPDATE links SET isInternal = 1 WHERE id = ?").bind(link.id).run();
@@ -202,7 +181,7 @@ describe("Reports API", () => {
     });
 
     it("sets isEnabled to the value in the body", async () => {
-      const link = await createTestLink({ slug: `rpt-set1-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
       await api("POST", `/api/reports/${link.id}`, { headers });
 
       const off = await api("PUT", `/api/reports/${link.id}`, { headers, body: { isEnabled: false } });
@@ -220,20 +199,22 @@ describe("Reports API", () => {
       expect((await persisted.json() as { data: { isEnabled: boolean } }).data.isEnabled).toBe(true);
     });
 
-    it("returns 400 when isEnabled is not a boolean", async () => {
-      const link = await createTestLink({ slug: `rpt-badbody-${crypto.randomUUID().slice(0,8)}`, userId });
-      await api("POST", `/api/reports/${link.id}`, { headers });
-
-      for (const body of [{}, { isEnabled: "true" }, { isEnabled: 1 }, { isEnabled: null }]) {
+    it.each([{}, { isEnabled: "true" }, { isEnabled: 1 }, { isEnabled: null }])(
+      "returns 400 when isEnabled is not a boolean: %j",
+      async (body) => {
+        // The body is checked before the report lookup, so no report is needed.
+        const link = await createTestLink({ userId });
         const res = await api("PUT", `/api/reports/${link.id}`, { headers, body });
         expect(res.status).toBe(400);
-      }
-    });
+        expect(await res.json()).toEqual({ error: "isEnabled must be a boolean" });
+      },
+    );
 
     it("returns 404 if no report exists for the link", async () => {
-      const link = await createTestLink({ slug: `rpt-noreport-${crypto.randomUUID().slice(0,8)}`, userId });
+      const link = await createTestLink({ userId });
       const res = await api("PUT", `/api/reports/${link.id}`, { headers, body: { isEnabled: true } });
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Report not found" });
     });
   });
 
@@ -242,11 +223,7 @@ describe("Reports API", () => {
   // -------------------------------------------------------------------------
   describe("GET /api/public-report/:token", () => {
     it("returns stats for a valid enabled token", async () => {
-      const link = await createTestLink({
-        slug: `rpt-pub-${crypto.randomUUID().slice(0,8)}`,
-        userId,
-        title: "Public Test Link",
-      });
+      const link = await createTestLink({ userId, title: "Public Test Link" });
       // Two rows inside the rolling 30-day window, in reverse-chronological
       // insert order (route must sort ascending by date regardless).
       const twoDaysAgo = isoDaysAgo(2);
@@ -290,14 +267,9 @@ describe("Reports API", () => {
     });
 
     it("returns 404 when report is disabled", async () => {
-      const link = await createTestLink({
-        slug: `rpt-disabled-${crypto.randomUUID().slice(0,8)}`,
-        userId,
-      });
-
+      const link = await createTestLink({ userId });
       const token = await createReport(link.id);
 
-      // Disable the report
       await api("PUT", `/api/reports/${link.id}`, { headers, body: { isEnabled: false } });
 
       const res = await api("GET", `/api/public-report/${token}`);
@@ -306,11 +278,7 @@ describe("Reports API", () => {
 
     it("returns 404 for an internal link", async () => {
       // Internal links need a session to redirect, so their stats stay private too.
-      const link = await createTestLink({
-        slug: `rpt-internal-${crypto.randomUUID().slice(0, 8)}`,
-        userId,
-      });
-
+      const link = await createTestLink({ userId });
       const token = await createReport(link.id);
 
       const okRes = await api("GET", `/api/public-report/${token}`);
@@ -324,7 +292,7 @@ describe("Reports API", () => {
 
     describe("rate limit", () => {
       it("answers 429 when the limiter refuses the client IP", async () => {
-        const link = await createTestLink({ slug: `rpt-rl-${crypto.randomUUID().slice(0, 8)}`, userId });
+        const link = await createTestLink({ userId });
         const token = await createReport(link.id);
         const limiter = fakeLimiter(false);
 
@@ -340,7 +308,7 @@ describe("Reports API", () => {
       });
 
       it("serves the report when the limiter allows the client IP", async () => {
-        const link = await createTestLink({ slug: `rpt-rl-ok-${crypto.randomUUID().slice(0, 8)}`, userId });
+        const link = await createTestLink({ userId });
         const token = await createReport(link.id);
         const limiter = fakeLimiter(true);
 
