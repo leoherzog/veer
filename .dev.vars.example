@@ -10,7 +10,7 @@ BETTER_AUTH_URL=http://localhost:8787
 # Admin access
 ADMIN_EMAILS=you@example.com
 
-# Cloudflare (for Analytics Engine SQL API reads)
+# Cloudflare API (Analytics Engine SQL reads and domain sync)
 CF_ACCOUNT_ID=
 CF_API_TOKEN=
 

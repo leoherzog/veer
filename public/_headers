@@ -1,0 +1,15 @@
+# Headers for the files that skip the Worker. Keep one rule per `!` path in
+# assets.run_worker_first (wrangler.jsonc); every other path gets its headers
+# and CSP from the Worker.
+
+/dist/app.js
+  X-Content-Type-Options: nosniff
+
+/dist/app.css
+  X-Content-Type-Options: nosniff
+
+/data/countries-110m.json
+  X-Content-Type-Options: nosniff
+
+/favicon.svg
+  X-Content-Type-Options: nosniff

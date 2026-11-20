@@ -15,7 +15,18 @@
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "run_worker_first": true,
+    // Every path except the negated files runs the Worker first, `/` included.
+    // The negated files skip the Worker's security headers, so each needs a rule
+    // in public/_headers. Negate exact files, never a prefix: the asset worker
+    // answers a miss with the SPA shell and no CSP. An unlisted static file is
+    // still served, through the Worker.
+    "run_worker_first": [
+      "/*",
+      "!/dist/app.js",
+      "!/dist/app.css",
+      "!/data/countries-110m.json",
+      "!/favicon.svg"
+    ],
     "not_found_handling": "single-page-application"
   },
   "d1_databases": [
@@ -64,8 +75,8 @@
   "triggers": {
     "crons": ["0 * * * *"]
   },
-  "placement": { "mode": "smart" },
-  "observability": { "enabled": true },
+  // Invocation logs would otherwise keep OAuth callback `code` and `state` values.
+  "observability": { "enabled": true, "redact_query_string": true },
   "env": {
     "demo": {
       "name": "veer-demo",

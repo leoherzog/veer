@@ -7,17 +7,17 @@
     "build:frontend": "esbuild frontend/src/app.js --bundle --format=esm --minify --outdir=public/dist",
     "deploy": "wrangler deploy",
     "db:generate": "drizzle-kit generate",
-    "db:migrate:local": "wrangler d1 migrations apply veer-db --local",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local",
     "typecheck": "wrangler types && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "seed:local": "node scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db --local --file=scripts/seed.generated.sql",
-    "seed:remote": "node scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute veer-db-demo --remote --env demo --file=scripts/seed.generated.sql"
+    "seed:local": "node scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute DB --local --file=scripts/seed.generated.sql",
+    "seed:remote": "node scripts/seed.ts > scripts/seed.generated.sql && wrangler d1 execute DB --remote --env demo --file=scripts/seed.generated.sql"
   },
   "license": "MIT",
   "type": "module",
   "engines": {
-    "node": ">=22.18"
+    "node": "^22.18.0 || ^24.0.0 || >=26.0.0"
   },
   "dependencies": {
     "@awesome.me/webawesome": "^3.15.0",
@@ -26,8 +26,7 @@
     "chart.js": "^4.6.1",
     "chartjs-chart-geo": "^4.3.6",
     "drizzle-orm": "^0.45.4",
-    "hono": "^4.13.19",
-    "topojson-client": "^3.1.0"
+    "hono": "^4.13.19"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.8.5",
