@@ -17,6 +17,10 @@ export function getLoginOptions() {
   return loginOptions;
 }
 
+export function isPasskeyEnabled() {
+  return loginOptions?.passkey === true;
+}
+
 export async function loadConfig() {
   try {
     const res = await fetch("/api/config");

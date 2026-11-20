@@ -4,8 +4,7 @@ import { showToast } from "../components/toast.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { renderStatsCharts } from "../components/stats-charts.js";
-import { renderAbStats } from "../components/stats-ab.js";
-import { SPINNER, apiFetch, shortUrl, bindConfirmDialog, renderTable } from "../lib/ui.js";
+import { SPINNER, apiFetch, shortUrl, bindConfirmDialog, renderTable, relativeTime } from "../lib/ui.js";
 
 function buildBadges(link) {
   const badges = [];
@@ -15,7 +14,7 @@ function buildBadges(link) {
     if (expired) {
       badges.push(`<wa-badge variant="danger" pill>Expired</wa-badge>`);
     } else {
-      badges.push(`<wa-badge variant="warning" pill>Expires <wa-relative-time date="${escapeAttr(link.expiresAt)}"></wa-relative-time></wa-badge>`);
+      badges.push(`<wa-badge variant="warning" pill>Expires ${relativeTime(link.expiresAt)}</wa-badge>`);
     }
   }
 
@@ -184,7 +183,7 @@ export async function renderLinkDetail(container, { id }) {
             <div><strong>Destination:</strong> ${safeDestUrl ? `<a href="${escapeAttr(safeDestUrl)}" target="_blank" rel="noopener">${escapeHtml(link.destinationUrl)}</a>` : escapeHtml(link.destinationUrl)}</div>
             <div><strong>Lifetime Clicks:</strong> <wa-format-number value="${link.totalClicks}"></wa-format-number></div>
             ${maxClicksInfo}
-            <div><strong>Created:</strong> <wa-relative-time date="${escapeAttr(link.createdAt)}"></wa-relative-time></div>
+            <div><strong>Created:</strong> ${relativeTime(link.createdAt)}</div>
             ${badges ? `<div class="wa-cluster wa-gap-2xs" style="margin-top:var(--wa-space-3xs);">${badges}</div>` : ""}
           </div>
           <div id="qr-container"></div>
@@ -216,11 +215,7 @@ export async function renderLinkDetail(container, { id }) {
     reportToggle.addEventListener("change", async (e) => {
       const isEnabled = e.target.checked;
       const result = report
-        ? await apiFetch(`/api/reports/${id}`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ isEnabled }),
-          })
+        ? await apiFetch(`/api/reports/${id}`, { method: "PUT", json: { isEnabled } })
         : await apiFetch(`/api/reports/${id}`, { method: "POST" });
       if (!result?.data) {
         e.target.checked = !isEnabled;
@@ -249,11 +244,8 @@ export async function renderLinkDetail(container, { id }) {
     },
   });
 
-  // #stats-container exists only when the link has clicks.
+  // #stats-container exists only when the link has clicks, #ab-stats-container
+  // only when it has A/B variants.
   const statsEl = container.querySelector("#stats-container");
-  if (statsEl) renderStatsCharts(statsEl, link.id);
-
-  // #ab-stats-container exists only when the link has A/B variants.
-  const abStatsEl = container.querySelector("#ab-stats-container");
-  if (abStatsEl && link.totalClicks > 0) renderAbStats(abStatsEl, link.id);
+  if (statsEl) renderStatsCharts(statsEl, link.id, { abContainer: container.querySelector("#ab-stats-container") });
 }

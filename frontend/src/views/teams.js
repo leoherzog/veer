@@ -64,11 +64,7 @@ export function renderTeamsPanel(container, { teams, onTeamSelect }) {
     if (!name) { showToast("Team name is required", "warning"); return; }
 
     await withLoadingBtn(confirmBtn, async () => {
-      const result = await apiFetch("/api/teams", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name }),
-      });
+      const result = await apiFetch("/api/teams", { method: "POST", json: { name } });
       if (!result) return;
       dialog.open = false;
       showToast("Team created", "success");

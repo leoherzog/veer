@@ -379,11 +379,7 @@ function renderLinkForm(container, { link = null, onSuccess, onPartialSave, team
 
       const url = editing ? `/api/links/${savedId}` : "/api/links";
       const method = editing ? "PUT" : "POST";
-      const result = await apiFetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
-      });
+      const result = await apiFetch(url, { method, json: data });
       if (!result) return;
 
       savedId = result.data.id;
@@ -395,11 +391,7 @@ function renderLinkForm(container, { link = null, onSuccess, onPartialSave, team
       }
 
       if (targets.length > 0 || mustSaveTargets) {
-        const targetRes = await apiFetch(`/api/links/${savedId}/targets`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ targets }),
-        });
+        const targetRes = await apiFetch(`/api/links/${savedId}/targets`, { method: "PUT", json: { targets } });
         if (!targetRes) {
           // The link itself is saved. Keep the form and its rules on screen so
           // the rules can be corrected and submitted again.

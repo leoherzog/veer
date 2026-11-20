@@ -14,8 +14,9 @@ export function setNotFound(handler) {
   notFoundHandler = handler;
 }
 
+/** Go to `path` and render it. Navigating to the current URL replaces its history entry instead of stacking a duplicate. */
 export function navigate(path, replace = false) {
-  if (replace) {
+  if (replace || path === location.pathname + location.search) {
     history.replaceState(null, "", path);
   } else {
     history.pushState(null, "", path);

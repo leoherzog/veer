@@ -40,11 +40,10 @@ export async function renderCampaignsPanel(container) {
     await withLoadingBtn(createBtn, async () => {
       const res = await apiFetch("/api/campaigns", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        json: {
           name: e.target.querySelector('[name="name"]').value.trim(),
           description: e.target.querySelector('[name="description"]').value.trim() || null,
-        }),
+        },
       });
       if (!res) return;
       showToast("Campaign created", "success");

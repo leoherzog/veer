@@ -53,35 +53,56 @@ export function shortUrl(link) {
     : `${location.origin}/${slug}`;
 }
 
+/** True when `/api/me` also answers 401, so a reload boots signed out. */
+async function sessionEnded() {
+  const res = await fetch("/api/me").catch(() => null);
+  return res?.status === 401;
+}
+
 /**
- * Fetch wrapper with 401 redirect and error toast. Never rejects.
+ * Fetch wrapper with 401 handling and error toast. Never rejects.
  * Returns the parsed JSON body on success, `{}` for a 2xx with no body, or
- * null on an HTTP, network or parse failure. Callers destructure the result
- * (e.g. { data }, { data, pagination }).
+ * null on an HTTP, network, parse or abort failure. An abort is silent.
+ * @param {RequestInit & { json?: unknown }} opts `json` is sent as a JSON body.
  */
-export async function apiFetch(url, opts = {}) {
+export async function apiFetch(url, { json, ...opts } = {}) {
+  if (json !== undefined) {
+    opts.headers = new Headers(opts.headers);
+    opts.headers.set("Content-Type", "application/json");
+    opts.body = JSON.stringify(json);
+  }
   try {
     const res = await fetch(url, opts);
-    if (res.status === 401) {
-      window.location.href = "/login";
+    // Reload only once the session has ended: the signed-out boot renders login
+    // on this URL, so the OAuth callback returns here, and signed-out views never
+    // call apiFetch. A 401 under a live session, such as a Better Auth route in
+    // demo mode, would reload forever, so it is toasted like any other error.
+    if (res.status === 401 && (await sessionEnded())) {
+      location.reload();
       return null;
     }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
+      // The `.catch` above also swallows an abort during the body read.
+      if (opts.signal?.aborted) return null;
       const variant = err.demoMode ? "warning" : "danger";
       showToast(err.error || err.message || "Request failed", variant);
       return null;
     }
-    // A 204 or an empty 200 body still counts as success, so callers can keep
-    // testing the result for truthiness.
-    if (res.status === 204) return {};
+    // An empty 2xx body still counts as success, so callers can keep testing
+    // the result for truthiness.
     const text = await res.text();
     if (!text.trim()) return {};
     return JSON.parse(text);
-  } catch {
-    showToast("Request failed", "danger");
+  } catch (err) {
+    if (err?.name !== "AbortError") showToast("Request failed", "danger");
     return null;
   }
+}
+
+/** `wa-relative-time` markup for `date`, or the `empty` text when there is no date. */
+export function relativeTime(date, empty = "—") {
+  return date ? `<wa-relative-time date="${escapeAttr(date)}"></wa-relative-time>` : escapeHtml(empty);
 }
 
 /** Show a loading/disabled state on `btn` while `fn` runs. Errors propagate to the caller. */
@@ -116,7 +137,7 @@ export function bindConfirmDialog({ dialog, confirmBtn, onConfirm }) {
  * not a margin — separates the pager from the content above it.
  */
 export function renderPagination(container, { page, total, limit, onPageChange }) {
-  if (total <= limit) return;
+  if (!(total > limit)) return;
   container.classList.add("wa-stack", "wa-gap-m");
   const row = document.createElement("div");
   row.className = "wa-cluster wa-justify-content-center";
@@ -130,16 +151,30 @@ export function renderPagination(container, { page, total, limit, onPageChange }
   container.append(row);
 }
 
+/** The in-flight load per table section, aborted when a newer load starts. */
+const tableLoads = new WeakMap();
+
 /**
  * Load a paginated collection into `el` and render it as a `.link-table`,
- * handling the spinner, empty and error states. Returns `el` on success, or
- * null when nothing was rendered.
+ * handling the spinner, empty and error states. An empty page past the first
+ * hands the previous page to `onPageChange`. Returns `el` on success, or null
+ * when nothing was rendered.
  */
 export async function loadTableSection(el, { url, label, headers, renderRow, empty, error, onPageChange }) {
+  tableLoads.get(el)?.abort();
+  const controller = new AbortController();
+  tableLoads.set(el, controller);
   el.innerHTML = SPINNER;
-  const result = await apiFetch(url);
+  const result = await apiFetch(url, { signal: controller.signal });
+  if (controller.signal.aborted) return null;
   if (!result) { el.innerHTML = errorCallout(error); return null; }
   const { data, pagination } = result;
+  if (!data.length && pagination?.page > 1) {
+    // Usually the last row of the last page was just deleted.
+    const lastPage = Math.ceil(pagination.total / pagination.limit) || 1;
+    onPageChange(Math.min(pagination.page - 1, lastPage));
+    return null;
+  }
   if (!data.length) { el.innerHTML = `<p class="wa-color-text-quiet">${escapeHtml(empty)}</p>`; return null; }
   el.innerHTML = renderTable({ label, columns: headers, rows: data.map((row) => renderRow(row)) });
   renderPagination(el, { ...pagination, onPageChange });

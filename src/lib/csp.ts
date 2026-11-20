@@ -5,13 +5,12 @@
 
 const BASE_DIRECTIVES = [
   "default-src 'self'",
-  // Hash of the theme bootstrap script in public/index.html; regenerate it when that script changes.
-  "script-src 'self' 'sha256-6lEELWNMgHrMCgR7XoJHO/mczPvz9siUa+la3S+ZogI='",
+  // SHA-256 of the exact text inside the theme script tags in public/index.html; regenerate it when that script changes.
+  "script-src 'self' 'sha256-9f+MXDEcn3qPSi5I81xOefpst2jRziRDSJKLtCG3qo0='",
   "style-src 'self' 'unsafe-inline' https://fonts.bunny.net",
   "img-src 'self' data: https:",
   // `data:` — wa-icon fetches the system icon library's data: URIs, so connect-src governs them, not img-src.
-  // jsDelivr serves the world-atlas topojson the choropleth fetches at runtime.
-  "connect-src 'self' data: https://ka-f.fontawesome.com https://cdn.jsdelivr.net",
+  "connect-src 'self' data: https://ka-f.fontawesome.com",
   "font-src 'self' https://fonts.bunny.net",
   "frame-ancestors 'none'",
   "base-uri 'self'",

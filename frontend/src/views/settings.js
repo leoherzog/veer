@@ -1,15 +1,15 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { authClient } from "../auth-client.js";
-import { getLoginOptions } from "../lib/config.js";
-import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable } from "../lib/ui.js";
+import { isPasskeyEnabled } from "../lib/config.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable, relativeTime } from "../lib/ui.js";
 
 /* ── API Keys helpers ─────────────────────────────────────────────── */
 
 function renderKeyRow(key) {
-  const createdAt = key.createdAt ? `<wa-relative-time date="${escapeAttr(key.createdAt)}"></wa-relative-time>` : "—";
-  const lastUsed = key.lastUsedAt ? `<wa-relative-time date="${escapeAttr(key.lastUsedAt)}"></wa-relative-time>` : "Never";
-  const expires = key.expiresAt ? `<wa-relative-time date="${escapeAttr(key.expiresAt)}"></wa-relative-time>` : "Never";
+  const createdAt = relativeTime(key.createdAt);
+  const lastUsed = relativeTime(key.lastUsedAt, "Never");
+  const expires = relativeTime(key.expiresAt, "Never");
   return `
     <tr>
       <td>${escapeHtml(key.name)}</td>
@@ -96,7 +96,7 @@ function bindDeleteKeyDialog(container, reload) {
 /* ── Passkey helpers ──────────────────────────────────────────────── */
 
 function renderPasskeyRow(pk) {
-  const created = pk.createdAt ? `<wa-relative-time date="${escapeAttr(pk.createdAt)}"></wa-relative-time>` : "—";
+  const created = relativeTime(pk.createdAt);
   return `
     <tr>
       <td>${escapeHtml(pk.name || "Unnamed passkey")}</td>
@@ -281,7 +281,7 @@ export async function renderSettings(container, { activeTab = "api-keys", user }
   const keysResult = await apiFetch("/api/keys");
   if (keysResult?.data) apiKeys = keysResult.data;
 
-  const passkeyEnabled = getLoginOptions()?.passkey === true;
+  const passkeyEnabled = isPasskeyEnabled();
   let passkeys = [];
   if (passkeyEnabled) {
     const pkResult = await apiFetch("/api/auth/passkey/list-user-passkeys");
@@ -368,11 +368,7 @@ export async function renderSettings(container, { activeTab = "api-keys", user }
     }
 
     await withLoadingBtn(submitBtn, async () => {
-      const result = await apiFetch("/api/keys", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const result = await apiFetch("/api/keys", { method: "POST", json: body });
       if (!result) return;
 
       const callout = container.querySelector("#new-key-callout");
@@ -459,8 +455,7 @@ export async function renderSettings(container, { activeTab = "api-keys", user }
         await withLoadingBtn(submitBtn, async () => {
           const configRes = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}`, {
             method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ rootRedirect, notFoundRedirect, accessMode }),
+            json: { rootRedirect, notFoundRedirect, accessMode },
           });
           if (!configRes) return;
 
@@ -469,8 +464,7 @@ export async function renderSettings(container, { activeTab = "api-keys", user }
             const emails = emailsText.split("\n").map(e => e.trim()).filter(Boolean);
             const accessRes = await apiFetch(`/api/domains/${encodeURIComponent(hostname)}/access`, {
               method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ emails }),
+              json: { emails },
             });
             if (!accessRes) {
               showToast("Domain updated but access list failed to save", "warning");

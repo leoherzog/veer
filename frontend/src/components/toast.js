@@ -15,7 +15,7 @@ function getToast() {
 }
 
 export function showToast(message, variant) {
-  getToast().create(message, { variant, duration: 3000, icon: VARIANT_ICONS[variant] });
+  getToast().create(message, { variant, icon: VARIANT_ICONS[variant] });
 }
 
 /**

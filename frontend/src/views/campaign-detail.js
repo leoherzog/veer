@@ -85,11 +85,10 @@ export async function renderCampaignDetail(container, { id }) {
     await withLoadingBtn(saveBtn, async () => {
       const res = await apiFetch(`/api/campaigns/${id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+        json: {
           name: e.target.querySelector('[name="name"]').value.trim(),
           description: e.target.querySelector('[name="description"]').value.trim() || null,
-        }),
+        },
       });
       if (!res) return;
       showToast("Campaign updated", "success");
@@ -189,11 +188,7 @@ async function loadAvailableLinks(container, campaignId, existingLinks, rootCont
     btn.addEventListener("click", async () => {
       const linkId = btn.dataset.linkId;
       await withLoadingBtn(btn, async () => {
-        const res = await apiFetch(`/api/campaigns/${campaignId}/links`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ linkIds: [linkId] }),
-        });
+        const res = await apiFetch(`/api/campaigns/${campaignId}/links`, { method: "POST", json: { linkIds: [linkId] } });
         if (!res) return;
         showToast("Link added to campaign", "success");
         rootContainer.querySelector("#add-links-dialog").open = false;

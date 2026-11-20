@@ -33,7 +33,6 @@ import "@awesome.me/webawesome/dist/components/tab-panel/tab-panel.js";
 import "@awesome.me/webawesome/dist/components/tooltip/tooltip.js";
 import "@awesome.me/webawesome/dist/components/pagination/pagination.js";
 import "@awesome.me/webawesome/dist/components/toast/toast.js";
-import "@awesome.me/webawesome/dist/components/toast-item/toast-item.js";
 import "@awesome.me/webawesome/dist/components/relative-time/relative-time.js";
 import "@awesome.me/webawesome/dist/components/format-number/format-number.js";
 import "@awesome.me/webawesome/dist/components/color-picker/color-picker.js";
@@ -56,6 +55,10 @@ import { renderAdmin, isImpersonating, getImpersonationBanner, bindImpersonation
 import { renderAcceptInvite } from "./views/accept-invite.js";
 
 let currentUser = null;
+
+/** A centred full-view message. `title` and `text` are trusted markup. */
+const messageBlock = (title, text) =>
+  `<div role="alert" class="wa-stack wa-align-items-center"><h2>${title}</h2><p>${text}</p></div>`;
 
 async function init() {
   // The title, nav brand and login view read the instance config synchronously.
@@ -87,9 +90,10 @@ async function init() {
     // navigation writes into a node already detached from #main.
     const view = document.createElement("div");
     main.replaceChildren(view);
-    Promise.resolve(viewFn(view)).catch((err) => {
+    // The executor turns a synchronous throw from a sync view into a rejection.
+    new Promise((ok) => ok(viewFn(view))).catch((err) => {
       console.error(err);
-      view.innerHTML = '<div class="wa-stack wa-align-items-center"><h2>Something went wrong</h2><p>Please try again.</p></div>';
+      view.innerHTML = messageBlock("Something went wrong", "Please try again.");
     });
     if (!bootstrapping) main.focus();
   }
@@ -98,9 +102,13 @@ async function init() {
   // the OAuth callbackURL.
   const authed = (view) => (params) => render(currentUser ? (el) => view(el, params) : renderLogin);
 
-  addRoute("/", () => render((el) => renderHome(el, currentUser)));
+  // "/" and "/login" replace rather than push for a signed-in user, so Back
+  // does not land on a page that immediately redirects again.
+  addRoute("/", () => {
+    if (currentUser) return navigate("/links", true);
+    render(renderHome);
+  });
   addRoute("/login", () => {
-    // Replace rather than push: /login must not sit in history behind /links.
     if (currentUser) return navigate("/links", true);
     render(renderLogin);
   });
@@ -113,14 +121,14 @@ async function init() {
   addRoute("/teams/:id", authed((el, params) => renderDashboard(el, { activeTab: "teams", teamId: params.id, user: currentUser })));
   addRoute("/admin", authed((el) => {
     if (currentUser.isAdmin) return renderAdmin(el);
-    el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center"><h2>Access denied</h2><p>You do not have admin access.</p></div>`;
+    el.innerHTML = messageBlock("Access denied", "You do not have admin access.");
   }));
   addRoute("/r/:token", (params) => render((el) => renderReport(el, params)));
   addRoute("/invite/:token", authed(renderAcceptInvite));
 
   setNotFound(() => {
     render((el) => {
-      el.innerHTML = `<div role="alert" class="wa-stack wa-align-items-center"><h2>Page not found</h2><p>The page you're looking for doesn't exist.</p></div>`;
+      el.innerHTML = messageBlock("Page not found", "The page you're looking for doesn't exist.");
     });
   });
 
@@ -153,6 +161,8 @@ async function init() {
 }
 
 document.addEventListener("click", (e) => {
+  // A modified or non-primary click keeps the browser default, such as opening a new tab.
+  if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const link = e.target.closest("[data-link]");
   if (!link) return;
   e.preventDefault();

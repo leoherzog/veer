@@ -1,5 +1,5 @@
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { shortUrl, emptyState, renderPagination, renderTable } from "../lib/ui.js";
+import { shortUrl, emptyState, renderPagination, renderTable, relativeTime } from "../lib/ui.js";
 
 const COLUMNS = [
   { key: "slug", label: "Short URL" },
@@ -42,7 +42,7 @@ export function renderLinkTable(container, { links, pagination, sort, onPageChan
         </td>
         <td class="text-truncate wa-text-truncate">${escapeHtml(link.destinationUrl)}</td>
         <td>${escapeHtml(link.title || "")}</td>
-        <td><wa-relative-time date="${escapeAttr(link.createdAt)}"></wa-relative-time></td>
+        <td>${relativeTime(link.createdAt)}</td>
         <td>
           <div class="wa-cluster wa-gap-2xs">
             <wa-button size="s" variant="neutral" appearance="plain" pill href="/links/${escapeAttr(link.id)}" data-link><wa-icon name="pen-to-square" label="Edit"></wa-icon></wa-button>

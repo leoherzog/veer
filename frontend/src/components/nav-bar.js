@@ -2,23 +2,22 @@ import { authClient } from "../auth-client.js";
 import { navigate } from "../router.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
 import { getInstanceName, isDemoMode } from "../lib/config.js";
+import { isDark, toggleTheme } from "../lib/theme.js";
 
-/**
- * Swap the theme class on `<html>` and announce it. WA components re-read their
- * custom properties on their own; the `theme-change` event exists for consumers
- * that cache resolved colors, such as `lib/chart-helper.js`.
- */
-function toggleTheme(iconEl, labelEl) {
-  const root = document.documentElement;
-  const isDark = root.classList.contains("wa-dark");
-  const theme = isDark ? "wa-light" : "wa-dark";
-  root.classList.remove(isDark ? "wa-dark" : "wa-light");
-  root.classList.add(theme);
-  localStorage.setItem("theme", theme);
-  if (iconEl) iconEl.name = isDark ? "moon" : "sun";
-  if (labelEl) labelEl.textContent = isDark ? "Dark Mode" : "Light Mode";
-  document.dispatchEvent(new CustomEvent("theme-change", { detail: { theme } }));
+/** Point the theme control at the scheme it switches to. The scheme can also change from the system or another tab. */
+function syncThemeToggle() {
+  const toggle = document.getElementById("theme-toggle");
+  if (!toggle) return;
+  const dark = isDark();
+  const action = dark ? "Light Mode" : "Dark Mode";
+  const icon = toggle.querySelector("wa-icon");
+  icon.name = dark ? "sun" : "moon";
+  const text = toggle.querySelector(".theme-label");
+  if (text) text.textContent = action;
+  else icon.label = action;
 }
+
+document.addEventListener("theme-change", syncThemeToggle);
 
 function getInitials(name) {
   if (!name) return "";
@@ -32,7 +31,6 @@ export function renderNavBar(container, user) {
   const avatarAttrs = user
     ? `${user.image ? `image="${escapeAttr(user.image)}"` : ""} initials="${escapeAttr(getInitials(user.name))}" label="${escapeAttr(user.name || "")}"`
     : "";
-  const isDark = document.documentElement.classList.contains("wa-dark");
   // #nav is slotted straight into wa-page's `header`, which already supplies
   // display:flex, align-items:center, justify-content:space-between, gap and padding.
   container.innerHTML = `
@@ -55,8 +53,8 @@ export function renderNavBar(container, user) {
               </wa-dropdown-item>
               ` : ""}
               <wa-dropdown-item id="theme-toggle">
-                <wa-icon slot="icon" name="${isDark ? "sun" : "moon"}"></wa-icon>
-                <span class="theme-label">${isDark ? "Light Mode" : "Dark Mode"}</span>
+                <wa-icon slot="icon"></wa-icon>
+                <span class="theme-label"></span>
               </wa-dropdown-item>
               ${isDemoMode() ? "" : `
               <wa-divider></wa-divider>
@@ -68,12 +66,13 @@ export function renderNavBar(container, user) {
             </wa-dropdown>
           `
           : `
-            <wa-button id="theme-toggle" size="s" variant="neutral" appearance="plain" pill><wa-icon name="${isDark ? "sun" : "moon"}" label="${isDark ? "Light Mode" : "Dark Mode"}"></wa-icon></wa-button>
+            <wa-button id="theme-toggle" size="s" variant="neutral" appearance="plain" pill><wa-icon></wa-icon></wa-button>
             <wa-button size="s" variant="brand" href="/login" data-link>Login</wa-button>
           `
         }
       </div>
   `;
+  syncThemeToggle();
 
   const dropdown = container.querySelector("wa-dropdown");
   if (dropdown) {
@@ -84,20 +83,13 @@ export function renderNavBar(container, user) {
       } else if (item.id === "admin-link") {
         navigate("/admin");
       } else if (item.id === "theme-toggle") {
-        toggleTheme(item.querySelector("wa-icon"), item.querySelector(".theme-label"));
+        toggleTheme();
       } else if (item.id === "logout-btn") {
         await authClient.signOut();
-        history.replaceState(null, "", "/");
-        location.reload();
+        location.replace("/");
       }
     });
-  }
-
-  if (!user) {
-    container.querySelector("#theme-toggle")?.addEventListener("click", () => {
-      const icon = container.querySelector("#theme-toggle wa-icon");
-      toggleTheme(icon, null);
-      if (icon) icon.label = icon.name === "moon" ? "Dark Mode" : "Light Mode";
-    });
+  } else {
+    container.querySelector("#theme-toggle").addEventListener("click", toggleTheme);
   }
 }

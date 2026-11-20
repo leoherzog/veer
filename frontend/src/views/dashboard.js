@@ -170,8 +170,7 @@ export function renderDashboard(container, { activeTab = "links", teamId = null,
       const bulkTeamId = container.querySelector("#bulk-owner").value || null;
       const result = await apiFetch("/api/bulk", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ links, ...(bulkTeamId && { teamId: bulkTeamId }) }),
+        json: { links, ...(bulkTeamId && { teamId: bulkTeamId }) },
       });
       if (!result) return;
       const { results } = result;

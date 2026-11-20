@@ -6,12 +6,10 @@
   <meta name="color-scheme" content="light dark">
   <title></title>
   <script>
-    (function() {
-      var saved = localStorage.getItem('theme');
-      var prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-      var theme = saved || (prefersDark ? 'wa-dark' : 'wa-light');
-      document.documentElement.classList.remove('wa-light', 'wa-dark');
-      document.documentElement.classList.add(theme);
+    (function () {
+      var t;
+      try { t = localStorage.getItem('theme'); } catch (e) {}
+      if (t ? t === 'wa-dark' : matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.classList.replace('wa-light', 'wa-dark');
     })();
   </script>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
@@ -19,7 +17,7 @@
 </head>
 <body>
   <wa-page>
-    <nav slot="header" id="nav"></nav>
+    <header slot="header" id="nav"></header>
     <main id="main" tabindex="-1">
       <div class="wa-cluster wa-justify-content-center">
         <wa-spinner></wa-spinner>

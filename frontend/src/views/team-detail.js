@@ -1,6 +1,6 @@
 import { showToast } from "../components/toast.js";
 import { escapeAttr, escapeHtml } from "../lib/escape.js";
-import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable } from "../lib/ui.js";
+import { SPINNER, apiFetch, withLoadingBtn, bindConfirmDialog, renderTable, relativeTime } from "../lib/ui.js";
 
 function renderMemberRow(member, isAdmin) {
   return `
@@ -40,7 +40,7 @@ function renderInviteRow(invite) {
     <tr>
       <td>${escapeHtml(invite.email)}</td>
       <td><wa-badge variant="${invite.role === "admin" ? "brand" : "neutral"}" pill>${escapeHtml(invite.role)}</wa-badge></td>
-      <td><wa-relative-time date="${escapeAttr(invite.expiresAt)}"></wa-relative-time></td>
+      <td>${relativeTime(invite.expiresAt)}</td>
       <td>
         <div class="wa-cluster wa-gap-2xs">
           <wa-copy-button value="${escapeAttr(inviteUrl(invite.token))}" copy-label="Copy invite link"></wa-copy-button>
@@ -210,11 +210,7 @@ export async function renderTeamDetail(container, { id }, currentUser, { onBack,
       if (!email) { showToast("Email is required", "warning"); return; }
 
       await withLoadingBtn(submitBtn, async () => {
-        const result = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invite`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, role }),
-        });
+        const result = await apiFetch(`/api/teams/${encodeURIComponent(id)}/invite`, { method: "POST", json: { email, role } });
         if (!result) return;
         const url = inviteUrl(result.data.token);
         showToast("Invite created! Share the link with the invitee.", "success");
@@ -245,8 +241,7 @@ export async function renderTeamDetail(container, { id }, currentUser, { onBack,
       await withLoadingBtn(btn, async () => {
         const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}/members/${encodeURIComponent(userId)}`, {
           method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ role: newRole }),
+          json: { role: newRole },
         });
         if (!res) return;
         showToast("Role updated", "success");
@@ -313,11 +308,7 @@ export async function renderTeamDetail(container, { id }, currentUser, { onBack,
 
       const confirmBtn = container.querySelector("#confirm-edit-team");
       await withLoadingBtn(confirmBtn, async () => {
-        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name }),
-        });
+        const res = await apiFetch(`/api/teams/${encodeURIComponent(id)}`, { method: "PUT", json: { name } });
         if (!res) return;
         editDialog.open = false;
         showToast("Team updated", "success");

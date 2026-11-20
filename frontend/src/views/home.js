@@ -1,14 +1,8 @@
-import { navigate } from "../router.js";
 import { getInstanceName } from "../lib/config.js";
 import { escapeHtml } from "../lib/escape.js";
 
-export function renderHome(container, user) {
-  if (user) {
-    // Replace so Back doesn't land on a page that immediately redirects again.
-    navigate("/links", true);
-    return;
-  }
-
+/** Signed-out landing page. The "/" route sends a signed-in user to /links before this renders. */
+export function renderHome(container) {
   container.innerHTML = `
     <div class="wa-stack wa-gap-l wa-text-center">
       <h1>${escapeHtml(getInstanceName())}</h1>

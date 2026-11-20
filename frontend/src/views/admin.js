@@ -167,8 +167,7 @@ export async function renderAdmin(container) {
       const maxLinks = rawMaxLinks === "" ? null : parseInt(rawMaxLinks, 10);
       const res = await apiFetch(`/api/admin/users/${encodeURIComponent(editDialog.dataset.userId)}`, {
         method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ maxLinks }),
+        json: { maxLinks },
       });
       if (!res) return false;
       showToast("User updated", "success");

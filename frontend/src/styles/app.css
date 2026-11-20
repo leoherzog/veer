@@ -36,7 +36,9 @@ wa-tab-panel { --padding: var(--wa-space-m) 0 0; }
   .text-truncate { max-width: 100px; }
 }
 
-.stats-skeleton { height: 200px; }
+/* wa-skeleton fills its container; a stat tile's value placeholder is one line
+   of the value's text, narrower than the tile. */
+.stat-skeleton { width: 4em; height: 1lh; }
 
 /* Demo mode: hide top-level create buttons. Mutations still 403 with a friendly
    toast (see apiFetch), so this is purely UI polish. */
@@ -48,7 +50,7 @@ body.demo-mode #create-team-btn {
 
 /* wa-button pads its label for text and squares itself only around a lone
    wa-icon. The avatar trigger hugs the avatar so it sits on the header gutter. */
-.avatar-trigger::part(base) { padding: 0; width: auto; height: auto; }
+.avatar-trigger::part(button) { padding: 0; width: auto; height: auto; }
 .avatar-trigger::part(label) { display: flex; }
 
 /* Inline help icon beside a heading. Sized in em to track the heading, since the

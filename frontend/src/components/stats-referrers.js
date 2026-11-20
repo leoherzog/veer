@@ -1,32 +1,25 @@
-import { CHART_SKELETON, noData, fetchJSON, statsCard } from "../lib/stats-common.js";
-import { createChart } from "../lib/chart-helper.js";
+import { CHART_SKELETON, loadStatsCard, statsCard } from "../lib/stats-common.js";
+import { clicksData, createChart } from "../lib/chart-helper.js";
 
-export async function renderStatsReferrers(container, linkId, days = 30) {
-  container.innerHTML = statsCard("Top Referrers", CHART_SKELETON);
+const TITLE = "Top Referrers";
 
-  try {
-    const { data } = await fetchJSON(`/api/stats/${linkId}/referrers?days=${days}`);
-    const referrers = data;
+/** The card's loading state, for a caller that shows it before the fetch starts. */
+export const REFERRERS_SKELETON = statsCard(TITLE, CHART_SKELETON);
 
-    if (!referrers.length) {
-      container.innerHTML = statsCard("Top Referrers", noData("No referrer data yet"));
-      return;
-    }
+export async function renderStatsReferrers(container, linkId, days, signal) {
+  const referrers = await loadStatsCard(container, {
+    title: TITLE,
+    url: `/api/stats/${linkId}/referrers?days=${days}`,
+    signal,
+    isEmpty: (d) => !d.length,
+    empty: "No referrer data yet",
+    error: "Failed to load referrer data",
+  });
+  if (!referrers) return;
 
-    container.innerHTML = statsCard("Top Referrers", `
-      <div class="wa-frame:landscape">
-        <canvas id="referrers-chart"></canvas>
-      </div>
-    `);
-
-    createChart(container.querySelector("#referrers-chart"), "bar", {
-      data: {
-        labels: referrers.map((r) => r.source),
-        datasets: [{ label: "Clicks", data: referrers.map((r) => r.clicks) }],
-      },
-      options: { indexAxis: "y" },
-    });
-  } catch {
-    container.innerHTML = statsCard("Top Referrers", noData("Failed to load referrer data"));
-  }
+  container.innerHTML = statsCard(TITLE, `<div class="wa-frame:landscape"><canvas id="referrers-chart"></canvas></div>`);
+  createChart(container.querySelector("#referrers-chart"), "bar", {
+    data: clicksData(referrers, "source"),
+    options: { indexAxis: "y" },
+  });
 }
