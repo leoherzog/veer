@@ -2,8 +2,9 @@ import { Hono } from "hono";
 import { eq, desc } from "drizzle-orm";
 import { getDb } from "../../db";
 import { user as userTable, teams, teamMembers, links } from "../../db/schema";
-import { badRequest, notFound } from "../../lib/errors";
+import { notFound } from "../../lib/errors";
 import { parseJsonBody, parsePagination, searchFilter } from "../../lib/request";
+import { parsePositiveInt } from "../../lib/validators";
 import type { AppEnv } from "../../types";
 
 const adminRoutes = new Hono<AppEnv>();
@@ -66,13 +67,9 @@ adminRoutes.patch("/users/:id", async (c) => {
   const updates: Partial<typeof userTable.$inferInsert> = { updatedAt: new Date() };
 
   // null means unlimited; anything below 1 is rejected.
-  if (body.maxLinks === null) {
-    updates.maxLinks = null;
-  } else {
-    const ml = Math.floor(Number(body.maxLinks));
-    if (!Number.isFinite(ml) || ml < 1) throw badRequest("maxLinks must be at least 1, or null for unlimited");
-    updates.maxLinks = ml;
-  }
+  updates.maxLinks = body.maxLinks === null
+    ? null
+    : parsePositiveInt(body.maxLinks, "maxLinks must be at least 1, or null for unlimited");
 
   const updated = await db.update(userTable).set(updates).where(eq(userTable.id, id)).returning(columns).get();
   if (!updated) throw notFound("User not found");
@@ -163,11 +160,9 @@ adminRoutes.delete("/teams/:id", async (c) => {
   const db = getDb(c.env.DB);
   const id = c.req.param("id");
 
-  const team = await db.select({ id: teams.id }).from(teams).where(eq(teams.id, id)).get();
-  if (!team) throw notFound("Team not found");
-
   // Links fall back to teamId NULL via ON DELETE SET NULL; the KV cache holds no team data.
-  await db.delete(teams).where(eq(teams.id, id));
+  const result = await db.delete(teams).where(eq(teams.id, id));
+  if (!result.meta?.changes) throw notFound("Team not found");
 
   return c.json({ success: true });
 });

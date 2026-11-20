@@ -14,3 +14,14 @@ export type AppEnv = {
     user?: AuthUser;
   };
 };
+
+/**
+ * Hono environment for a sub-app that `src/index.ts` mounts only behind
+ * requireAuth or requireAuthOrApiKey, so `c.var.user` is always set.
+ */
+export type AuthedEnv = {
+  Bindings: Env;
+  Variables: {
+    user: AuthUser;
+  };
+};

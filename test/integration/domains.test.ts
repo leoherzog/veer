@@ -394,6 +394,23 @@ describe("Domains API", () => {
       expect(json.data).toContain("upper@test.com");
     });
 
+    it("stores an email once when it repeats in a different case", async () => {
+      const hostname = "dedupe-access.example.com";
+      await createTestDomain(hostname, { accessMode: "restricted" });
+
+      const res = await api("PUT", `/api/domains/${hostname}/access`, {
+        headers: adminHeaders,
+        env: adminEnvObj,
+        body: { emails: ["dup@test.com", "DUP@Test.com", " dup@test.com ", "other@test.com"] },
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ data: ["dup@test.com", "other@test.com"] });
+
+      const { results } = await env.DB.prepare("SELECT email FROM domain_access WHERE hostname = ? ORDER BY email")
+        .bind(hostname).all<{ email: string }>();
+      expect(results.map(r => r.email)).toEqual(["dup@test.com", "other@test.com"]);
+    });
+
     it("rejects missing emails field with 400", async () => {
       const hostname = "access-missing-emails.example.com";
       await createTestDomain(hostname);
@@ -512,6 +529,66 @@ describe("Domains API", () => {
       expect(keptLink!.domainHostname).toBeNull();
 
       expect(await env.KV.get(`${removed}:sync-collide`)).toBeNull();
+    });
+
+    it("purges the cached links of every removed domain", async () => {
+      const removedA = "sync-removed-a.example.com";
+      const removedB = "sync-removed-b.example.com";
+      await createTestDomain(removedA);
+      await createTestDomain(removedB);
+      const owner = await setupAuth({ email: "sync-multi@test.com" });
+      const linkA = await createTestLink({ slug: "sync-multi-a", userId: owner.user.id, domainHostname: removedA });
+      const linkB = await createTestLink({ slug: "sync-multi-b", userId: owner.user.id, domainHostname: removedB });
+      await env.KV.put(`${removedA}:sync-multi-a`, JSON.stringify({ url: "https://example.com/a" }));
+      await env.KV.put(`${removedB}:sync-multi-b`, JSON.stringify({ url: "https://example.com/b" }));
+
+      stubCloudflareDomains(["kept.example.com"]);
+
+      const res = await api("POST", "/api/domains/sync", { headers: adminHeaders, env: syncEnv() });
+      expect(res.status).toBe(200);
+      const hostnames = (await res.json() as { data: { hostname: string }[] }).data.map(d => d.hostname);
+      expect(hostnames).not.toContain(removedA);
+      expect(hostnames).not.toContain(removedB);
+
+      for (const id of [linkA.id, linkB.id]) {
+        expect(await env.DB.prepare("SELECT id FROM links WHERE id = ?").bind(id).first()).toBeNull();
+      }
+      expect(await env.KV.get(`${removedA}:sync-multi-a`)).toBeNull();
+      expect(await env.KV.get(`${removedB}:sync-multi-b`)).toBeNull();
+    });
+
+    it("removes more domains than one statement can bind", async () => {
+      // D1 caps a statement at 100 bound parameters.
+      const removed = Array.from({ length: 120 }, (_, i) => `sync-many-${String(i).padStart(3, "0")}.example.com`);
+      const now = Math.floor(Date.now() / 1000);
+      await env.DB.batch(removed.map(hostname =>
+        env.DB.prepare("INSERT INTO domain_config (hostname, accessMode, updatedAt) VALUES (?, 'all', ?)").bind(hostname, now),
+      ));
+      const owner = await setupAuth({ email: "sync-many@test.com" });
+      const edges = [removed[0], removed[removed.length - 1]];
+      for (const hostname of edges) {
+        await createTestLink({ slug: "sync-many", userId: owner.user.id, domainHostname: hostname });
+        await env.KV.put(`${hostname}:sync-many`, JSON.stringify({ url: "https://example.com" }));
+      }
+
+      stubCloudflareDomains(["kept.example.com"]);
+
+      const res = await api("POST", "/api/domains/sync", { headers: adminHeaders, env: syncEnv() });
+      expect(res.status).toBe(200);
+      const hostnames = new Set((await res.json() as { data: { hostname: string }[] }).data.map(d => d.hostname));
+      expect(removed.filter(h => hostnames.has(h))).toEqual([]);
+      for (const hostname of edges) {
+        expect(await env.KV.get(`${hostname}:sync-many`)).toBeNull();
+      }
+    });
+
+    it("asks Cloudflare for the domains of the configured Worker", async () => {
+      const fetchSpy = stubCloudflareDomains([]);
+
+      const res = await api("POST", "/api/domains/sync", { headers: adminHeaders, env: syncEnv() });
+      expect(res.status).toBe(200);
+      const url = new URL(String(fetchSpy.mock.calls[0][0]));
+      expect(url.searchParams.get("service")).toBe(env.WORKER_NAME);
     });
 
     it("inserts new hostnames and always keeps the primary host", async () => {

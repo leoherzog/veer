@@ -141,6 +141,16 @@ describe("Reports API", () => {
       expect(json2.data.token).toBe(json1.data.token);
     });
 
+    it("concurrent creates yield one report, created once", async () => {
+      const link = await createTestLink({ slug: `rpt-race-${crypto.randomUUID().slice(0,8)}`, userId });
+
+      const responses = await Promise.all([1, 2, 3].map(() => api("POST", `/api/reports/${link.id}`, { headers })));
+      expect(responses.map(r => r.status).sort()).toEqual([200, 200, 201]);
+
+      const tokens = await Promise.all(responses.map(async r => (await r.json() as { data: { token: string } }).data.token));
+      expect(new Set(tokens).size).toBe(1);
+    });
+
     it("returns 404 for a non-existent link", async () => {
       const res = await api("POST", "/api/reports/nonexistent-link-id", { headers });
       expect(res.status).toBe(404);
@@ -273,6 +283,7 @@ describe("Reports API", () => {
     it("returns 404 for an invalid token", async () => {
       const res = await api("GET", "/api/public-report/rpt_invalidtoken00000000000000000");
       expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Not found" });
     });
 
     it("returns 404 when report is disabled", async () => {

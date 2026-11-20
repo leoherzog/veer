@@ -1,18 +1,18 @@
 import { Hono } from "hono";
-import { eq, and } from "drizzle-orm";
+import { eq, and, desc } from "drizzle-orm";
 import { getDb } from "../../db";
 import { apiKeys } from "../../db/schema";
 import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
 import { hashApiKey, generateApiKey } from "../../lib/crypto";
-import { parseExpiresAt } from "../../lib/validators";
-import type { AppEnv } from "../../types";
+import { parseExpiresAt, parseName } from "../../lib/validators";
+import type { AuthedEnv } from "../../types";
 
-const app = new Hono<AppEnv>();
+const app = new Hono<AuthedEnv>();
 
 app.get("/", async (c) => {
   const db = getDb(c.env.DB);
-  const userId = c.var.user!.id;
+  const userId = c.var.user.id;
 
   const rows = await db
     .select({
@@ -24,20 +24,20 @@ app.get("/", async (c) => {
       expiresAt: apiKeys.expiresAt,
     })
     .from(apiKeys)
-    .where(eq(apiKeys.userId, userId));
+    .where(eq(apiKeys.userId, userId))
+    .orderBy(desc(apiKeys.createdAt));
 
   return c.json({ data: rows });
 });
 
 app.post("/", async (c) => {
-  const body = await parseJsonBody<{ name?: string; expiresAt?: string | number }>(c);
+  const body = await parseJsonBody<{ name?: unknown; expiresAt?: string | number }>(c);
 
-  const name = body.name?.trim();
-  if (!name) throw badRequest("name is required");
+  const name = parseName(body.name);
 
   const db = getDb(c.env.DB);
 
-  if (await db.$count(apiKeys, eq(apiKeys.userId, c.var.user!.id)) >= 10) {
+  if (await db.$count(apiKeys, eq(apiKeys.userId, c.var.user.id)) >= 10) {
     throw badRequest("Maximum 10 API keys per user");
   }
 
@@ -51,7 +51,7 @@ app.post("/", async (c) => {
 
   await db.insert(apiKeys).values({
     id,
-    userId: c.var.user!.id,
+    userId: c.var.user.id,
     name,
     keyHash,
     prefix,
@@ -64,7 +64,7 @@ app.post("/", async (c) => {
 
 app.delete("/:id", async (c) => {
   const db = getDb(c.env.DB);
-  const userId = c.var.user!.id;
+  const userId = c.var.user.id;
   const keyId = c.req.param("id");
 
   const result = await db

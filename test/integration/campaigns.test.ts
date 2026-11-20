@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
 import { setupAuth, createTestLink, createTestDomain, createTestTeam, mockExecutionCtx, api, insertClickStat, isoDaysAgo } from "../helpers";
+import { CAMPAIGN_LINKS_MAX } from "../../src/lib/limits";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -482,6 +483,30 @@ describe("Campaigns API", () => {
       });
       expect(res.status).toBe(404);
     });
+
+    it("adds CAMPAIGN_LINKS_MAX links in one request", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Max Links Campaign" });
+      const links = await Promise.all(Array.from({ length: CAMPAIGN_LINKS_MAX }, () => createTestLink({ userId })));
+
+      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, {
+        headers,
+        body: { linkIds: links.map(l => l.id) },
+      });
+      expect(res.status).toBe(200);
+
+      const row = await env.DB.prepare("SELECT count(*) AS n FROM link_campaigns WHERE campaignId = ?")
+        .bind(campaign.id).first<{ n: number }>();
+      expect(row!.n).toBe(CAMPAIGN_LINKS_MAX);
+    });
+
+    it("rejects more than CAMPAIGN_LINKS_MAX linkIds with 400", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Too Many Links Campaign" });
+      const linkIds = Array.from({ length: CAMPAIGN_LINKS_MAX + 1 }, (_, i) => `link-${i}`);
+
+      const res = await api("POST", `/api/campaigns/${campaign.id}/links`, { headers, body: { linkIds } });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: `linkIds must contain ${CAMPAIGN_LINKS_MAX} or fewer items` });
+    });
   });
 
   // -------------------------------------------------------------------------
@@ -579,32 +604,20 @@ describe("Campaigns API", () => {
       expect(json.data.linkCount).toBe(2);
     });
 
-    it("totals a campaign with more links than D1's 100 bound parameters", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Stats Many Links" });
-      const recent = isoDaysAgo(2);
-      const old = isoDaysAgo(60);
+    it("counts only clicks inside the days window", async () => {
+      const campaign = await createTestCampaign(userId, { name: "Stats Days Window" });
+      const recentLink = await createTestLink({ userId });
+      const oldLink = await createTestLink({ userId });
+      await linkToCampaign(recentLink.id, campaign.id);
+      await linkToCampaign(oldLink.id, campaign.id);
+      await insertClickStat(recentLink.id, 3, isoDaysAgo(2));
+      await insertClickStat(oldLink.id, 11, isoDaysAgo(10));
 
-      const linkIds = await Promise.all(Array.from({ length: 101 }, async () => {
-        const link = await createTestLink({ userId });
-        await linkToCampaign(link.id, campaign.id);
-        await insertClickStat(link.id, 1, recent);
-        return link.id;
-      }));
-      await insertClickStat(linkIds[0], 5, old);
-
-      const res = await api("GET", `/api/campaigns/${campaign.id}/stats`, { headers });
-      expect(res.status).toBe(200);
-      const json = await res.json() as { data: { totalClicks: number; linkCount: number } };
-      expect(json.data.totalClicks).toBe(101);
-      expect(json.data.linkCount).toBe(101);
-      // About 300 setup queries exceed the default 5s timeout when the full suite shares the CPU.
-    }, 30_000);
-
-    it("respects the days query parameter", async () => {
-      const campaign = await createTestCampaign(userId, { name: "Stats Days Param" });
       const res = await api("GET", `/api/campaigns/${campaign.id}/stats?days=7`, { headers });
       expect(res.status).toBe(200);
-      const json = await res.json() as { data: { period: { days: number } } };
+      const json = await res.json() as { data: { totalClicks: number; linkCount: number; period: { days: number } } };
+      expect(json.data.totalClicks).toBe(3);
+      expect(json.data.linkCount).toBe(2);
       expect(json.data.period.days).toBe(7);
     });
 

@@ -107,6 +107,13 @@ describe("Teams API", () => {
       const res = await api("GET", `/api/teams/${team.id}`, { headers: stranger.headers });
       expect(res.status).toBe(404);
     });
+
+    it("returns 404 for an unknown team", async () => {
+      const auth = await newUser("nobody");
+      const res = await api("GET", "/api/teams/no-such-team", { headers: auth.headers });
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: "Team not found" });
+    });
   });
 
   describe("PUT /api/teams/:id", () => {
@@ -216,6 +223,32 @@ describe("Teams API", () => {
       await api("POST", `/api/teams/${team.id}/invite`, { headers: admin.headers, body: { email } });
       const res = await api("POST", `/api/teams/${team.id}/invite`, { headers: admin.headers, body: { email } });
       expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: "An invite for this email already exists" });
+    });
+
+    it("creates one invite when the same email is invited concurrently", async () => {
+      const admin = await newUser("admin");
+      const team = await createTeam(admin.headers);
+      const email = `race-${uniq("i")}@example.com`;
+
+      const responses = await Promise.all([1, 2, 3].map(() =>
+        api("POST", `/api/teams/${team.id}/invite`, { headers: admin.headers, body: { email } })));
+      expect(responses.map(r => r.status).sort()).toEqual([201, 409, 409]);
+      expect(await inviteCount(team.id, email)).toBe(1);
+    });
+
+    it("returns the stored invite row", async () => {
+      const admin = await newUser("admin");
+      const team = await createTeam(admin.headers);
+      const email = `row-${uniq("i")}@example.com`;
+
+      const res = await api("POST", `/api/teams/${team.id}/invite`, { headers: admin.headers, body: { email } });
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { id: string; teamId: string; email: string; role: string; token: string; expiresAt: string; createdAt: string } };
+      const row = await env.DB.prepare("SELECT id, token, role FROM team_invites WHERE teamId = ? AND email = ?")
+        .bind(team.id, email).first<{ id: string; token: string; role: string }>();
+      expect(json.data).toMatchObject({ id: row!.id, token: row!.token, role: "member", teamId: team.id, email });
+      expect(Object.keys(json.data).sort()).toEqual(["createdAt", "email", "expiresAt", "id", "role", "teamId", "token"]);
     });
 
     it("rejects inviting an existing member with 409", async () => {
@@ -428,9 +461,23 @@ describe("Teams API", () => {
 
       const res = await api("PATCH", `/api/teams/${team.id}/members/${member.user.id}`, { headers: admin.headers, body: { role: "admin" } });
       expect(res.status).toBe(200);
-      const json = await res.json() as { data: { role: string; email: string } };
+      const json = await res.json() as { data: { userId: string; role: string; email: string } };
+      expect(json.data.userId).toBe(member.user.id);
       expect(json.data.role).toBe("admin");
       expect(json.data.email).toBe(member.user.email);
+
+      const row = await env.DB.prepare("SELECT role FROM team_members WHERE teamId = ? AND userId = ?")
+        .bind(team.id, member.user.id).first<{ role: string }>();
+      expect(row!.role).toBe("admin");
+    });
+
+    it("returns 404 when changing the role of a non-member", async () => {
+      const admin = await newUser("admin");
+      const stranger = await newUser("stranger");
+      const team = await createTeam(admin.headers);
+
+      const res = await api("PATCH", `/api/teams/${team.id}/members/${stranger.user.id}`, { headers: admin.headers, body: { role: "admin" } });
+      expect(res.status).toBe(404);
     });
 
     it("blocks demoting the last admin", async () => {

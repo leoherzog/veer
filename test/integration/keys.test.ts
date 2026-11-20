@@ -48,6 +48,21 @@ describe("API Keys", () => {
       expect(json.data[0].prefix).toBe(plaintextKey.slice(0, 12));
       expect(json.data[0].key).toBeUndefined();
     });
+
+    it("lists the newest key first", async () => {
+      const auth = await setupAuth();
+      const ids: string[] = [];
+      for (const name of ["Older", "Newer"]) {
+        const res = await api("POST", "/api/keys", { headers: auth.headers, body: { name } });
+        ids.push((await res.json() as { data: { id: string } }).data.id);
+      }
+      // createdAt has second resolution, so backdate the first key to make the order unambiguous.
+      await env.DB.prepare("UPDATE api_keys SET createdAt = 1000 WHERE id = ?").bind(ids[0]).run();
+
+      const res = await api("GET", "/api/keys", { headers: auth.headers });
+      const json = await res.json() as { data: { id: string }[] };
+      expect(json.data.map(k => k.id)).toEqual([ids[1], ids[0]]);
+    });
   });
 
   // -----------------------------------------------------------------------
@@ -86,6 +101,12 @@ describe("API Keys", () => {
         body: {},
       });
       expect(res.status).toBe(400);
+    });
+
+    it.each([42, { first: "x" }, ["x"]])("rejects the non-string name %j with 400", async (name) => {
+      const res = await api("POST", "/api/keys", { headers, body: { name } });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: "name is required" });
     });
 
     it("creates a key with a future expiresAt", async () => {

@@ -84,7 +84,8 @@ export const teams = sqliteTable("teams", {
 export const teamMembers = sqliteTable("team_members", {
   teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
   userId: text("userId").notNull().references(() => user.id, { onDelete: "cascade" }),
-  role: text("role").notNull().default("member"), // "admin" | "member" — enforced by the CHECK below + app validation
+  // The CHECK below must list the same values as this enum.
+  role: text("role", { enum: ["admin", "member"] }).notNull().default("member"),
   joinedAt: integer("joinedAt", { mode: "timestamp" }).notNull(),
 }, (table) => [
   primaryKey({ columns: [table.teamId, table.userId] }),
@@ -96,7 +97,8 @@ export const teamInvites = sqliteTable("team_invites", {
   id: text("id").primaryKey(),
   teamId: text("teamId").notNull().references(() => teams.id, { onDelete: "cascade" }),
   email: text("email").notNull(),
-  role: text("role").notNull().default("member"), // "admin" | "member" — enforced by the CHECK below + app validation
+  // The CHECK below must list the same values as this enum.
+  role: text("role", { enum: ["admin", "member"] }).notNull().default("member"),
   token: text("token").notNull(),
   expiresAt: integer("expiresAt", { mode: "timestamp" }).notNull(),
   createdAt: integer("createdAt", { mode: "timestamp" }).notNull(),
@@ -111,7 +113,8 @@ export const domainConfig = sqliteTable("domain_config", {
   hostname: text("hostname").primaryKey(),
   rootRedirect: text("rootRedirect"),
   notFoundRedirect: text("notFoundRedirect"),
-  accessMode: text("accessMode").notNull().default("all"),
+  // Type-only enum: no CHECK backs it, so routes validate the value.
+  accessMode: text("accessMode", { enum: ["all", "restricted"] }).notNull().default("all"),
   updatedAt: integer("updatedAt", { mode: "timestamp" }).notNull(),
 });
 

@@ -1,9 +1,28 @@
 import { env } from "cloudflare:workers";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestLink, api, postLink, insertClickStat, type JsonBody } from "../helpers";
+import {
+  setupAuth, createTestLink, createTestTeam, addTestTeamMember, api, postLink, newUser, insertClickStat, type JsonBody,
+} from "../helpers";
 import { hashPassword } from "../../src/services/password";
 import { DEVICE_TYPES } from "../../src/services/useragent";
+import { CAMPAIGN_LINKS_MAX } from "../../src/lib/limits";
+
+/** Create a campaign through the API and return its id. */
+async function createCampaign(headers: Record<string, string>, name = "Campaign"): Promise<string> {
+  const res = await api("POST", "/api/campaigns", { headers, body: { name } });
+  expect(res.status).toBe(201);
+  return (await res.json() as { data: { id: string } }).data.id;
+}
+
+/** The campaign ids associated with a link, sorted. */
+async function linkCampaignIds(linkId: string): Promise<string[]> {
+  const { results } = await env.DB.prepare("SELECT campaignId FROM link_campaigns WHERE linkId = ?")
+    .bind(linkId).all<{ campaignId: string }>();
+  return results.map(r => r.campaignId).sort();
+}
+
+const tooManyIds = Array.from({ length: CAMPAIGN_LINKS_MAX + 1 }, (_, i) => `campaign-${i}`);
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -507,6 +526,16 @@ describe("Links API", () => {
       ["a geo matchValue that is not 2 letters", [{ type: "geo", matchValue: "USA", destinationUrl: "https://example.com" }]],
       ["a device matchValue outside mobile/tablet/desktop", [{ type: "device", matchValue: "phone", destinationUrl: "https://example.com" }]],
       ["a non-http(s) destinationUrl", [{ type: "geo", matchValue: "US", destinationUrl: "ftp://bad.com" }]],
+      ["a null entry", [null]],
+      ["a string entry", ["geo"]],
+      ["an inherited property as the type", [{ type: "constructor", matchValue: "x", destinationUrl: "https://example.com" }]],
+      ["a non-string matchValue", [{ type: "geo", matchValue: 42, destinationUrl: "https://example.com" }]],
+      ["an A/B weight of 0", [{ type: "ab", matchValue: "0", destinationUrl: "https://example.com" }]],
+      ["an A/B weight of 100", [{ type: "ab", matchValue: "100", destinationUrl: "https://example.com" }]],
+      ["A/B weights summing to 100", [
+        { type: "ab", matchValue: "60", destinationUrl: "https://example.com/a" },
+        { type: "ab", matchValue: "40", destinationUrl: "https://example.com/b" },
+      ]],
     ])("rejects %s", async (_label, targets) => {
       const res = await api("PUT", `/api/links/${targetLinkId}/targets`, { headers, body: { targets } });
       expect(res.status).toBe(400);
@@ -666,13 +695,15 @@ describe("Links API", () => {
       expect(titles).toEqual(sorted);
     });
 
-    it("falls back to createdAt for invalid sort column", async () => {
-      const res = await api("GET", "/api/links?sort=invalid", { headers });
-      expect(res.status).toBe(200);
-      // Should not error — just default to createdAt desc
-      const json = await res.json() as { data: unknown[] };
-      expect(Array.isArray(json.data)).toBe(true);
-    });
+    it.each(["invalid", "__proto__", "constructor", "toString"])(
+      "falls back to createdAt for the unknown sort column %j",
+      async (sort) => {
+        const res = await api("GET", `/api/links?sort=${sort}`, { headers });
+        expect(res.status).toBe(200);
+        const json = await res.json() as { data: unknown[] };
+        expect(Array.isArray(json.data)).toBe(true);
+      },
+    );
 
     it("accepts a fractional page (offset must stay an integer for SQLite)", async () => {
       const res = await api("GET", "/api/links?page=1.3&limit=2", { headers });
@@ -893,6 +924,140 @@ describe("Links API", () => {
 
       const row = await env.DB.prepare("SELECT id FROM links WHERE slug = ?").bind(slug).first();
       expect(row).toBeNull();
+    });
+
+    it("rejects a non-string title with 400", async () => {
+      const res = await postLink({
+        slug: `post-title-type-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        title: 42,
+      }, headers);
+      expect(res.status).toBe(400);
+    });
+
+    it("rejects more than CAMPAIGN_LINKS_MAX campaignIds with 400", async () => {
+      const res = await postLink({
+        slug: `post-many-campaigns-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        campaignIds: tooManyIds,
+      }, headers);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: `campaignIds must contain ${CAMPAIGN_LINKS_MAX} or fewer items` });
+    });
+
+    it("creates the link with its campaign associations", async () => {
+      const first = await createCampaign(headers, "Create First");
+      const second = await createCampaign(headers, "Create Second");
+
+      const res = await postLink({
+        slug: `post-campaigns-${crypto.randomUUID().slice(0, 8)}`,
+        destinationUrl: "https://example.com",
+        campaignIds: [first, second, first],
+      }, headers);
+      expect(res.status).toBe(201);
+      const json = await res.json() as { data: { id: string } };
+      expect(await linkCampaignIds(json.data.id)).toEqual([first, second].sort());
+    });
+  });
+
+  describe("PUT /api/links/:id – campaign limits", () => {
+    it("rejects more than CAMPAIGN_LINKS_MAX campaignIds with 400", async () => {
+      const link = await createTestLink({ slug: `put-many-campaigns-${crypto.randomUUID().slice(0, 8)}`, userId });
+      const res = await api("PUT", `/api/links/${link.id}`, { headers, body: { campaignIds: tooManyIds } });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // A failure late in the write batch rolls back its earlier statements
+  // -----------------------------------------------------------------------
+  describe("link and campaign writes are one batch", () => {
+    /** Run fn while every link_campaigns insert fails, after the batch's link write has run. */
+    async function withFailingCampaignInsert(fn: () => Promise<void>) {
+      await env.DB.prepare(
+        "CREATE TRIGGER test_fail_link_campaigns BEFORE INSERT ON link_campaigns BEGIN SELECT RAISE(ABORT, 'forced failure'); END",
+      ).run();
+      try {
+        await fn();
+      } finally {
+        await env.DB.prepare("DROP TRIGGER test_fail_link_campaigns").run();
+      }
+    }
+
+    it("POST leaves no link behind when a campaign insert fails", async () => {
+      const campaign = await createCampaign(headers, "Batch Create");
+      const slug = `batch-create-${crypto.randomUUID().slice(0, 8)}`;
+
+      await withFailingCampaignInsert(async () => {
+        const res = await postLink({ slug, destinationUrl: "https://example.com", campaignIds: [campaign] }, headers);
+        expect(res.status).toBe(500);
+      });
+
+      expect(await env.DB.prepare("SELECT id FROM links WHERE slug = ?").bind(slug).first()).toBeNull();
+    });
+
+    it("PUT keeps the old row and associations when a campaign insert fails", async () => {
+      const kept = await createCampaign(headers, "Batch Kept");
+      const added = await createCampaign(headers, "Batch Added");
+      const link = await createTestLink({
+        slug: `batch-update-${crypto.randomUUID().slice(0, 8)}`,
+        userId,
+        destinationUrl: "https://original.example.com",
+      });
+      const attach = await api("PUT", `/api/links/${link.id}`, { headers, body: { campaignIds: [kept] } });
+      expect(attach.status).toBe(200);
+
+      await withFailingCampaignInsert(async () => {
+        const res = await api("PUT", `/api/links/${link.id}`, {
+          headers,
+          body: { destinationUrl: "https://changed.example.com", campaignIds: [added] },
+        });
+        expect(res.status).toBe(500);
+      });
+
+      const row = await env.DB.prepare("SELECT destinationUrl FROM links WHERE id = ?")
+        .bind(link.id).first<{ destinationUrl: string }>();
+      expect(row!.destinationUrl).toBe("https://original.example.com");
+      expect(await linkCampaignIds(link.id)).toEqual([kept]);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Campaigns on a team link belong to whoever made them
+  // -----------------------------------------------------------------------
+  describe("campaigns on a shared team link", () => {
+    it("replaces only the caller's associations and shows only the caller's campaigns", async () => {
+      const memberA = await newUser("camp-member-a");
+      const memberB = await newUser("camp-member-b");
+      const team = await createTestTeam(memberA.user.id);
+      await addTestTeamMember(team.id, memberB.user.id);
+      const link = await createTestLink({ userId: memberA.user.id, teamId: team.id });
+
+      const campaignA = await createCampaign(memberA.headers, "A's campaign");
+      const campaignB = await createCampaign(memberB.headers, "B's campaign");
+
+      const attachA = await api("PUT", `/api/links/${link.id}`, { headers: memberA.headers, body: { campaignIds: [campaignA] } });
+      expect(attachA.status).toBe(200);
+
+      const attachB = await api("PUT", `/api/links/${link.id}`, {
+        headers: memberB.headers,
+        body: { title: "Shared", campaignIds: [campaignB] },
+      });
+      expect(attachB.status).toBe(200);
+      expect(await linkCampaignIds(link.id)).toEqual([campaignA, campaignB].sort());
+
+      const seenByB = await api("GET", `/api/links/${link.id}`, { headers: memberB.headers });
+      const jsonB = await seenByB.json() as { data: { campaigns: { id: string }[] } };
+      expect(jsonB.data.campaigns.map(cp => cp.id)).toEqual([campaignB]);
+
+      const seenByA = await api("GET", `/api/links/${link.id}`, { headers: memberA.headers });
+      const jsonA = await seenByA.json() as { data: { campaigns: { id: string }[] } };
+      expect(jsonA.data.campaigns.map(cp => cp.id)).toEqual([campaignA]);
+
+      // Clearing B's list leaves A's association in place.
+      const clearB = await api("PUT", `/api/links/${link.id}`, { headers: memberB.headers, body: { campaignIds: [] } });
+      expect(clearB.status).toBe(200);
+      expect(await linkCampaignIds(link.id)).toEqual([campaignA]);
     });
   });
 });

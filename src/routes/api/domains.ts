@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { eq, or, sql } from "drizzle-orm";
+import { eq, inArray, or } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import { getDb } from "../../db";
 import { domainConfig, domainAccess, links } from "../../db/schema";
@@ -9,9 +9,19 @@ import { badRequest, notFound } from "../../lib/errors";
 import { parseJsonBody } from "../../lib/request";
 import { getPrimaryHostname, parseOptionalHttpUrl } from "../../lib/validators";
 import { requireAdmin } from "../../middleware/auth";
-import type { AppEnv } from "../../types";
+import type { AuthedEnv } from "../../types";
 
-const domainRoutes = new Hono<AppEnv>();
+/**
+ * Most KV cache entries one sync purges. A Worker invocation gets 1,000 KV
+ * operations; entries past the cap stay on a host that no longer routes here
+ * and expire with the cache TTL.
+ */
+const SYNC_KV_PURGE_MAX = 500;
+
+/** Removed hostnames bound per purge select: D1 caps a statement at 100 parameters, and the LIMIT takes one. */
+const SYNC_PURGE_SELECT_CHUNK = 90;
+
+const domainRoutes = new Hono<AuthedEnv>();
 
 // Everything but the list is admin-only. `/:hostname/*` also matches `/sync`,
 // `/:hostname` and `/:hostname/access`, but not `/`.
@@ -19,7 +29,7 @@ domainRoutes.use("/:hostname/*", requireAdmin);
 
 // List domains user has access to (admin sees all)
 domainRoutes.get("/", async (c) => {
-  const user = c.var.user!;
+  const user = c.var.user;
   const db = getDb(c.env.DB);
   // The primary host has a config row (redirects, access mode) but cannot hold links:
   // its links live with domainHostname NULL. Clients use isPrimary to hide it where a
@@ -29,9 +39,12 @@ domainRoutes.get("/", async (c) => {
   // Non-admin: domains where accessMode='all' OR user's email is in domain_access
   const rows = await db.select().from(domainConfig).where(user.isAdmin ? undefined : or(
     eq(domainConfig.accessMode, "all"),
-    sql`${domainConfig.hostname} IN (SELECT ${domainAccess.hostname} FROM ${domainAccess} WHERE ${domainAccess.email} = ${user.email.toLowerCase()})`
+    inArray(
+      domainConfig.hostname,
+      db.select({ hostname: domainAccess.hostname }).from(domainAccess).where(eq(domainAccess.email, user.email.toLowerCase())),
+    ),
   ));
-  return c.json({ data: rows.map(row => ({ ...row, isPrimary: row.hostname.toLowerCase() === primaryHost })) });
+  return c.json({ data: rows.map(row => ({ ...row, isPrimary: row.hostname === primaryHost })) });
 });
 
 // Sync domains from Cloudflare API → D1
@@ -42,14 +55,12 @@ domainRoutes.post("/sync", async (c) => {
     throw badRequest("CF_ACCOUNT_ID and CF_API_TOKEN must be configured");
   }
 
-  const workerName = WORKER_NAME || "veer";
-
-  // Fetch worker domains from Cloudflare API (paginated)
+  // Fetch worker domains from Cloudflare API (paginated). Hostnames are stored lowercased.
   const cfHostnames = new Set<string>();
   let page = 1;
   while (true) {
     const apiRes = await fetch(
-      `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/workers/domains?service=${workerName}&per_page=100&page=${page}`,
+      `https://api.cloudflare.com/client/v4/accounts/${CF_ACCOUNT_ID}/workers/domains?service=${WORKER_NAME}&per_page=100&page=${page}`,
       {
         headers: {
           Authorization: `Bearer ${CF_API_TOKEN}`,
@@ -83,7 +94,7 @@ domainRoutes.post("/sync", async (c) => {
   const db = getDb(c.env.DB);
   const now = new Date();
 
-  const existing = await db.select().from(domainConfig);
+  const existing = await db.select({ hostname: domainConfig.hostname }).from(domainConfig);
   const existingHostnames = new Set(existing.map(d => d.hostname));
 
   const batchOps: BatchItem<"sqlite">[] = [];
@@ -102,14 +113,20 @@ domainRoutes.post("/sync", async (c) => {
   // Delete hostnames no longer in Cloudflare (except primary), along with their links.
   // The FK is "set null", which would silently move those links onto the primary host,
   // where the partial unique index can reject them and fail every later sync.
-  for (const row of existing) {
-    if (!cfHostnames.has(row.hostname) && row.hostname !== primaryHost) {
-      const domainLinks = await db.select({ slug: links.slug }).from(links)
-        .where(eq(links.domainHostname, row.hostname));
-      await Promise.all(domainLinks.map(link => deleteCachedRedirect(c.env.KV, link.slug, row.hostname)));
+  const removed = [...existingHostnames].filter(hostname => !cfHostnames.has(hostname) && hostname !== primaryHost);
+  if (removed.length > 0) {
+    const purge: { slug: string; domainHostname: string | null }[] = [];
+    for (let i = 0; i < removed.length && purge.length < SYNC_KV_PURGE_MAX; i += SYNC_PURGE_SELECT_CHUNK) {
+      purge.push(...await db.select({ slug: links.slug, domainHostname: links.domainHostname })
+        .from(links)
+        .where(inArray(links.domainHostname, removed.slice(i, i + SYNC_PURGE_SELECT_CHUNK)))
+        .limit(SYNC_KV_PURGE_MAX - purge.length));
+    }
+    await Promise.all(purge.map(link => deleteCachedRedirect(c.env.KV, link.slug, link.domainHostname)));
+    for (const hostname of removed) {
       batchOps.push(
-        db.delete(links).where(eq(links.domainHostname, row.hostname)),
-        db.delete(domainConfig).where(eq(domainConfig.hostname, row.hostname)),
+        db.delete(links).where(eq(links.domainHostname, hostname)),
+        db.delete(domainConfig).where(eq(domainConfig.hostname, hostname)),
       );
     }
   }
@@ -138,7 +155,7 @@ domainRoutes.put("/:hostname", async (c) => {
   const hostname = c.req.param("hostname").toLowerCase();
   const db = getDb(c.env.DB);
 
-  const body = await parseJsonBody<{ rootRedirect?: string | null; notFoundRedirect?: string | null; accessMode?: string }>(c);
+  const body = await parseJsonBody<{ rootRedirect?: string | null; notFoundRedirect?: string | null; accessMode?: unknown }>(c);
 
   const updates: Partial<typeof domainConfig.$inferInsert> = { updatedAt: new Date() };
 
@@ -149,10 +166,11 @@ domainRoutes.put("/:hostname", async (c) => {
     updates.notFoundRedirect = parseOptionalHttpUrl(body.notFoundRedirect, "notFoundRedirect");
   }
   if (body.accessMode !== undefined) {
-    if (body.accessMode !== "all" && body.accessMode !== "restricted") {
+    const accessMode = body.accessMode;
+    if (accessMode !== "all" && accessMode !== "restricted") {
       throw badRequest('accessMode must be "all" or "restricted"');
     }
-    updates.accessMode = body.accessMode;
+    updates.accessMode = accessMode;
   }
 
   const updated = await db.update(domainConfig).set(updates).where(eq(domainConfig.hostname, hostname)).returning().get();
@@ -173,10 +191,11 @@ domainRoutes.put("/:hostname/access", async (c) => {
     throw badRequest("emails must be an array");
   }
 
-  const emails = body.emails
+  // Deduplicated after lowercasing: (hostname, email) is the primary key.
+  const emails = [...new Set(body.emails
     .filter((e: unknown): e is string => typeof e === "string")
     .map(e => e.trim().toLowerCase())
-    .filter(Boolean);
+    .filter(Boolean))];
 
   for (const email of emails) {
     if (!email.includes("@") || email.length < 3) {

@@ -1,7 +1,8 @@
 import { env } from "cloudflare:workers";
+import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
 import { app } from "../../src/index";
-import { setupAuth, createTestLink, mockExecutionCtx, createTestDomain, api, type JsonBody } from "../helpers";
+import { setupAuth, createTestLink, mockExecutionCtx, createTestDomain, api, cachedRedirect, type JsonBody } from "../helpers";
 import { BULK_MAX } from "../../src/lib/limits";
 
 const postBulk = (body: JsonBody, headers: Record<string, string>) => api("POST", "/api/bulk", { headers, body });
@@ -210,6 +211,62 @@ describe("Bulk Links API", () => {
       const json = await res.json() as { results: { success: boolean; error?: string }[] };
       expect(json.results[0].success).toBe(false);
       expect(json.results[0].error).toContain("Internal links");
+    });
+
+    it("reports a non-object entry per item and still creates the rest", async () => {
+      const res = await postBulk({
+        links: [null, "bulk-string-entry", { slug: "bulk-after-null", destinationUrl: "https://example.com/n" }],
+      }, headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { slug: string; success: boolean; error?: string }[] };
+      expect(json.results[0]).toEqual({ slug: "", success: false, error: "Invalid link entry" });
+      expect(json.results[1]).toEqual({ slug: "", success: false, error: "Invalid link entry" });
+      expect(json.results[2].success).toBe(true);
+    });
+
+    it("reports the canonical slug once it validates and the raw input otherwise", async () => {
+      const res = await postBulk({
+        links: [
+          { slug: "Bulk-Canon-URL", destinationUrl: "not-a-url" },
+          { slug: "Bulk Canon Bad", destinationUrl: "https://example.com" },
+        ],
+      }, headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { slug: string; success: boolean }[] };
+      expect(json.results.map(r => r.slug)).toEqual(["bulk-canon-url", "Bulk Canon Bad"]);
+    });
+
+    it("rejects a non-string title per item", async () => {
+      const res = await postBulk({
+        links: [
+          { slug: "bulk-title-type", destinationUrl: "https://example.com", title: 42 },
+          { slug: "bulk-title-ok", destinationUrl: "https://example.com", title: "Fine" },
+        ],
+      }, headers);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { slug: string; success: boolean; error?: string }[] };
+      expect(json.results[0]).toEqual({ slug: "bulk-title-type", success: false, error: "title must be a string" });
+      expect(json.results[1].success).toBe(true);
+    });
+
+    it("caches each created link with the schema defaults", async () => {
+      const ctx = createExecutionContext();
+      const res = await api("POST", "/api/bulk", {
+        headers,
+        body: { links: [{ slug: "Bulk-KV-Entry", destinationUrl: "https://example.com/kv", redirectType: 301 }] },
+        ctx,
+      });
+      await waitOnExecutionContext(ctx);
+      expect(res.status).toBe(200);
+      const json = await res.json() as { results: { success: boolean; slug: string; id: string }[] };
+      expect(json.results[0]).toMatchObject({ success: true, slug: "bulk-kv-entry" });
+
+      const cached = await env.KV.get("bulk-kv-entry", { type: "json" });
+      expect(cached).toEqual(cachedRedirect({
+        url: "https://example.com/kv",
+        redirectType: 301,
+        linkId: json.results[0].id,
+      }));
     });
 
     it("rejects a non-string teamId with 400", async () => {

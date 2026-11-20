@@ -1,7 +1,9 @@
 import { env } from "cloudflare:workers";
 import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { describe, it, expect, beforeAll } from "vitest";
-import { setupAuth, createTestLink, createTestDomain, api, postLink } from "../helpers";
+import {
+  setupAuth, createTestLink, createTestDomain, createTestTeam, addTestTeamMember, api, newUser, postLink,
+} from "../helpers";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -224,6 +226,63 @@ describe("Links API — domain-scoped operations", () => {
         body: { domainHostname: "custom.example.com" },
       });
       expect(res.status).toBe(400);
+    });
+
+    it("rejects moving onto a restricted domain without access with 400", async () => {
+      const link = await createTestLink({ slug: "restricted-move", userId });
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { domainHostname: "restricted.example.com" },
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json() as { error: string }).error).toContain("access");
+    });
+
+    it("lets a teammate without access edit a link already on a restricted domain", async () => {
+      const owner = await newUser("restricted-owner");
+      const team = await createTestTeam(owner.user.id);
+      await addTestTeamMember(team.id, userId);
+      const link = await createTestLink({
+        slug: "restricted-team-link",
+        userId: owner.user.id,
+        teamId: team.id,
+        domainHostname: "restricted.example.com",
+      });
+
+      // The link form resubmits the current domain alongside the edited fields.
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { title: "Edited by teammate", domainHostname: "restricted.example.com" },
+      });
+      expect(res.status).toBe(200);
+      const json = await res.json() as { data: { title: string; domainHostname: string } };
+      expect(json.data.title).toBe("Edited by teammate");
+      expect(json.data.domainHostname).toBe("restricted.example.com");
+    });
+
+    it("a 409 domain move leaves campaign associations unchanged", async () => {
+      await createTestLink({ slug: "atomic-move", userId, domainHostname: "custom.example.com" });
+      const link = await createTestLink({ slug: "atomic-move", userId });
+
+      const campaignIds: string[] = [];
+      for (const name of ["Atomic Kept", "Atomic Added"]) {
+        const created = await api("POST", "/api/campaigns", { headers, body: { name } });
+        campaignIds.push((await created.json() as { data: { id: string } }).data.id);
+      }
+      const [kept, added] = campaignIds;
+      const attach = await api("PUT", `/api/links/${link.id}`, { headers, body: { campaignIds: [kept] } });
+      expect(attach.status).toBe(200);
+
+      const res = await api("PUT", `/api/links/${link.id}`, {
+        headers,
+        body: { domainHostname: "custom.example.com", campaignIds: [added] },
+      });
+      expect(res.status).toBe(409);
+
+      const { results } = await env.DB.prepare("SELECT campaignId FROM link_campaigns WHERE linkId = ?")
+        .bind(link.id).all<{ campaignId: string }>();
+      expect(results.map(r => r.campaignId)).toEqual([kept]);
     });
   });
 });
