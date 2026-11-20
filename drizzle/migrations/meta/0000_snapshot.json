@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "7d725a0b-780a-4429-a886-54665e550f32",
+  "id": "5343dfb7-ac8e-464d-97ae-16f6b96a2a21",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "account": {
@@ -458,13 +458,6 @@
     "link_stats": {
       "name": "link_stats",
       "columns": {
-        "id": {
-          "name": "id",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": true
-        },
         "linkId": {
           "name": "linkId",
           "type": "text",
@@ -486,26 +479,9 @@
           "notNull": true,
           "autoincrement": false,
           "default": 0
-        },
-        "uniqueClicks": {
-          "name": "uniqueClicks",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
         }
       },
-      "indexes": {
-        "idx_link_stats_linkId_date": {
-          "name": "idx_link_stats_linkId_date",
-          "columns": [
-            "linkId",
-            "date"
-          ],
-          "isUnique": true
-        }
-      },
+      "indexes": {},
       "foreignKeys": {
         "link_stats_linkId_links_id_fk": {
           "name": "link_stats_linkId_links_id_fk",
@@ -521,7 +497,15 @@
           "onUpdate": "no action"
         }
       },
-      "compositePrimaryKeys": {},
+      "compositePrimaryKeys": {
+        "link_stats_linkId_date_pk": {
+          "columns": [
+            "linkId",
+            "date"
+          ],
+          "name": "link_stats_linkId_date_pk"
+        }
+      },
       "uniqueConstraints": {},
       "checkConstraints": {}
     },
@@ -664,14 +648,6 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false
-        },
-        "isActive": {
-          "name": "isActive",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": true
         },
         "expiresAt": {
           "name": "expiresAt",
@@ -951,17 +927,10 @@
     "public_reports": {
       "name": "public_reports",
       "columns": {
-        "id": {
-          "name": "id",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
         "linkId": {
           "name": "linkId",
           "type": "text",
-          "primaryKey": false,
+          "primaryKey": true,
           "notNull": true,
           "autoincrement": false
         },
@@ -993,13 +962,6 @@
           "name": "idx_public_reports_token",
           "columns": [
             "token"
-          ],
-          "isUnique": true
-        },
-        "idx_public_reports_linkId": {
-          "name": "idx_public_reports_linkId",
-          "columns": [
-            "linkId"
           ],
           "isUnique": true
         }
@@ -1090,6 +1052,13 @@
             "token"
           ],
           "isUnique": true
+        },
+        "session_userId_idx": {
+          "name": "session_userId_idx",
+          "columns": [
+            "userId"
+          ],
+          "isUnique": false
         }
       },
       "foreignKeys": {
@@ -1166,13 +1135,6 @@
         }
       },
       "indexes": {
-        "idx_team_invites_teamId": {
-          "name": "idx_team_invites_teamId",
-          "columns": [
-            "teamId"
-          ],
-          "isUnique": false
-        },
         "idx_team_invites_token": {
           "name": "idx_team_invites_token",
           "columns": [
@@ -1317,13 +1279,6 @@
           "notNull": true,
           "autoincrement": false
         },
-        "slug": {
-          "name": "slug",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
         "createdAt": {
           "name": "createdAt",
           "type": "integer",
@@ -1339,15 +1294,7 @@
           "autoincrement": false
         }
       },
-      "indexes": {
-        "idx_teams_slug": {
-          "name": "idx_teams_slug",
-          "columns": [
-            "slug"
-          ],
-          "isUnique": true
-        }
-      },
+      "indexes": {},
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -1414,7 +1361,15 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "user_email_unique": {
+          "name": "user_email_unique",
+          "columns": [
+            "email"
+          ],
+          "isUnique": true
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
@@ -1466,7 +1421,15 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "verification_identifier_idx": {
+          "name": "verification_identifier_idx",
+          "columns": [
+            "identifier"
+          ],
+          "isUnique": false
+        }
+      },
       "foreignKeys": {},
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},

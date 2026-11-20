@@ -5,29 +5,8 @@
     {
       "idx": 0,
       "version": "6",
-      "when": 1787779882269,
+      "when": 1795204203408,
       "tag": "0000_initial",
-      "breakpoints": true
-    },
-    {
-      "idx": 1,
-      "version": "6",
-      "when": 1791230143560,
-      "tag": "0001_schema_cleanup",
-      "breakpoints": true
-    },
-    {
-      "idx": 2,
-      "version": "6",
-      "when": 1795184723992,
-      "tag": "0002_drop_link_is_active",
-      "breakpoints": true
-    },
-    {
-      "idx": 3,
-      "version": "6",
-      "when": 1795187213624,
-      "tag": "0003_better_auth_indexes",
       "breakpoints": true
     }
   ]

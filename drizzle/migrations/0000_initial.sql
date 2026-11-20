@@ -66,15 +66,13 @@ CREATE TABLE `link_campaigns` (
 --> statement-breakpoint
 CREATE INDEX `idx_link_campaigns_campaignId` ON `link_campaigns` (`campaignId`);--> statement-breakpoint
 CREATE TABLE `link_stats` (
-	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`linkId` text NOT NULL,
 	`date` text NOT NULL,
 	`clicks` integer DEFAULT 0 NOT NULL,
-	`uniqueClicks` integer DEFAULT 0 NOT NULL,
+	PRIMARY KEY(`linkId`, `date`),
 	FOREIGN KEY (`linkId`) REFERENCES `links`(`id`) ON UPDATE no action ON DELETE cascade
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `idx_link_stats_linkId_date` ON `link_stats` (`linkId`,`date`);--> statement-breakpoint
 CREATE TABLE `link_targets` (
 	`id` text PRIMARY KEY NOT NULL,
 	`linkId` text NOT NULL,
@@ -96,7 +94,6 @@ CREATE TABLE `links` (
 	`title` text,
 	`createdAt` integer NOT NULL,
 	`updatedAt` integer NOT NULL,
-	`isActive` integer DEFAULT true NOT NULL,
 	`expiresAt` integer,
 	`maxClicks` integer,
 	`password` text,
@@ -135,8 +132,7 @@ CREATE TABLE `passkey` (
 CREATE UNIQUE INDEX `passkey_credentialID_idx` ON `passkey` (`credentialID`);--> statement-breakpoint
 CREATE INDEX `passkey_userId_idx` ON `passkey` (`userId`);--> statement-breakpoint
 CREATE TABLE `public_reports` (
-	`id` text PRIMARY KEY NOT NULL,
-	`linkId` text NOT NULL,
+	`linkId` text PRIMARY KEY NOT NULL,
 	`token` text NOT NULL,
 	`isEnabled` integer DEFAULT true NOT NULL,
 	`createdAt` integer NOT NULL,
@@ -144,7 +140,6 @@ CREATE TABLE `public_reports` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `idx_public_reports_token` ON `public_reports` (`token`);--> statement-breakpoint
-CREATE UNIQUE INDEX `idx_public_reports_linkId` ON `public_reports` (`linkId`);--> statement-breakpoint
 CREATE TABLE `session` (
 	`id` text PRIMARY KEY NOT NULL,
 	`expiresAt` integer NOT NULL,
@@ -158,6 +153,7 @@ CREATE TABLE `session` (
 );
 --> statement-breakpoint
 CREATE UNIQUE INDEX `session_token_idx` ON `session` (`token`);--> statement-breakpoint
+CREATE INDEX `session_userId_idx` ON `session` (`userId`);--> statement-breakpoint
 CREATE TABLE `team_invites` (
 	`id` text PRIMARY KEY NOT NULL,
 	`teamId` text NOT NULL,
@@ -170,7 +166,6 @@ CREATE TABLE `team_invites` (
 	CONSTRAINT "team_invites_role_check" CHECK("team_invites"."role" IN ('admin', 'member'))
 );
 --> statement-breakpoint
-CREATE INDEX `idx_team_invites_teamId` ON `team_invites` (`teamId`);--> statement-breakpoint
 CREATE UNIQUE INDEX `idx_team_invites_token` ON `team_invites` (`token`);--> statement-breakpoint
 CREATE UNIQUE INDEX `idx_team_invites_teamId_email` ON `team_invites` (`teamId`,`email`);--> statement-breakpoint
 CREATE TABLE `team_members` (
@@ -188,12 +183,10 @@ CREATE INDEX `idx_team_members_userId` ON `team_members` (`userId`);--> statemen
 CREATE TABLE `teams` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text NOT NULL,
-	`slug` text NOT NULL,
 	`createdAt` integer NOT NULL,
 	`updatedAt` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE UNIQUE INDEX `idx_teams_slug` ON `teams` (`slug`);--> statement-breakpoint
 CREATE TABLE `user` (
 	`id` text PRIMARY KEY NOT NULL,
 	`name` text NOT NULL,
@@ -205,6 +198,7 @@ CREATE TABLE `user` (
 	`maxLinks` integer
 );
 --> statement-breakpoint
+CREATE UNIQUE INDEX `user_email_unique` ON `user` (`email`);--> statement-breakpoint
 CREATE TABLE `verification` (
 	`id` text PRIMARY KEY NOT NULL,
 	`identifier` text NOT NULL,
@@ -213,3 +207,5 @@ CREATE TABLE `verification` (
 	`createdAt` integer,
 	`updatedAt` integer
 );
+--> statement-breakpoint
+CREATE INDEX `verification_identifier_idx` ON `verification` (`identifier`);

@@ -205,7 +205,7 @@ frontend/src/
   components/           # render and bind modules for shared UI pieces (no custom elements)
   styles/, lib/
 public/                 # SPA shell, _headers, favicon.svg, data/ (world atlas) + esbuild output (dist/)
-drizzle/migrations/     # numbered SQL migrations (0000_initial.sql … 0003_better_auth_indexes.sql)
+drizzle/migrations/     # numbered SQL migrations (0000_initial.sql, …)
 scripts/                # seed.ts (DEMO_MODE seed → seed.generated.sql, gitignored)
 test/
   setup.ts              # applies drizzle/migrations to the test D1
